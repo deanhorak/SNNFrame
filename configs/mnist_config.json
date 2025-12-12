@@ -1,0 +1,50 @@
+{
+  "experiment": {
+    "name": "mnist_optimized",
+    "description": "MNIST digit recognition with spike-based pattern matching and k-NN classification",
+    "version": "1.0.0"
+  },
+  "network": {
+    "grid_size": 7,
+    "region_size": 4,
+    "num_orientations": 8,
+    "neurons_per_feature": 1,
+    "temporal_window_ms": 200.0,
+    "edge_threshold": 0.15,
+    "orientations_degrees": [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5]
+  },
+  "neuron": {
+    "window_size_ms": 200.0,
+    "similarity_threshold": 0.7,
+    "max_patterns": 100
+  },
+  "training": {
+    "examples_per_digit": 5000,
+    "test_images": 10000,
+    "num_digits": 10
+  },
+  "classification": {
+    "method": "knn",
+    "k_neighbors": 5,
+    "similarity_metric": "cosine"
+  },
+  "data": {
+    "train_images": "/home/dean/repos/ctm/data/MNIST/raw/train-images-idx3-ubyte",
+    "train_labels": "/home/dean/repos/ctm/data/MNIST/raw/train-labels-idx1-ubyte",
+    "test_images": "/home/dean/repos/ctm/data/MNIST/raw/t10k-images-idx3-ubyte",
+    "test_labels": "/home/dean/repos/ctm/data/MNIST/raw/t10k-labels-idx1-ubyte"
+  },
+  "sonata": {
+    "network_file": "../configs/mnist_network.h5",
+    "use_sonata": true,
+    "node_population": "layer1_neurons",
+    "edge_population": "layer1_connections"
+  },
+  "output": {
+    "show_progress": true,
+    "show_confusion_matrix": true,
+    "save_results": true,
+    "results_file": "results/mnist_results.json"
+  }
+}
+
