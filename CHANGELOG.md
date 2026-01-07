@@ -51,14 +51,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Complete API documentation
   - Configuration guides and quick start guides
 
-### Performance Metrics
-
-- **EMNIST Letters Classification**: 71.93% accuracy
-  - Network: 16,542 neurons, 4,865,329 synapses
-  - Training: ~60 minutes (2,600 images)
-  - Testing: ~22 minutes (20,800 images)
-  - Memory: ~4.9M synapses, ~16.5K neurons
-
 ### Supported Platforms
 
 - Linux (Ubuntu 18.04+, Debian 10+, CentOS 7+)

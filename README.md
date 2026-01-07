@@ -62,12 +62,12 @@ cmake ..
 make -j$(nproc)
 ```
 
-### Running the Best Experiment
+### Running Example Experiments
 
-The framework includes the EMNIST letters classification experiment that achieved **71.93% accuracy**:
+The framework includes example experiments for testing and learning:
 
 ```bash
-# Training (headless, ~60 minutes)
+# Training (headless)
 ./emnist_letters_training
 
 # Training with visualization
@@ -238,17 +238,12 @@ while (!vizManager.shouldClose()) {
 
 ## Performance Characteristics
 
-### EMNIST Letters (71.93% accuracy)
-- **Network Size**: 16,542 neurons, 4,865,329 synapses
-- **Training Time**: ~60 minutes (2,600 images)
-- **Testing Time**: ~22 minutes (20,800 images)
-- **Memory**: ~4.9M synapses, ~16.5K neurons
-- **Accuracy**: 71.93% (14,958/20,800 correct)
-
 ### Scaling
 - Tested up to 24 cortical columns
 - Supports brain-scale networks with proper hierarchical organization
 - Linear scaling with thread count (up to 24 threads tested)
+- Efficient memory management with RocksDB-backed persistent storage
+- Multi-threaded spike processing for real-time performance
 
 ## Testing
 
