@@ -69,7 +69,7 @@ sudo yum install -y \
 ### 2. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/SNNFrame.git
+git clone https://github.com/deanhorak/SNNFrame.git
 cd SNNFrame
 ```
 

@@ -1,0 +1,80 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ master, develop ]
+  pull_request:
+    branches: [ master, develop ]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        compiler: [gcc, clang]
+        exclude:
+          - os: macos-latest
+            compiler: gcc
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install dependencies (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y librocksdb-dev libglfw3-dev libglew-dev
+
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install rocksdb glfw3 glew
+
+    - name: Create build directory
+      run: mkdir -p build
+
+    - name: Configure CMake
+      run: |
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=Release ..
+
+    - name: Build
+      run: |
+        cd build
+        make -j$(nproc)
+
+    - name: Run tests
+      run: |
+        cd build
+        ctest --output-on-failure
+
+    - name: Check for memory leaks (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get install -y valgrind
+        cd build
+        valgrind --leak-check=full --error-exitcode=1 ./tests/test_neuron 2>&1 | head -100
+
+  code-quality:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format clang-tidy
+
+    - name: Check code formatting
+      run: |
+        find src include -name "*.cpp" -o -name "*.h" | xargs clang-format --dry-run -Werror
+
+    - name: Run clang-tidy
+      run: |
+        mkdir -p build
+        cd build
+        cmake ..
+        run-clang-tidy -p . ../src 2>&1 | head -100 || true
+

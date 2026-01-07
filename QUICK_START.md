@@ -6,7 +6,7 @@ Get up and running with SNNFrame in 5 minutes!
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/SNNFrame.git
+git clone https://github.com/deanhorak/SNNFrame.git
 cd SNNFrame
 
 # Install dependencies (Ubuntu/Debian)

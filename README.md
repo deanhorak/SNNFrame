@@ -7,7 +7,7 @@ A modern, production-ready C++ framework for building and simulating spiking neu
 ### Core Framework
 - **Hierarchical Neural Structure**: 7-level organization (Brain → Hemisphere → Lobe → Region → Nucleus → Column → Layer → Cluster → Neuron)
 - **Biologically-Inspired Architecture**: Canonical cortical microcircuit with 6-layer organization
-- **Spike-Based Learning**: STDP (Spike-Timing-Dependent Plasticity) with retrograde signaling
+- **Spike-Based Learning**: STDP (Spike-Timing-Dependent Plasticity) with retrograde signaling and runtime enable/disable for inference
 - **Temporal Pattern Matching**: Neurons learn and recognize spike patterns within configurable temporal windows
 - **Persistent Storage**: RocksDB-backed datastore with LRU caching for efficient memory management
 
@@ -42,7 +42,7 @@ A modern, production-ready C++ framework for building and simulating spiking neu
 sudo apt-get install build-essential cmake librocksdb-dev libglfw3-dev libglew-dev
 
 # Clone and build
-git clone https://github.com/yourusername/SNNFrame.git
+git clone https://github.com/deanhorak/SNNFrame.git
 cd SNNFrame
 mkdir build && cd build
 cmake ..
@@ -55,7 +55,7 @@ make -j$(nproc)
 brew install cmake rocksdb glfw3 glew
 
 # Clone and build
-git clone https://github.com/yourusername/SNNFrame.git
+git clone https://github.com/deanhorak/SNNFrame.git
 cd SNNFrame
 mkdir build && cd build
 cmake ..
@@ -175,17 +175,28 @@ for (int i = 0; i < 100; ++i) {
 ### Training with Spike Patterns
 
 ```cpp
-// Create spike processor
-SpikeProcessor processor(10000, 20);  // 10000 time slices, 20 threads
-processor.start();
+// Create spike processor and network propagator
+auto spikeProcessor = std::make_shared<SpikeProcessor>(10000, 20);  // 10000 time slices, 20 threads
+auto networkPropagator = std::make_shared<NetworkPropagator>(spikeProcessor);
+
+// Configure STDP parameters
+networkPropagator->setSTDPParameters(0.05, 0.05, 20.0, 20.0);  // A+, A-, τ+, τ-
+spikeProcessor->setSTDPParameters(0.05, 0.05, 20.0, 20.0);
+
+spikeProcessor->start();
+
+// Training mode: STDP enabled (default)
+networkPropagator->setStdpEnabled(true);
+spikeProcessor->setStdpEnabled(true);
 
 // Inject spikes
 for (auto& neuron : neurons) {
     neuron->injectSpike(100.0);  // Spike at 100ms
 }
 
-// Process spikes
-processor.update(deltaTime);
+// Inference mode: Disable STDP to prevent weight drift
+networkPropagator->setStdpEnabled(false);
+spikeProcessor->setStdpEnabled(false);
 
 // Check neuron state
 if (neuron->hasFired()) {
@@ -272,7 +283,7 @@ Contributions are welcome! Please ensure:
 
 ## License
 
-[Your License Here]
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Citation
 
@@ -281,9 +292,9 @@ If you use SNNFrame in your research, please cite:
 ```bibtex
 @software{snnframe2025,
   title={SNNFrame: A Spiking Neural Network Framework},
-  author={Your Name},
+  author={Dean Horak},
   year={2025},
-  url={https://github.com/yourusername/SNNFrame}
+  url={https://github.com/deanhorak/SNNFrame}
 }
 ```
 
@@ -296,6 +307,6 @@ For issues, questions, or suggestions:
 
 ---
 
-**Status**: Production-ready  
-**Latest Version**: 1.0.0  
-**Last Updated**: 2025-12-12
+**Status**: Production-ready
+**Latest Version**: 1.0.0
+**Last Updated**: 2026-01-07
