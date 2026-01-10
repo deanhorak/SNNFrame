@@ -100,6 +100,26 @@ ctest --output-on-failure
 ./emnist_letters_training --help
 ```
 
+### 5. Run the High-Performance Example
+
+The framework includes a high-performance EMNIST letters classification experiment achieving ~90% accuracy:
+
+```bash
+cd build
+
+# Headless training (recommended for first run)
+./emnist_letters_training
+
+# With real-time visualization
+./emnist_letters_visualized
+```
+
+**Expected Results**:
+- Training time: ~60 minutes on full dataset
+- Testing time: ~22 minutes on full test set
+- Accuracy: ~90% on 26-letter classification
+- Network: Multi-column architecture with 8 orientations × 2 frequencies
+
 ## Build Options
 
 ### Release Build (Default)

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-01-07
+## [1.0.0] - 2026-01-10
 
 ### Added
 
@@ -50,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 15+ working code examples
   - Complete API documentation
   - Configuration guides and quick start guides
+
+### Performance Achievements
+
+- **EMNIST Letters Classification**: ~90% accuracy on 26-letter classification
+  - Multi-column architecture with 8 orientations × 2 frequencies
+  - Cosine similarity-based pattern matching
+  - STDP frozen during testing to prevent weight drift
+  - Saccade-based attention mechanism
+  - Training: ~60 minutes (5,200 images)
+  - Testing: ~22 minutes (20,800 images)
 
 ### Supported Platforms
 

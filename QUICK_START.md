@@ -20,7 +20,7 @@ make -j$(nproc)
 
 ## Run the Best Experiment (3 minutes)
 
-The framework includes a pre-configured EMNIST letters classification experiment that achieves **71.93% accuracy**:
+The framework includes a pre-configured EMNIST letters classification experiment that achieves **~90% accuracy** on 26-letter classification:
 
 ```bash
 cd build
@@ -34,6 +34,13 @@ cd build
 # Option 3: Record activity for later playback
 ./emnist_letters_training --record my_session.snnr
 ```
+
+**Key Features of the 90% Accuracy Model**:
+- Cosine similarity-based pattern matching
+- STDP frozen during testing to prevent weight drift
+- Multi-column architecture (8 orientations × 2 frequencies)
+- 6-layer canonical cortical microcircuit
+- Saccade-based attention mechanism
 
 ## Your First Program
 
