@@ -114,13 +114,31 @@ bool SpikeProcessor::scheduleSpike(const std::shared_ptr<ActionPotential>& actio
         return false;
     }
 
+    // Avoid scheduling into the currently-being-delivered slice.
+    // In an async delivery model, events scheduled for "now" can otherwise be lost
+    // because the current slice's queue has already been moved out for delivery.
+    const double currentTimeMs = currentTime.load();
+    const double scheduledTime = actionPotential->getScheduledTime();
+
+    // If scheduled time is already in the past, clamp it forward to avoid dropping spikes.
+    if (scheduledTime < currentTimeMs) {
+        actionPotential->setScheduledTime(currentTimeMs + timeStep);
+    }
+
+    // If a spike lands inside the current time step, push it to the next step.
+    if (scheduledTime < currentTimeMs + timeStep) {
+        actionPotential->setScheduledTime(currentTimeMs + timeStep);
+    }
+
     int sliceIndex = getTimeSliceIndex(actionPotential->getScheduledTime());
-    
+
     if (sliceIndex < 0) {
-        SNNFW_WARN("SpikeProcessor: Spike scheduled for time {:.3f}ms is out of range (current: {:.3f}ms, max: {:.3f}ms)",
-                   actionPotential->getScheduledTime(),
-                   currentTime.load(),
-                   currentTime.load() + numTimeSlices * timeStep);
+        // Silently drop out-of-range spikes (common during high-frequency firing)
+        // Use TRACE level for debugging if needed
+        SNNFW_TRACE("SpikeProcessor: Spike scheduled for time {:.3f}ms is out of range (current: {:.3f}ms, max: {:.3f}ms)",
+                    actionPotential->getScheduledTime(),
+                    currentTime.load(),
+                    currentTime.load() + numTimeSlices * timeStep);
         return false;
     }
 
@@ -129,9 +147,17 @@ bool SpikeProcessor::scheduleSpike(const std::shared_ptr<ActionPotential>& actio
         eventQueue[sliceIndex].push_back(actionPotential);
     }
 
+    {
+        std::lock_guard<std::mutex> lock(deliveryStatsMutex_);
+        deliveryStats_.scheduled++;
+        if (inputToL4Dendrites_.find(actionPotential->getDendriteId()) != inputToL4Dendrites_.end()) {
+            deliveryStats_.scheduledInputToL4++;
+        }
+    }
+
     SNNFW_TRACE("SpikeProcessor: Scheduled spike for time {:.3f}ms (slice {})",
                 actionPotential->getScheduledTime(), sliceIndex);
-    
+
     return true;
 }
 
@@ -141,13 +167,28 @@ bool SpikeProcessor::scheduleRetrogradeSpike(const std::shared_ptr<RetrogradeAct
         return false;
     }
 
+    // Apply the same "no current-slice scheduling" rule as forward spikes.
+    const double currentTimeMs = currentTime.load();
+    const double scheduledTime = retrogradeAP->getScheduledTime();
+
+    // If scheduled time is already in the past, clamp it forward to avoid dropping spikes.
+    if (scheduledTime < currentTimeMs) {
+        retrogradeAP->setScheduledTime(currentTimeMs + timeStep);
+    }
+
+    if (scheduledTime < currentTimeMs + timeStep) {
+        retrogradeAP->setScheduledTime(currentTimeMs + timeStep);
+    }
+
     int sliceIndex = getTimeSliceIndex(retrogradeAP->getScheduledTime());
 
     if (sliceIndex < 0) {
-        SNNFW_WARN("SpikeProcessor: Retrograde spike scheduled for time {:.3f}ms is out of range (current: {:.3f}ms, max: {:.3f}ms)",
-                   retrogradeAP->getScheduledTime(),
-                   currentTime.load(),
-                   currentTime.load() + numTimeSlices * timeStep);
+        // Silently drop out-of-range retrograde spikes (common during high-frequency firing)
+        // Use TRACE level for debugging if needed
+        SNNFW_TRACE("SpikeProcessor: Retrograde spike scheduled for time {:.3f}ms is out of range (current: {:.3f}ms, max: {:.3f}ms)",
+                    retrogradeAP->getScheduledTime(),
+                    currentTime.load(),
+                    currentTime.load() + numTimeSlices * timeStep);
         return false;
     }
 
@@ -170,6 +211,10 @@ void SpikeProcessor::registerDendrite(const std::shared_ptr<Dendrite>& dendrite)
 
     std::lock_guard<std::mutex> lock(dendriteRegistryMutex);
     dendriteRegistry[dendrite->getId()] = dendrite;
+    if (inputToL4NeuronIds_.find(dendrite->getTargetNeuronId()) != inputToL4NeuronIds_.end()) {
+        std::lock_guard<std::mutex> statsLock(deliveryStatsMutex_);
+        inputToL4Dendrites_.insert(dendrite->getId());
+    }
 
     SNNFW_DEBUG("SpikeProcessor: Registered dendrite {} (total: {})",
                 dendrite->getId(), dendriteRegistry.size());
@@ -194,11 +239,40 @@ void SpikeProcessor::unregisterDendrite(uint64_t dendriteId) {
 
     if (it != dendriteRegistry.end()) {
         dendriteRegistry.erase(it);
+        std::lock_guard<std::mutex> statsLock(deliveryStatsMutex_);
+        inputToL4Dendrites_.erase(dendriteId);
         SNNFW_DEBUG("SpikeProcessor: Unregistered dendrite {} (remaining: {})",
                     dendriteId, dendriteRegistry.size());
     } else {
         SNNFW_WARN("SpikeProcessor: Dendrite {} not found for unregistration", dendriteId);
     }
+}
+
+void SpikeProcessor::resetDeliveryStats() {
+    std::lock_guard<std::mutex> lock(deliveryStatsMutex_);
+    deliveryStats_ = DeliveryStats{};
+}
+
+SpikeProcessor::DeliveryStats SpikeProcessor::getDeliveryStats() const {
+    std::lock_guard<std::mutex> lock(deliveryStatsMutex_);
+    return deliveryStats_;
+}
+
+void SpikeProcessor::setInputToL4NeuronIds(const std::unordered_set<uint64_t>& neuronIds) {
+    std::unordered_set<uint64_t> l4Dendrites;
+    {
+        std::lock_guard<std::mutex> dendLock(dendriteRegistryMutex);
+        for (const auto& entry : dendriteRegistry) {
+            const auto& dendrite = entry.second;
+            if (dendrite && neuronIds.find(dendrite->getTargetNeuronId()) != neuronIds.end()) {
+                l4Dendrites.insert(dendrite->getId());
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> statsLock(deliveryStatsMutex_);
+    inputToL4NeuronIds_ = neuronIds;
+    inputToL4Dendrites_ = std::move(l4Dendrites);
 }
 
 size_t SpikeProcessor::getPendingSpikeCount() const {
@@ -219,12 +293,41 @@ size_t SpikeProcessor::getSpikeCountAtSlice(size_t timeSliceIndex) const {
     return eventQueue[timeSliceIndex].size();
 }
 
+size_t SpikeProcessor::purgeEventsBefore(double cutoffTime, const std::unordered_set<uint64_t>& dendriteIds) {
+    if (dendriteIds.empty()) {
+        return 0;
+    }
+
+    size_t removed = 0;
+    std::lock_guard<std::mutex> lock(queueMutex);
+    for (auto& slice : eventQueue) {
+        slice.erase(
+            std::remove_if(slice.begin(), slice.end(),
+                           [&](const std::shared_ptr<EventObject>& evt) {
+                               if (!evt || evt->getScheduledTime() >= cutoffTime) {
+                                   return false;
+                               }
+                               auto ap = std::dynamic_pointer_cast<ActionPotential>(evt);
+                               if (!ap) {
+                                   return false;
+                               }
+                               if (dendriteIds.find(ap->getDendriteId()) == dendriteIds.end()) {
+                                   return false;
+                               }
+                               removed++;
+                               return true;
+                           }),
+            slice.end());
+    }
+    return removed;
+}
+
 int SpikeProcessor::getTimeSliceIndex(double timeMs) const {
     double currentTimeMs = currentTime.load();
     
-    // Check if time is in the past
+    // If scheduled time is in the past, clamp it to the next slice
     if (timeMs < currentTimeMs) {
-        return -1;
+        timeMs = currentTimeMs + timeStep;
     }
     
     // Calculate relative time from current time
@@ -256,7 +359,16 @@ void SpikeProcessor::processingLoop() {
         cleanupCompletedThreads();
 
         // Kick off async delivery for current time slice (non-blocking)
-        deliverSliceAsync(currentSliceIndex, currentTime.load());
+        const double sliceTime = currentTime.load();
+        const size_t sliceIndex = currentSliceIndex;
+        deliverSliceAsync(sliceIndex, sliceTime);
+
+        if (!realTimeSync) {
+            // Non-real-time mode: run as fast as possible, but do not advance the time base
+            // until all delivery work for this slice has completed. This prevents "time went
+            // backwards" scheduling decisions and reduces dropped spikes.
+            waitForDeliveryThreads();
+        }
 
         // Advance time (atomic double doesn't have fetch_add in C++17, so we use store)
         double newTime = currentTime.load() + timeStep;
@@ -315,12 +427,6 @@ void SpikeProcessor::processingLoop() {
                            currentTime.load(), avgLoopTime, maxLoopTime, driftMs);
             }
         } else {
-            // Non-real-time mode: run as fast as possible
-            // IMPORTANT: Wait for all delivery threads to complete before advancing time
-            // This ensures spike propagation completes before the simulation time advances,
-            // preventing "out of range" errors when callbacks try to schedule new spikes
-            waitForDeliveryThreads();
-
             // Just a tiny sleep to prevent CPU spinning if there's no work
             if (iterationTimeUs < 10.0) {
                 std::this_thread::sleep_for(std::chrono::microseconds(10));
@@ -394,12 +500,26 @@ void SpikeProcessor::deliverSliceAsync(size_t sliceIndex, double simTime) {
 
                             if (dendrite) {
                                 dendrite->receiveSpike(spike);
+                                {
+                                    std::lock_guard<std::mutex> lock(deliveryStatsMutex_);
+                                    deliveryStats_.delivered++;
+                                    if (inputToL4Dendrites_.find(spike->getDendriteId()) != inputToL4Dendrites_.end()) {
+                                        deliveryStats_.deliveredInputToL4++;
+                                    }
+                                }
 
                                 // Record spike in activity monitor if attached
                                 if (activityMonitor_) {
                                     activityMonitor_->recordSpike(spike, spike->getScheduledTime());
                                 }
                             } else {
+                                {
+                                    std::lock_guard<std::mutex> lock(deliveryStatsMutex_);
+                                    deliveryStats_.missingDendrite++;
+                                    if (inputToL4Dendrites_.find(spike->getDendriteId()) != inputToL4Dendrites_.end()) {
+                                        deliveryStats_.missingDendriteInputToL4++;
+                                    }
+                                }
                                 SNNFW_WARN("SpikeProcessor: Dendrite {} not found for spike delivery",
                                            spike->getDendriteId());
                             }
@@ -516,8 +636,22 @@ void SpikeProcessor::setSTDPParameters(double aPlus, double aMinus, double tauPl
                stdpAPlus, stdpAMinus, stdpTauPlus, stdpTauMinus);
 }
 
+void SpikeProcessor::setStdpEnabled(bool enabled) {
+    stdpEnabled_.store(enabled, std::memory_order_release);
+    SNNFW_INFO("SpikeProcessor: STDP learning {}", enabled ? "enabled" : "disabled");
+}
+
+bool SpikeProcessor::isStdpEnabled() const {
+    return stdpEnabled_.load(std::memory_order_acquire);
+}
+
 void SpikeProcessor::applySTDPToSynapse(std::shared_ptr<Synapse> synapse, double temporalOffset) {
     if (!synapse) {
+        return;
+    }
+
+    // Early exit if STDP is disabled (inference mode)
+    if (!stdpEnabled_.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -551,4 +685,3 @@ void SpikeProcessor::applySTDPToSynapse(std::shared_ptr<Synapse> synapse, double
 }
 
 } // namespace snnfw
-

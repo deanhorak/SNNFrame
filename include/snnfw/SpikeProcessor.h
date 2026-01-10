@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <deque>
 #include <map>
+#include <unordered_set>
 
 namespace snnfw {
 
@@ -118,11 +119,31 @@ public:
      */
     void unregisterDendrite(uint64_t dendriteId);
 
+    struct DeliveryStats {
+        uint64_t scheduled = 0;
+        uint64_t scheduledInputToL4 = 0;
+        uint64_t delivered = 0;
+        uint64_t deliveredInputToL4 = 0;
+        uint64_t missingDendrite = 0;
+        uint64_t missingDendriteInputToL4 = 0;
+    };
+
+    void resetDeliveryStats();
+
+    DeliveryStats getDeliveryStats() const;
+
+    void setInputToL4NeuronIds(const std::unordered_set<uint64_t>& neuronIds);
+
     /**
      * @brief Get the current simulation time
      * @return Current time in milliseconds
      */
     double getCurrentTime() const { return currentTime.load(); }
+
+    /**
+     * @brief Get the maximum schedule-ahead window in milliseconds
+     */
+    double getMaxScheduleAheadMs() const { return numTimeSlices * timeStep; }
 
     /**
      * @brief Set the simulation time step (default: 1.0 ms)
@@ -147,6 +168,14 @@ public:
      * @return Total number of scheduled spikes
      */
     size_t getPendingSpikeCount() const;
+
+    /**
+     * @brief Purge scheduled action potentials targeting selected dendrites before a cutoff time
+     * @param cutoffTime Remove spikes with scheduled time < cutoffTime
+     * @param dendriteIds Dendrite IDs to purge
+     * @return Number of events removed
+     */
+    size_t purgeEventsBefore(double cutoffTime, const std::unordered_set<uint64_t>& dendriteIds);
 
     /**
      * @brief Get the number of spikes in a specific time slice
@@ -183,6 +212,18 @@ public:
      * @param tauMinus LTD time constant in ms (default: 20.0)
      */
     void setSTDPParameters(double aPlus, double aMinus, double tauPlus, double tauMinus);
+
+    /**
+     * @brief Enable or disable all STDP learning
+     * @param enabled When false, no weight updates occur (useful for inference)
+     */
+    void setStdpEnabled(bool enabled);
+
+    /**
+     * @brief Check if STDP learning is currently enabled
+     * @return true if STDP is enabled, false otherwise
+     */
+    bool isStdpEnabled() const;
 
     /**
      * @brief Get the number of active delivery threads
@@ -280,12 +321,18 @@ private:
     double stdpAMinus;               ///< LTD amplitude (default: 0.012)
     double stdpTauPlus;              ///< LTP time constant in ms (default: 20.0)
     double stdpTauMinus;             ///< LTD time constant in ms (default: 20.0)
+    std::atomic<bool> stdpEnabled_{true};  ///< Master switch for STDP learning
 
     // Activity monitoring (optional)
     class ActivityMonitor* activityMonitor_;  ///< Optional activity monitor for recording
+
+    // Delivery diagnostics
+    DeliveryStats deliveryStats_{};
+    std::unordered_set<uint64_t> inputToL4NeuronIds_;
+    std::unordered_set<uint64_t> inputToL4Dendrites_;
+    mutable std::mutex deliveryStatsMutex_;
 };
 
 } // namespace snnfw
 
 #endif // SNNFW_SPIKE_PROCESSOR_H
-

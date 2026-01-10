@@ -154,7 +154,104 @@ TEST(RetrogradeSTDPTest, ActionPotentialDispatchTime) {
     // but we can verify that the system doesn't crash and spikes are scheduled
     
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    
+
+    spikeProcessor->stop();
+}
+
+/**
+ * Test that STDP can be enabled/disabled at runtime
+ */
+TEST(RetrogradeSTDPTest, STDPEnableDisable) {
+    // Create spike processor and network propagator
+    auto spikeProcessor = std::make_shared<SpikeProcessor>(1000, 20);
+    auto propagator = std::make_shared<NetworkPropagator>(spikeProcessor);
+
+    // Verify STDP is enabled by default
+    EXPECT_TRUE(propagator->isStdpEnabled());
+    EXPECT_TRUE(spikeProcessor->isStdpEnabled());
+
+    // Disable STDP
+    propagator->setStdpEnabled(false);
+    spikeProcessor->setStdpEnabled(false);
+    EXPECT_FALSE(propagator->isStdpEnabled());
+    EXPECT_FALSE(spikeProcessor->isStdpEnabled());
+
+    // Re-enable STDP
+    propagator->setStdpEnabled(true);
+    spikeProcessor->setStdpEnabled(true);
+    EXPECT_TRUE(propagator->isStdpEnabled());
+    EXPECT_TRUE(spikeProcessor->isStdpEnabled());
+}
+
+/**
+ * Test that STDP weight updates are blocked when disabled
+ */
+TEST(RetrogradeSTDPTest, STDPBlockedWhenDisabled) {
+    // Create spike processor and network propagator
+    auto spikeProcessor = std::make_shared<SpikeProcessor>(1000, 20);
+    auto propagator = std::make_shared<NetworkPropagator>(spikeProcessor);
+
+    // Set STDP parameters
+    propagator->setSTDPParameters(0.05, 0.05, 20.0, 20.0);
+    spikeProcessor->setSTDPParameters(0.05, 0.05, 20.0, 20.0);
+
+    // Create neural objects using factory
+    NeuralObjectFactory factory;
+
+    auto preNeuron = factory.createNeuron(100.0, 0.5, 10);
+    auto postNeuron = factory.createNeuron(100.0, 0.5, 10);
+    auto axon = factory.createAxon(preNeuron->getId());
+    auto dendrite = factory.createDendrite(postNeuron->getId());
+    auto synapse = factory.createSynapse(axon->getId(), dendrite->getId(), 1.0, 1.0);
+
+    // Connect neuron to axon and axon to synapse
+    preNeuron->setAxonId(axon->getId());
+    axon->addSynapse(synapse->getId());
+
+    // Register all components
+    propagator->registerNeuron(preNeuron);
+    propagator->registerNeuron(postNeuron);
+    propagator->registerAxon(axon);
+    propagator->registerSynapse(synapse);
+    propagator->registerDendrite(dendrite);
+
+    // Set network propagators
+    preNeuron->setNetworkPropagator(propagator);
+    postNeuron->setNetworkPropagator(propagator);
+    dendrite->setNetworkPropagator(propagator);
+
+    // Start spike processor
+    spikeProcessor->start();
+
+    // Record initial weight
+    double initialWeight = synapse->getWeight();
+    EXPECT_DOUBLE_EQ(initialWeight, 1.0);
+
+    // DISABLE STDP before firing (both propagator and spike processor)
+    propagator->setStdpEnabled(false);
+    spikeProcessor->setStdpEnabled(false);
+    EXPECT_FALSE(propagator->isStdpEnabled());
+    EXPECT_FALSE(spikeProcessor->isStdpEnabled());
+
+    // Fire presynaptic neuron at t=10ms
+    double preFireTime = 10.0;
+    propagator->fireNeuron(preNeuron->getId(), preFireTime);
+
+    // Wait for spikes to propagate
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Fire postsynaptic neuron at t=15ms (should trigger LTP if STDP was enabled)
+    double postFireTime = 15.0;
+    postNeuron->fireSignature(postFireTime);
+    postNeuron->fireAndAcknowledge(postFireTime);
+
+    // Wait for acknowledgments to propagate
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Weight should NOT have changed since STDP was disabled
+    double finalWeight = synapse->getWeight();
+    EXPECT_DOUBLE_EQ(finalWeight, initialWeight) << "Weight should not change when STDP is disabled";
+
     spikeProcessor->stop();
 }
 
@@ -162,4 +259,3 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
-
