@@ -23,6 +23,7 @@ Neuron::Neuron(double windowSizeMs, double similarityThreshold, size_t maxRefere
       axonId(0),
       similarityMetric_(SimilarityMetric::COSINE),  // Default to cosine similarity
       inhibition_(0.0),
+      incomingSpikeCount_(0),
       firingRate_(0.0),
       targetFiringRate_(5.0),  // Default target: 5 Hz
       intrinsicExcitability_(1.0),
@@ -36,7 +37,10 @@ Neuron::Neuron(double windowSizeMs, double similarityThreshold, size_t maxRefere
 void Neuron::insertSpike(double spikeTime) {
     std::lock_guard<std::mutex> lock(spikesMutex_);
     spikes.push_back(spikeTime);
-    removeOldSpikesUnsafe(spikeTime);
+    // Spikes may arrive out-of-order under async delivery.
+    // Maintain the rolling window relative to the newest spike we have seen.
+    const double referenceTime = *std::max_element(spikes.begin(), spikes.end());
+    removeOldSpikesUnsafe(referenceTime);
 
     // NOTE: Removed shouldFire() check here because it causes issues during training
     // When learning patterns, we don't want the neuron to fire based on previously
@@ -142,9 +146,11 @@ void Neuron::removeOldSpikes(double currentTime) {
 
 void Neuron::removeOldSpikesUnsafe(double currentTime) {
     // Note: Caller must hold spikesMutex_ lock
-    while (!spikes.empty() && (currentTime - spikes.front() > windowSize)) {
-        spikes.erase(spikes.begin());
-    }
+    // Do not assume insertion order (async delivery can insert out-of-order).
+    spikes.erase(
+        std::remove_if(spikes.begin(), spikes.end(),
+                       [this, currentTime](double t) { return (currentTime - t) > windowSize; }),
+        spikes.end());
 }
 
 // Convert spike pattern to temporal histogram (fuzzy representation)
@@ -495,12 +501,28 @@ void Neuron::recordIncomingSpike(uint64_t synapseId, double spikeTime, double di
 
     // Add the incoming spike to our tracking deque
     incomingSpikes_.emplace_back(synapseId, spikeTime, dispatchTime);
+    incomingSpikeCount_++;
 
-    // Clean up old spikes outside the temporal window
-    clearOldIncomingSpikes(spikeTime);
+    // Clean up old spikes outside the temporal window.
+    // Do not assume arrival ordering under async delivery.
+    double referenceTime = spikeTime;
+    for (const auto& s : incomingSpikes_) {
+        referenceTime = std::max(referenceTime, s.arrivalTime);
+    }
+    clearOldIncomingSpikes(referenceTime);
 
     SNNFW_TRACE("Neuron {}: Recorded incoming spike from synapse {} at time {:.3f}ms (dispatch: {:.3f}ms, total tracked: {})",
                 getId(), synapseId, spikeTime, dispatchTime, incomingSpikes_.size());
+}
+
+size_t Neuron::getIncomingSpikeCount() const {
+    std::lock_guard<std::mutex> lock(incomingSpikesMutex_);
+    return incomingSpikeCount_;
+}
+
+void Neuron::resetIncomingSpikeCount() {
+    std::lock_guard<std::mutex> lock(incomingSpikesMutex_);
+    incomingSpikeCount_ = 0;
 }
 
 int Neuron::fireAndAcknowledge(double firingTime) {
@@ -550,10 +572,12 @@ int Neuron::fireAndAcknowledge(double firingTime) {
 void Neuron::clearOldIncomingSpikes(double currentTime) {
     // Note: Caller must hold incomingSpikesMutex_ lock
     // Remove spikes that are older than the temporal window
-    while (!incomingSpikes_.empty() &&
-           (currentTime - incomingSpikes_.front().arrivalTime > windowSize)) {
-        incomingSpikes_.pop_front();
-    }
+    incomingSpikes_.erase(
+        std::remove_if(incomingSpikes_.begin(), incomingSpikes_.end(),
+                       [this, currentTime](const IncomingSpike& s) {
+                           return (currentTime - s.arrivalTime) > windowSize;
+                       }),
+        incomingSpikes_.end());
 }
 
 void Neuron::periodicMemoryCleanup(double currentTime) {

@@ -48,8 +48,12 @@ struct SimulationConfig {
     // Recording configuration
     bool enableRecording = false;           ///< Enable spike recording
     std::string recordingFilename = "";     ///< Output filename for recording (empty = auto-generate)
+    std::string recordingPath = "";         ///< Path where recording files are stored (local or remote)
     bool autoSaveRecording = true;          ///< Automatically save recording when stopped
-    
+
+    // Network structure configuration
+    std::string networkStructurePath = "";  ///< Path where network structure files (.snnw) are stored (local or remote)
+
     // Visualization configuration
     bool enableVisualization = false;       ///< Enable live visualization
     int visualizationWidth = 1920;          ///< Visualization window width
@@ -65,7 +69,13 @@ struct SimulationConfig {
     // Performance configuration
     bool realTimeSync = true;               ///< Synchronize SpikeProcessor with real-time (disable for max speed)
     size_t spikeProcessorThreads = 20;      ///< Number of spike delivery threads
-    
+
+    // Memory management configuration
+    bool enableMemoryMonitoring = true;     ///< Enable memory usage monitoring
+    size_t maxMemoryMB = 8192;              ///< Maximum memory to use (8GB default)
+    double historyDurationMs = 1000.0;      ///< How long to keep spike events in memory (ms)
+    bool aggressiveCleanup = true;          ///< Aggressively clean old events when memory is high
+
     /**
      * @brief Check if any visualization is needed (live or playback)
      * @return true if visualization window should be created

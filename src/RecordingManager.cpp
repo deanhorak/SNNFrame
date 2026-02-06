@@ -7,6 +7,7 @@
 #include <sstream>
 #include <algorithm>
 #include <set>
+#include <iostream>
 
 namespace snnfw {
 
@@ -73,6 +74,8 @@ void RecordingManager::startRecording(bool streamToFile, const std::string& file
         streamingFile_ = new std::ofstream(filename, std::ios::binary);
 
         if (!streamingFile_->is_open()) {
+            std::cerr << "ERROR: RecordingManager: Failed to open recording file for writing: " << filename << std::endl;
+            std::cerr << "ERROR: RecordingManager: Check that the directory exists and is writable" << std::endl;
             recording_ = false;
             streamingMode_ = false;
             delete streamingFile_;
@@ -80,6 +83,7 @@ void RecordingManager::startRecording(bool streamToFile, const std::string& file
             return;
         }
 
+        std::cout << "RecordingManager: Opened recording file for streaming: " << filename << std::endl;
         writeFileHeader();
     } else {
         // Memory mode - clear spike vector

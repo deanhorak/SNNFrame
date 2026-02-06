@@ -356,6 +356,26 @@ public:
      */
     bool saveRecording(const std::string& filename);
 
+    /**
+     * @brief Get memory usage of spike events buffer
+     * @return Approximate memory used in bytes
+     */
+    size_t getMemoryUsage() const;
+
+    /**
+     * @brief Aggressively cleanup old events to reduce memory
+     * @param targetDurationMs Target history duration to maintain
+     * @return Number of events removed
+     */
+    size_t aggressiveCleanup(double targetDurationMs);
+
+    /**
+     * @brief Check if memory usage is excessive
+     * @param maxMemoryMB Maximum allowed memory in MB
+     * @return true if memory usage exceeds limit
+     */
+    bool isMemoryExcessive(size_t maxMemoryMB) const;
+
 private:
     /**
      * @brief Resolve hierarchical context for a neuron

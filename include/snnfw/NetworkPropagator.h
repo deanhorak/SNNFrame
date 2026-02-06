@@ -11,6 +11,9 @@
 #include <map>
 #include <vector>
 #include <mutex>
+#include <atomic>
+#include <unordered_map>
+#include <limits>
 
 namespace snnfw {
 
@@ -38,6 +41,58 @@ namespace snnfw {
  */
 class NetworkPropagator {
 public:
+    struct StdpUpdateStats {
+        uint64_t total = 0;
+        uint64_t ltp = 0;
+        uint64_t ltd = 0;
+        uint64_t reward = 0;
+    };
+
+    enum class SynapseGroup {
+        Unknown = 0,
+        InputToL4,
+        L4ToL5,
+        L5ToOutput,
+    };
+
+    struct StdpGroupStats {
+        uint64_t ltp = 0;
+        uint64_t ltd = 0;
+    };
+
+    struct StdpGroupStatsSet {
+        StdpGroupStats inputToL4;
+        StdpGroupStats l4ToL5;
+        StdpGroupStats l5ToOutput;
+        StdpGroupStats other;
+    };
+
+    struct StdpTimingStats {
+        uint64_t preBeforePost = 0;
+        uint64_t postBeforePre = 0;
+        uint64_t nearZero = 0;
+    };
+
+    struct StdpTimingGroupStats {
+        StdpTimingStats inputToL4;
+        StdpTimingStats l4ToL5;
+        StdpTimingStats l5ToOutput;
+        StdpTimingStats other;
+    };
+
+    struct DeliveryStats {
+        uint64_t total = 0;
+        uint64_t l5ToOutput = 0;
+        double l5ToOutputDeltaSum = 0.0;
+        double l5ToOutputDeltaMin = std::numeric_limits<double>::infinity();
+        double l5ToOutputDeltaMax = -std::numeric_limits<double>::infinity();
+    };
+
+    struct ScheduleStats {
+        uint64_t inputToL4 = 0;
+        uint64_t other = 0;
+    };
+
     /**
      * @brief Constructor
      * @param spikeProcessor Shared pointer to the spike processor for temporal delivery
@@ -188,6 +243,8 @@ public:
      * @param tauMinus LTD time constant in ms (default: 20.0)
      */
     void setSTDPParameters(double aPlus, double aMinus, double tauPlus, double tauMinus);
+    void setStdpLtdScale(double scale);
+    void setStdpLtdWindowMs(double windowMs);
 
     /**
      * @brief Apply reward-modulated STDP to synapses targeting a specific neuron
@@ -210,6 +267,86 @@ public:
      * @param manager Pointer to recording manager (nullptr to disable)
      */
     void setRecordingManager(class RecordingManager* manager);
+
+    /**
+     * @brief Reset STDP update counters
+     */
+    void resetStdpUpdateStats();
+
+    /**
+     * @brief Get current STDP update counters
+     * @return STDP update counts since last reset
+     */
+    StdpUpdateStats getStdpUpdateStats() const;
+
+    /**
+     * @brief Register a synapse group for per-group STDP accounting
+     * @param synapseId ID of the synapse
+     * @param group Synapse group classification
+     */
+    void registerSynapseGroup(uint64_t synapseId, SynapseGroup group);
+
+    /**
+     * @brief Reset per-group STDP update counters
+     */
+    void resetStdpGroupStats();
+
+    /**
+     * @brief Get current per-group STDP update counters
+     * @return Per-group STDP update counts since last reset
+     */
+    StdpGroupStatsSet getStdpGroupStats() const;
+
+    /**
+     * @brief Reset per-group STDP timing counters
+     */
+    void resetStdpTimingStats();
+
+    /**
+     * @brief Get current per-group STDP timing counters
+     * @return Per-group STDP timing counts since last reset
+     */
+    StdpTimingGroupStats getStdpTimingStats() const;
+
+    /**
+     * @brief Enable trace-based STDP (pre/post traces) instead of acknowledgment timing
+     * @param enabled When true, use nearest-neighbor pre/post traces for STDP
+     */
+    void setTraceStdpEnabled(bool enabled);
+
+    /**
+     * @brief Enable or disable all STDP learning
+     * @param enabled When false, no weight updates occur (useful for inference)
+     */
+    void setStdpEnabled(bool enabled);
+
+    /**
+     * @brief Check if STDP learning is currently enabled
+     * @return true if STDP is enabled, false otherwise
+     */
+    bool isStdpEnabled() const;
+
+    /**
+     * @brief Reset delivery statistics counters
+     */
+    void resetDeliveryStats();
+
+    /**
+     * @brief Get current delivery statistics
+     * @return Delivery stats since last reset
+     */
+    DeliveryStats getDeliveryStats() const;
+
+    /**
+     * @brief Reset schedule statistics counters
+     */
+    void resetScheduleStats();
+
+    /**
+     * @brief Get current schedule statistics
+     * @return Schedule stats since last reset
+     */
+    ScheduleStats getScheduleStats() const;
 
 private:
     // Spike processor for temporal delivery
@@ -236,13 +373,69 @@ private:
     double stdpAMinus_;     ///< LTD amplitude (default: 0.012)
     double stdpTauPlus_;    ///< LTP time constant in ms (default: 20.0)
     double stdpTauMinus_;   ///< LTD time constant in ms (default: 20.0)
+    double stdpLtdScale_;   ///< Additional LTD scaling factor
+    double stdpLtdWindowMs_; ///< Max |Δt| window for LTD in trace STDP
 
     // Activity monitoring (optional)
     class ActivityMonitor* activityMonitor_;  ///< Optional activity monitor for recording
     class RecordingManager* recordingManager_;  ///< Optional recording manager for direct recording
+
+    // STDP update counters (thread-safe)
+    std::atomic<uint64_t> stdpUpdatesTotal_{0};
+    std::atomic<uint64_t> stdpUpdatesLtp_{0};
+    std::atomic<uint64_t> stdpUpdatesLtd_{0};
+    std::atomic<uint64_t> stdpUpdatesReward_{0};
+
+    // Per-group STDP update counters (thread-safe)
+    std::atomic<uint64_t> stdpInputToL4Ltp_{0};
+    std::atomic<uint64_t> stdpInputToL4Ltd_{0};
+    std::atomic<uint64_t> stdpL4ToL5Ltp_{0};
+    std::atomic<uint64_t> stdpL4ToL5Ltd_{0};
+    std::atomic<uint64_t> stdpL5ToOutputLtp_{0};
+    std::atomic<uint64_t> stdpL5ToOutputLtd_{0};
+    std::atomic<uint64_t> stdpOtherLtp_{0};
+    std::atomic<uint64_t> stdpOtherLtd_{0};
+
+    // Per-group STDP timing counters (thread-safe)
+    std::atomic<uint64_t> stdpInputToL4PreBeforePost_{0};
+    std::atomic<uint64_t> stdpInputToL4PostBeforePre_{0};
+    std::atomic<uint64_t> stdpInputToL4NearZero_{0};
+    std::atomic<uint64_t> stdpL4ToL5PreBeforePost_{0};
+    std::atomic<uint64_t> stdpL4ToL5PostBeforePre_{0};
+    std::atomic<uint64_t> stdpL4ToL5NearZero_{0};
+    std::atomic<uint64_t> stdpL5ToOutputPreBeforePost_{0};
+    std::atomic<uint64_t> stdpL5ToOutputPostBeforePre_{0};
+    std::atomic<uint64_t> stdpL5ToOutputNearZero_{0};
+    std::atomic<uint64_t> stdpOtherPreBeforePost_{0};
+    std::atomic<uint64_t> stdpOtherPostBeforePre_{0};
+    std::atomic<uint64_t> stdpOtherNearZero_{0};
+
+    bool traceStdpEnabled_ = false;
+    std::atomic<bool> stdpEnabled_{true};  ///< Master switch for all STDP learning
+
+    // Last presynaptic firing time per synapse for trace-based STDP (thread-safe)
+    std::unordered_map<uint64_t, double> synapseLastPreTime_;
+    mutable std::mutex synapseLastPreMutex_;
+
+    // Last postsynaptic firing time per synapse for pre-triggered LTD (thread-safe)
+    std::unordered_map<uint64_t, double> synapseLastPostTime_;
+    mutable std::mutex synapseLastPostMutex_;
+
+    std::unordered_map<uint64_t, SynapseGroup> synapseGroupMap_;
+    mutable std::mutex synapseGroupMutex_;
+
+    // Delivery stats (thread-safe)
+    std::atomic<uint64_t> deliveryTotal_{0};
+    std::atomic<uint64_t> deliveryL5ToOutput_{0};
+    double deliveryL5ToOutputDeltaSum_ = 0.0;
+    double deliveryL5ToOutputDeltaMin_ = std::numeric_limits<double>::infinity();
+    double deliveryL5ToOutputDeltaMax_ = -std::numeric_limits<double>::infinity();
+    mutable std::mutex deliveryStatsMutex_;
+
+    std::atomic<uint64_t> scheduledInputToL4_{0};
+    std::atomic<uint64_t> scheduledOther_{0};
 };
 
 } // namespace snnfw
 
 #endif // SNNFW_NETWORK_PROPAGATOR_H
-

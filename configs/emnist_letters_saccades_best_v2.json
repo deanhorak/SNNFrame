@@ -9,20 +9,30 @@
     "time_slice_ms": 1.0,
     "real_time_sync": false
   },
-  "recording": {
+  "memory": {
     "enabled": true,
+    "max_memory_mb": 51200,
+    "history_duration_ms": 50,
+    "aggressive_cleanup": true
+  },
+  "recording": {
+    "enabled": false,
     "filename": "emnist_training.snnr",
+    "path": "/mnt/nas8t/SNNLogs",
     "auto_save": true
+  },
+  "network_structure": {
+    "path": "/mnt/nas8t/SNNLogs"
   },
   "training": {
     "examples_per_letter": 800,
     "test_images": 20800
   },
   "data": {
-    "train_images": "/home/dean/repos/ctm/data/raw/emnist-letters-train-images-idx3-ubyte",
-    "train_labels": "/home/dean/repos/ctm/data/raw/emnist-letters-train-labels-idx1-ubyte",
-    "test_images": "/home/dean/repos/ctm/data/raw/emnist-letters-test-images-idx3-ubyte",
-    "test_labels": "/home/dean/repos/ctm/data/raw/emnist-letters-test-labels-idx1-ubyte"
+    "train_images": "/home/dean/repos/SNNFrame/data/EMNIST/emnist-letters-train-images-idx3-ubyte",
+    "train_labels": "/home/dean/repos/SNNFrame/data/EMNIST/emnist-letters-train-labels-idx1-ubyte",
+    "test_images": "/home/dean/repos/SNNFrame/data/EMNIST/emnist-letters-test-images-idx3-ubyte",
+    "test_labels": "/home/dean/repos/SNNFrame/data/EMNIST/emnist-letters-test-labels-idx1-ubyte"
   },
   "architecture": {
     "columns": {
@@ -51,7 +61,7 @@
     "gabor": {
       "freq_low": 8.0,
       "freq_high": 3.0,
-      "threshold": 0.24
+      "threshold": 0.50
     },
     "output": {
       "neurons_per_class": 15

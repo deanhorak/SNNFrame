@@ -18,6 +18,7 @@ find_package(Threads REQUIRED)
 # Set build type to Release if not specified
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
+    message(STATUS "Building release version...")
 endif()
 
 # Find OpenMP for parallelization
@@ -25,7 +26,7 @@ find_package(OpenMP REQUIRED)
 
 # Compiler flags
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra -Wpedantic -fsanitize=address -fno-omit-frame-pointer")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native -flto")
 set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=address")
 
 # Include directories
@@ -52,12 +53,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/nlohmann/json.git
     GIT_TAG v3.11.3
 )
-FetchContent_GetProperties(nlohmann_json)
-if(NOT nlohmann_json_POPULATED)
-    FetchContent_Populate(nlohmann_json)
-    add_subdirectory(${nlohmann_json_SOURCE_DIR} ${nlohmann_json_BINARY_DIR})
-endif()
-set(nlohmann_json_DIR ${nlohmann_json_BINARY_DIR})
+FetchContent_MakeAvailable(nlohmann_json)
 
 # Fetch HighFive (HDF5 C++ wrapper)
 message(STATUS "Fetching HighFive...")
@@ -71,18 +67,18 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/BlueBrain/HighFive.git
     GIT_TAG v2.9.0
 )
-FetchContent_GetProperties(HighFive)
-if(NOT highfive_POPULATED)
-    FetchContent_Populate(HighFive)
-    add_subdirectory(${highfive_SOURCE_DIR} ${highfive_BINARY_DIR})
-endif()
-set(HighFive_DIR ${highfive_BINARY_DIR})
+FetchContent_MakeAvailable(HighFive)
 
 # Fetch libsonata for SONATA format support
 message(STATUS "Fetching libsonata...")
 option(SONATA_TESTS "Build libsonata tests" OFF)
 option(SONATA_PYTHON "Build libsonata Python bindings" OFF)
+option(SONATA_CXX_WARNINGS "Compile libsonata with warnings-as-errors" OFF)
 option(EXTLIB_FROM_SUBMODULES "Use git submodules for external libraries" OFF)
+
+# Set HighFive_DIR and nlohmann_json_DIR so libsonata can find them
+set(HighFive_DIR "${CMAKE_BINARY_DIR}/_deps/highfive-build")
+set(nlohmann_json_DIR "${CMAKE_BINARY_DIR}/_deps/nlohmann_json-build")
 
 set(CMAKE_CXX_FLAGS_BACKUP "${CMAKE_CXX_FLAGS}")
 string(REPLACE "-Werror" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
@@ -100,6 +96,11 @@ message(STATUS "Looking for RocksDB...")
 find_package(RocksDB QUIET CONFIG)
 if(RocksDB_FOUND)
     message(STATUS "Found RocksDB via find_package")
+    # Set variables for compatibility
+    set(ROCKSDB_FOUND TRUE)
+    if(TARGET RocksDB::rocksdb)
+        set(ROCKSDB_LIBRARIES RocksDB::rocksdb)
+    endif()
 else()
     message(STATUS "RocksDB not found via find_package, attempting to find system library")
     find_path(ROCKSDB_INCLUDE_DIR rocksdb/db.h PATHS /usr/include /usr/local/include)
@@ -165,5 +166,11 @@ endif()
 
 # Add subdirectories
 add_subdirectory(src)
-add_subdirectory(tests)
 add_subdirectory(experiments)
+
+# Tests
+option(SNNFW_BUILD_TESTS "Build SNNFrame unit tests" ON)
+if(SNNFW_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

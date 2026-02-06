@@ -39,6 +39,7 @@ set(LIB_SOURCES
     learning/PatternUpdateStrategyFactory.cpp
     NetworkInspector.cpp
     ActivityMonitor.cpp
+    MemoryManager.cpp
     PerformanceProfiler.cpp
     NetworkValidator.cpp
     NetworkBuilder.cpp
@@ -61,6 +62,10 @@ set(LIB_SOURCES
     PatternDetector.cpp
     ActivityHistogram.cpp
     NetworkStructureExporter.cpp
+    declarative/NetworkIR.cpp
+    declarative/NativeJSONParser.cpp
+    declarative/NetworkConstructor.cpp
+    declarative/DeclarativeLoader.cpp
 )
 
 # Create library
@@ -72,12 +77,25 @@ target_link_libraries(snnfw PUBLIC
     OpenMP::OpenMP_CXX
     spdlog::spdlog
     nlohmann_json::nlohmann_json
-    libsonata
+    sonata::sonata_shared
+    HighFive
+    curl
 )
 
 if(ROCKSDB_FOUND)
-    target_link_libraries(snnfw PUBLIC ${ROCKSDB_LIBRARIES})
-    target_include_directories(snnfw PUBLIC ${ROCKSDB_INCLUDE_DIRS})
+    message(STATUS "Linking RocksDB to snnfw")
+    if(TARGET RocksDB::rocksdb)
+        message(STATUS "Using RocksDB::rocksdb target")
+        target_link_libraries(snnfw PUBLIC RocksDB::rocksdb)
+    elseif(ROCKSDB_LIBRARIES)
+        message(STATUS "Using ROCKSDB_LIBRARIES: ${ROCKSDB_LIBRARIES}")
+        target_link_libraries(snnfw PUBLIC ${ROCKSDB_LIBRARIES})
+        target_include_directories(snnfw PUBLIC ${ROCKSDB_INCLUDE_DIRS})
+    else()
+        message(WARNING "ROCKSDB_FOUND is TRUE but no target or libraries found!")
+    endif()
+else()
+    message(WARNING "ROCKSDB_FOUND is FALSE")
 endif()
 
 # Visualization libraries

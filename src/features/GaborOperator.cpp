@@ -1,6 +1,7 @@
 #include "snnfw/features/GaborOperator.h"
 #include <cmath>
 #include <algorithm>
+#include <cassert>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -18,6 +19,13 @@ GaborOperator::GaborOperator(const Config& config)
     gamma_ = config.getDoubleParam("gamma", 0.5);
     phaseOffset_ = config.getDoubleParam("phase_offset", 0.0);
     kernelSize_ = config.getIntParam("kernel_size", 5);
+
+    // Pre-calculate expensive terms for the kernel
+    gamma_sq_ = gamma_ * gamma_;
+    two_sigma_sq_ = 2.0 * sigma_ * sigma_;
+
+    assert(wavelength_ > 0.0 && "Wavelength must be positive.");
+    assert(sigma_ > 0.0 && "Sigma must be positive.");
     
     // Ensure kernel size is odd
     if (kernelSize_ % 2 == 0) {
@@ -36,8 +44,7 @@ double GaborOperator::gaborKernel(double x, double y, double theta) const {
     double yTheta = -x * std::sin(theta) + y * std::cos(theta);
     
     // Gaussian envelope
-    double gaussianExponent = -(xTheta * xTheta + gamma_ * gamma_ * yTheta * yTheta) / 
-                              (2.0 * sigma_ * sigma_);
+    double gaussianExponent = -(xTheta * xTheta + gamma_sq_ * yTheta * yTheta) / two_sigma_sq_;
     double gaussian = std::exp(gaussianExponent);
     
     // Sinusoidal carrier
@@ -128,4 +135,3 @@ std::string GaborOperator::getName() const {
 
 } // namespace features
 } // namespace snnfw
-

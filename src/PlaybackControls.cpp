@@ -131,16 +131,38 @@ void PlaybackControls::renderTimeline() {
 }
 
 void PlaybackControls::renderSingleStepButtons() {
-    ImGui::Text("Single Step:");
-    ImGui::SameLine();
-    
-    // TODO: Implement single-step functionality in RecordingManager
-    if (ImGui::Button("<< Step Back")) {
-        // recordingManager_->stepBackward();
+    const auto& state = recordingManager_->getPlaybackState();
+    auto seekClamped = [&](int64_t deltaMs) {
+        if (state.endTime <= state.startTime) return;
+        int64_t target = static_cast<int64_t>(state.currentTime) + deltaMs;
+        if (target < static_cast<int64_t>(state.startTime)) target = static_cast<int64_t>(state.startTime);
+        if (target > static_cast<int64_t>(state.endTime)) target = static_cast<int64_t>(state.endTime);
+        recordingManager_->seek(static_cast<uint64_t>(target));
+    };
+
+    ImGui::Text("Seek:");
+    if (ImGui::Button("|< Start")) {
+        recordingManager_->seek(state.startTime);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Step Forward >>")) {
-        // recordingManager_->stepForward();
+    if (ImGui::Button("<< 10s")) {
+        seekClamped(-10000);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("< 1s")) {
+        seekClamped(-1000);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("1s >")) {
+        seekClamped(1000);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("10s >>")) {
+        seekClamped(10000);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("End >|")) {
+        recordingManager_->seek(state.endTime);
     }
 }
 
@@ -184,4 +206,3 @@ const char* PlaybackControls::formatTime(uint64_t milliseconds, char* buffer, si
 }
 
 } // namespace snnfw
-

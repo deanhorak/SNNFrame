@@ -10,6 +10,10 @@ BinaryPattern::BinaryPattern(const std::vector<double>& spikeTimes, double windo
         return;  // Empty pattern
     }
 
+    if (windowSize <= 0.0) {
+        return;  // Invalid window, treat as empty
+    }
+
     // Find the minimum spike time to use as reference (normalize to start at 0)
     double minTime = *std::min_element(spikeTimes.begin(), spikeTimes.end());
 
@@ -18,10 +22,27 @@ BinaryPattern::BinaryPattern(const std::vector<double>& spikeTimes, double windo
         // Normalize to relative time (0 = first spike)
         double relativeTime = spikeTime - minTime;
 
-        // Round to nearest millisecond
-        int binIndex = static_cast<int>(std::round(relativeTime));
+        // Only consider spikes within [0, windowSize)
+        if (relativeTime < 0.0 || relativeTime >= windowSize) {
+            continue;
+        }
 
-        // Check if spike is within the window [0, windowSize)
+        int binIndex = 0;
+        // Backward-compatible path: 200ms window maps 1ms -> 1 bin.
+        if (std::abs(windowSize - static_cast<double>(PATTERN_SIZE)) < 1e-9) {
+            // Round to nearest millisecond
+            binIndex = static_cast<int>(std::round(relativeTime));
+        } else {
+            // Scale the configured window into the fixed-size 200-bin representation.
+            // Example: a 500ms window is compressed into 200 bins.
+            const double scaled = (relativeTime / windowSize) * static_cast<double>(PATTERN_SIZE);
+            binIndex = static_cast<int>(std::floor(scaled));
+        }
+
+        // Clamp (handles round() == PATTERN_SIZE on edge cases)
+        if (binIndex < 0) binIndex = 0;
+        if (binIndex >= static_cast<int>(PATTERN_SIZE)) binIndex = static_cast<int>(PATTERN_SIZE) - 1;
+
         if (binIndex >= 0 && binIndex < static_cast<int>(PATTERN_SIZE)) {
             // Increment spike count in this bin (saturate at 255)
             if (data_[binIndex] < MAX_COUNT) {
@@ -250,4 +271,3 @@ void BinaryPattern::merge(BinaryPattern& target, const BinaryPattern& source, do
 }
 
 } // namespace snnfw
-

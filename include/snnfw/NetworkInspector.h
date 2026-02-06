@@ -29,13 +29,13 @@ struct ConnectivityStats {
  */
 struct HierarchyStats {
     std::string typeName;      ///< Type of structure (Brain, Hemisphere, Lobe, etc.)
-    uint64_t id;               ///< ID of this structure
+    uint64_t id = 0;           ///< ID of this structure
     std::string name;          ///< Name of this structure (if available)
-    size_t childCount;         ///< Number of direct children
-    size_t totalNeurons;       ///< Total neurons in this subtree
-    size_t totalSynapses;      ///< Total synapses in this subtree
-    size_t totalClusters;      ///< Total clusters in this subtree
-    size_t depth;              ///< Depth in hierarchy (0 = Brain)
+    size_t childCount = 0;     ///< Number of direct children
+    size_t totalNeurons = 0;   ///< Total neurons in this subtree
+    size_t totalSynapses = 0;  ///< Total synapses in this subtree
+    size_t totalClusters = 0;  ///< Total clusters in this subtree
+    size_t depth = 0;          ///< Depth in hierarchy (0 = Brain)
     std::vector<uint64_t> childIds;  ///< IDs of direct children
 };
 
@@ -259,4 +259,3 @@ private:
 } // namespace snnfw
 
 #endif // SNNFW_NETWORK_INSPECTOR_H
-

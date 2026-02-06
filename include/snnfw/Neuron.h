@@ -171,6 +171,18 @@ public:
     }
 
     /**
+     * @brief Remove spikes older than a cutoff time (thread-safe)
+     * @param cutoffTime Spikes with time < cutoffTime are removed
+     */
+    void removeSpikesBefore(double cutoffTime) {
+        std::lock_guard<std::mutex> lock(spikesMutex_);
+        spikes.erase(
+            std::remove_if(spikes.begin(), spikes.end(),
+                           [cutoffTime](double t) { return t < cutoffTime; }),
+            spikes.end());
+    }
+
+    /**
      * @brief Set the axon ID for this neuron
      * @param id ID of the axon
      */
@@ -221,6 +233,11 @@ public:
     void fireSignature(double baseTime);
 
     /**
+     * @brief Disable the neuron's temporal signature (no intrinsic spike pattern)
+     */
+    void disableTemporalSignature() { temporalSignature_.clear(); }
+
+    /**
      * @brief Get the number of dendrites
      * @return Number of dendrites
      */
@@ -233,6 +250,17 @@ public:
      * @param dispatchTime Time when the spike was originally dispatched
      */
     void recordIncomingSpike(uint64_t synapseId, double spikeTime, double dispatchTime = 0.0);
+
+    /**
+     * @brief Get count of incoming spikes recorded (thread-safe)
+     * @return Number of incoming spikes recorded since last reset
+     */
+    size_t getIncomingSpikeCount() const;
+
+    /**
+     * @brief Reset incoming spike counter (thread-safe)
+     */
+    void resetIncomingSpikeCount();
 
     /**
      * @brief Apply inhibition to this neuron
@@ -343,6 +371,7 @@ private:
     // STDP-related members
     std::deque<IncomingSpike> incomingSpikes_;           ///< Recent incoming spikes for STDP (within window)
     mutable std::mutex incomingSpikesMutex_;             ///< Mutex to protect incomingSpikes_ from concurrent access
+    size_t incomingSpikeCount_;                          ///< Count of incoming spikes recorded since last reset
     std::weak_ptr<NetworkPropagator> networkPropagator_; ///< Reference to NetworkPropagator for sending acknowledgments
 
     // Temporal signature - unique spike pattern for this neuron
