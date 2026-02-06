@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-06
+
+### Added
+
+- **Declarative Network Loading System**
+  - Define neural networks in configuration files instead of writing C++ code
+  - `DeclarativeLoader` API: single entry-point that auto-detects format and constructs the network
+  - `NetworkIR`: common intermediate representation for all formats
+  - `NetworkConstructor`: four-phase construction (hierarchy → neurons → connectivity → runtime)
+  - Extensible `FormatParser` interface for adding new formats
+
+- **Native JSON Format** (`.snnf.json`)
+  - Full SNNFrame configuration including column templates, path-based connectivity
+  - Named neuron parameter sets (define once, reference many times)
+  - Column template expansion: parameterized generation (e.g., 8 orientations × 2 frequencies = 16 columns)
+  - Path-based projection targets using glob patterns (e.g., `V1/*/L4`)
+  - Gabor filter, saccade, and simulation configuration
+  - Synapse group support for differential STDP treatment
+
+- **SONATA Format** (`circuit_config.json`, `.sonata.json`)
+  - Blue Brain Project / Allen Institute HDF5-based format
+  - Reads `circuit_config.json` with manifest variable resolution (`$BASE_DIR`, `$NETWORK_DIR`)
+  - Loads node populations from HDF5 files via libsonata
+  - Loads edge populations with weight, delay, and connectivity
+  - SNNFrame extensions via `"snnframe"` section in circuit_config.json
+
+- **NeuroML Format** (`.nml`, `.neuroml`)
+  - NeuroML v2 XML-based community standard
+  - Cell type definitions with `snnfw:` property extensions for SNNFrame-specific parameters
+  - Synapse type definitions with weight and delay properties
+  - Population and projection parsing from `<network>` elements
+  - Uses RapidXML for high-performance XML parsing
+
+- **HOC Format** (`.hoc`)
+  - NEURON simulator scripting language parser
+  - Extracts `begintemplate`/`endtemplate` blocks for cell type definitions
+  - Parses `for` loops to determine instantiation counts
+  - Parses `new NetCon(...)` and `connect` statements for connectivity
+  - Proper depth-tracking parenthesis matching for nested expressions
+
+- **Example Configuration Files**
+  - `configs/emnist_v1_network.snnf.json` — full EMNIST experiment in native JSON
+  - `configs/example_sonata/circuit_config.json` — SONATA format example
+  - `configs/example_network.nml` — NeuroML format example
+  - `configs/example_network.hoc` — HOC format example
+
+- **Comprehensive Tests**
+  - 32 unit tests for declarative loader system (all passing)
+  - Tests for NetworkIR validation, all four parsers, NetworkConstructor, and DeclarativeLoader
+  - GTest built from source (v1.14.0 via FetchContent) to resolve ABI mismatch with Conda-installed version
+
+### Fixed
+
+- **GTest ABI Mismatch**: Replaced Conda-installed GTest (v1.10.0) with FetchContent-built GTest v1.14.0 to fix ABI incompatibility with GCC 13, resolving test linking failures across the entire repository
+
 ## [1.0.0] - 2026-01-10
 
 ### Added
@@ -83,4 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced visualization features
 - Additional encoding strategies
 - Performance optimizations for larger networks
+- Declarative experiment runner (load config + run training/testing with no C++ coding)
+- SWC morphology format parser
+- PyNN format parser
 

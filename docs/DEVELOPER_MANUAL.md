@@ -8,14 +8,15 @@ A comprehensive guide for developing programs using the SNNFrame spiking neural 
 2. [Core Concepts](#core-concepts)
 3. [Architecture Overview](#architecture-overview)
 4. [Building Networks](#building-networks)
-5. [Spike Processing](#spike-processing)
-6. [Learning Mechanisms](#learning-mechanisms)
-7. [Data Management](#data-management)
-8. [Visualization](#visualization)
-9. [Configuration](#configuration)
-10. [Advanced Topics](#advanced-topics)
-11. [Best Practices](#best-practices)
-12. [Troubleshooting](#troubleshooting)
+5. [Declarative Network Loading](#declarative-network-loading)
+6. [Spike Processing](#spike-processing)
+7. [Learning Mechanisms](#learning-mechanisms)
+8. [Data Management](#data-management)
+9. [Visualization](#visualization)
+10. [Configuration](#configuration)
+11. [Advanced Topics](#advanced-topics)
+12. [Best Practices](#best-practices)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -208,6 +209,192 @@ brain->addHemisphere(hemId);
 datastore.put(brain);
 datastore.put(hemisphere);
 ```
+
+---
+
+## Declarative Network Loading
+
+Instead of constructing networks programmatically in C++, you can define network structure
+in configuration files and load them at runtime. The declarative loader supports four formats.
+
+### Overview
+
+The declarative loading pipeline works in three stages:
+
+```
+Description File → Parser → NetworkIR → NetworkConstructor → Running Network
+```
+
+1. **Parser**: Reads a format-specific file and produces a `NetworkIR`
+2. **NetworkIR**: A common intermediate representation shared by all formats
+3. **NetworkConstructor**: Builds the actual SNNFrame hierarchy from the IR
+
+### Using DeclarativeLoader
+
+```cpp
+#include "snnfw/declarative/DeclarativeLoader.h"
+
+using namespace snnfw;
+using namespace snnfw::declarative;
+
+NeuralObjectFactory factory;
+Datastore datastore("./my_network_db");
+DeclarativeLoader loader(factory, datastore);
+
+// Load from any supported format — auto-detected from extension
+auto network = loader.loadNetwork("configs/emnist_v1_network.snnf.json");
+
+// The returned ConstructedNetwork contains:
+// network.brain           — fully constructed Brain hierarchy
+// network.spikeProcessor  — SpikeProcessor ready to start()
+// network.propagator      — NetworkPropagator with all synapses registered
+// network.inputNeurons    — input grid neurons (for spike injection)
+// network.outputPopulations — output neurons grouped by class
+// network.columns         — per-column neuron groups
+```
+
+### Parse Without Constructing
+
+To inspect or modify the IR before construction:
+
+```cpp
+// Parse only — returns NetworkIR without building the network
+auto ir = loader.parseOnly("configs/emnist_v1_network.snnf.json");
+
+// Inspect the IR
+std::cout << "Brain name: " << ir.brain.name << std::endl;
+std::cout << "Projections: " << ir.projections.size() << std::endl;
+
+// Validate
+auto errors = ir.validate();
+for (const auto& err : errors) {
+    std::cerr << "Validation error: " << err << std::endl;
+}
+```
+
+### Supported Formats
+
+#### Native JSON (`.snnf.json`)
+
+The most expressive format, designed specifically for SNNFrame:
+
+- **Column templates**: Generate multiple columns from a single template with parameterized orientations and frequencies
+- **Named neuron parameter sets**: Define parameter profiles once, reference by name
+- **Path-based connectivity**: Use glob patterns like `V1/*/L4` for cross-column projections
+- **Synapse groups**: Tag projections for differential STDP treatment
+- **Full config**: Gabor filters, saccade regions, simulation parameters
+
+```json
+{
+  "snnframe_version": "1.0",
+  "neuron_params": {
+    "cortical": { "window_size_ms": 500.0, "similarity_threshold": 0.93, "max_reference_patterns": 500 }
+  },
+  "brain": {
+    "name": "MyBrain",
+    "hemispheres": [{ "name": "Left", "lobes": [{ "name": "Visual", "regions": [{ "name": "V1",
+      "nuclei": [{ "name": "Columns",
+        "column_template": {
+          "orientations": [0, 45, 90, 135],
+          "frequencies": [3.0, 8.0],
+          "layers": [
+            { "name": "L4", "populations": [
+              { "name": "cells", "count": 49, "neuron_params": "cortical" }
+            ]}
+          ]
+        }
+      }]
+    }]}]}]
+  },
+  "projections": [
+    { "name": "L4_to_L5", "source": "V1/*/L4", "target": "V1/*/L5",
+      "pattern": "random_sparse", "probability": 0.25, "weight": 0.1,
+      "scope": "intra_column", "synapse_group": "L4ToL5" }
+  ]
+}
+```
+
+**Connectivity scope**: `"global"` connects across all columns; `"intra_column"` connects only within the same column.
+
+**Connectivity patterns**: `random_sparse`, `all_to_all`, `one_to_one`, `many_to_one`, `distance_dependent`, `topographic`, `small_world`.
+
+#### SONATA (`circuit_config.json`, `.sonata.json`)
+
+The [SONATA](https://github.com/AllenInstitute/sonata) format from the Blue Brain Project / Allen Institute uses HDF5 files for node and edge data:
+
+```json
+{
+  "manifest": { "$BASE_DIR": ".", "$NETWORK_DIR": "$BASE_DIR/networks" },
+  "networks": {
+    "nodes": [{ "nodes_file": "$NETWORK_DIR/nodes.h5" }],
+    "edges": [{ "edges_file": "$NETWORK_DIR/edges.h5" }]
+  },
+  "snnframe": {
+    "neuron_params": { "cortical": { "window_size_ms": 200.0, "similarity_threshold": 0.93 } },
+    "input_layer": { "rows": 14, "cols": 14 },
+    "output_layer": { "num_classes": 26, "neurons_per_class": 3 }
+  }
+}
+```
+
+The parser reads node populations from HDF5 `nodes.h5` files and edge populations from `edges.h5` files using libsonata, then builds the SNNFrame hierarchy. SNNFrame-specific extensions go in the `"snnframe"` section.
+
+#### NeuroML (`.nml`, `.neuroml`)
+
+[NeuroML v2](https://docs.neuroml.org/) is an XML community standard. SNNFrame extends it with `snnfw:` property tags:
+
+```xml
+<neuroml xmlns="http://www.neuroml.org/schema/neuroml2" id="example">
+  <cell id="cortical_cell">
+    <property tag="snnfw:window_size_ms" value="200.0"/>
+    <property tag="snnfw:similarity_threshold" value="0.93"/>
+    <property tag="snnfw:max_reference_patterns" value="500"/>
+    <property tag="snnfw:similarity_metric" value="cosine"/>
+  </cell>
+
+  <expOneSynapse id="exc_syn" tauDecay="5ms" gbase="0.8nS" erev="0mV">
+    <property tag="snnfw:weight" value="0.5"/>
+    <property tag="snnfw:delay" value="1.5"/>
+  </expOneSynapse>
+
+  <network id="MyNetwork">
+    <population id="L4" component="cortical_cell" size="49">
+      <property tag="snnfw:layer" value="L4"/>
+    </population>
+    <projection id="L4_to_L5" presynapticPopulation="L4"
+                postsynapticPopulation="L5" synapse="exc_syn">
+      <connection id="0" preCellId="../L4[0]" postCellId="../L5[0]"/>
+    </projection>
+  </network>
+</neuroml>
+```
+
+#### HOC (`.hoc`)
+
+The [NEURON simulator](https://www.neuron.yale.edu/) HOC scripting language is procedural, not declarative. The parser extracts structural information:
+
+```hoc
+begintemplate CorticalL4
+    proc init() {
+        window_size_ms = 200
+        similarity_threshold = 0.93
+    }
+    create soma, axon, dendrite
+endtemplate CorticalL4
+
+for i = 0, 48 {
+    l4_cells.append(new CorticalL4())
+}
+
+for i = 0, 48 {
+    nc = new NetCon(l4_cells.o(i).soma(0.5), l5_cells.o(i).syn, 0, 1.5, 0.5)
+}
+```
+
+The parser extracts:
+- **Cell templates** from `begintemplate`/`endtemplate` blocks → neuron parameter sets
+- **Instantiation counts** from `for` loops with `new TemplateName()` → population sizes
+- **Connections** from `new NetCon(source, target, threshold, delay, weight)` → projections
 
 ---
 
@@ -580,10 +767,12 @@ See the `examples/` directory for complete working programs:
 ## API Reference
 
 For detailed API documentation, see:
-- `docs/API_REFERENCE.md` - Complete class reference
+- `docs/API_REFERENCE.md` - Complete class reference (includes declarative loader API)
 - `docs/ARCHITECTURE.md` - Architecture details
 - `docs/STDP_GUIDE.md` - STDP learning guide
-- `include/snnfw/*.h` - Header files with inline documentation
+- `docs/FORMAT_REFERENCE.md` - Declarative format specifications
+- `include/snnfw/declarative/*.h` - Declarative loader header files
+- `include/snnfw/*.h` - Core framework header files
 
 ---
 
@@ -616,6 +805,6 @@ SNNFrame is released under the MIT License. See `LICENSE` for details.
 
 ---
 
-**Last Updated**: 2026-01-10
-**Version**: 1.0.0
+**Last Updated**: 2026-02-06
+**Version**: 1.1.0
 

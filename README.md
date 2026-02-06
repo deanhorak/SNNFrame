@@ -11,6 +11,16 @@ A modern, production-ready C++ framework for building and simulating spiking neu
 - **Temporal Pattern Matching**: Neurons learn and recognize spike patterns within configurable temporal windows
 - **Persistent Storage**: RocksDB-backed datastore with LRU caching for efficient memory management
 
+### Declarative Network Loading
+- **Multi-Format Support**: Define networks in configuration files instead of C++ code
+- **Native JSON** (`.snnf.json`): Full-featured SNNFrame format with column templates, path-based connectivity
+- **SONATA** (`circuit_config.json`): Blue Brain Project / Allen Institute HDF5 format for large-scale models
+- **NeuroML** (`.nml`, `.neuroml`): XML-based community standard with SNNFrame property extensions
+- **HOC** (`.hoc`): NEURON simulator scripting language — extracts structural information from HOC scripts
+- **Auto-Detection**: Format is automatically detected from file extension
+- **NetworkIR**: Common intermediate representation enables cross-format interoperability
+- **Custom Parsers**: Extensible parser interface for adding new formats
+
 ### Advanced Features
 - **Multi-Column Networks**: Support for orientation-selective and feature-selective columns
 - **Saccade-Based Attention**: Sequential spatial attention mechanism for improved feature learning
@@ -115,6 +125,120 @@ Brain (1)
 - **Lateral**: Within-layer connections for competition and cooperation
 - **Recurrent**: L5 → L2/3 for temporal integration
 
+## Declarative Network Loading
+
+Instead of building networks in C++, define them in configuration files and load them at runtime. Four formats are supported:
+
+### Loading a Network
+
+```cpp
+#include "snnfw/declarative/DeclarativeLoader.h"
+
+using namespace snnfw;
+using namespace snnfw::declarative;
+
+NeuralObjectFactory factory;
+Datastore datastore("./my_network_db");
+DeclarativeLoader loader(factory, datastore);
+
+// Load from any supported format — auto-detected from extension
+auto network = loader.loadNetwork("configs/emnist_v1_network.snnf.json");
+
+// network.brain           — constructed Brain hierarchy
+// network.spikeProcessor  — ready SpikeProcessor
+// network.propagator      — ready NetworkPropagator
+// network.inputNeurons    — input layer neurons
+// network.outputPopulations — output neurons grouped by class
+// network.columns         — per-column neuron groups
+```
+
+### Supported Formats
+
+| Format | Extension | Description |
+|--------|-----------|-------------|
+| **Native JSON** | `.snnf.json` | Full-featured SNNFrame format with column templates, path-based connectivity, Gabor/saccade config |
+| **SONATA** | `circuit_config.json`, `.sonata.json` | HDF5-based format from Blue Brain Project / Allen Institute |
+| **NeuroML** | `.nml`, `.neuroml` | XML-based community standard with `snnfw:` property extensions |
+| **HOC** | `.hoc` | NEURON simulator scripting language — structural extraction |
+
+### Native JSON Example (`.snnf.json`)
+
+```json
+{
+  "snnframe_version": "1.0",
+  "neuron_params": {
+    "cortical_default": {
+      "window_size_ms": 500.0,
+      "similarity_threshold": 0.93,
+      "max_reference_patterns": 500
+    }
+  },
+  "brain": {
+    "name": "MyBrain",
+    "hemispheres": [{
+      "name": "Left",
+      "lobes": [{
+        "name": "Occipital",
+        "regions": [{
+          "name": "V1",
+          "nuclei": [{
+            "name": "FeatureColumns",
+            "column_template": {
+              "orientations": [0, 45, 90, 135],
+              "frequencies": [3.0, 8.0],
+              "layers": [
+                { "name": "L4", "populations": [
+                  { "name": "L4_stellate", "count": 49, "neuron_params": "cortical_default" }
+                ]}
+              ]
+            }
+          }]
+        }]
+      }]
+    }]
+  },
+  "projections": [
+    { "name": "Input_to_L4", "source": "InputGrid", "target": "V1/*/L4",
+      "pattern": "random_sparse", "probability": 0.3, "weight": 0.1 }
+  ]
+}
+```
+
+### NeuroML Example (`.nml`)
+
+```xml
+<neuroml xmlns="http://www.neuroml.org/schema/neuroml2" id="example">
+  <cell id="cortical_cell">
+    <property tag="snnfw:window_size_ms" value="200.0"/>
+    <property tag="snnfw:similarity_threshold" value="0.93"/>
+  </cell>
+  <network id="MyNetwork">
+    <population id="L4" component="cortical_cell" size="49"/>
+    <projection id="L4_to_L5" presynapticPopulation="L4" postsynapticPopulation="L5" synapse="exc"/>
+  </network>
+</neuroml>
+```
+
+### HOC Example (`.hoc`)
+
+```hoc
+begintemplate CorticalL4
+    proc init() {
+        window_size_ms = 200
+        similarity_threshold = 0.93
+    }
+    create soma, axon, dendrite
+endtemplate CorticalL4
+
+for i = 0, 48 {
+    l4_cells.append(new CorticalL4())
+}
+
+for i = 0, 48 {
+    nc = new NetCon(l4_cells.o(i).soma(0.5), l5_cells.o(i).syn, 0, 1.5, 0.5)
+}
+```
+
 ## Configuration
 
 The framework uses JSON configuration files. See `configs/emnist_letters_saccades_best_v2.json` for the best-performing configuration:
@@ -135,13 +259,6 @@ The framework uses JSON configuration files. See `configs/emnist_letters_saccade
     "columns": {
       "num_orientations": 8,
       "num_frequencies": 2
-    },
-    "layers": {
-      "layer1_neurons": 32,
-      "layer23_neurons": 448,
-      "layer4_size": 7,
-      "layer5_neurons": 80,
-      "layer6_neurons": 32
     }
   }
 }
@@ -149,7 +266,7 @@ The framework uses JSON configuration files. See `configs/emnist_letters_saccade
 
 ## API Documentation
 
-### Creating a Network
+### Creating a Network (Programmatic)
 
 ```cpp
 #include "snnfw/NetworkBuilder.h"
@@ -157,13 +274,9 @@ The framework uses JSON configuration files. See `configs/emnist_letters_saccade
 
 using namespace snnfw;
 
-// Initialize datastore
 Datastore datastore("./my_network_db");
-
-// Create network builder
 NetworkBuilder builder(datastore);
 
-// Build hierarchical structure
 auto brain = builder.createBrain();
 auto hemisphere = builder.createHemisphere(brain);
 auto lobe = builder.createLobe(hemisphere);
@@ -173,74 +286,28 @@ auto column = builder.createColumn(nucleus);
 auto layer = builder.createLayer(column);
 auto cluster = builder.createCluster(layer);
 
-// Create neurons
 for (int i = 0; i < 100; ++i) {
     auto neuron = builder.createNeuron(cluster);
 }
 ```
 
-### Training with Spike Patterns
+### Creating a Network (Declarative)
 
 ```cpp
-// Create spike processor and network propagator
-auto spikeProcessor = std::make_shared<SpikeProcessor>(10000, 20);  // 10000 time slices, 20 threads
-auto networkPropagator = std::make_shared<NetworkPropagator>(spikeProcessor);
+#include "snnfw/declarative/DeclarativeLoader.h"
 
-// Configure STDP parameters
-networkPropagator->setSTDPParameters(0.05, 0.05, 20.0, 20.0);  // A+, A-, τ+, τ-
-spikeProcessor->setSTDPParameters(0.05, 0.05, 20.0, 20.0);
+using namespace snnfw;
+using namespace snnfw::declarative;
 
-spikeProcessor->start();
+NeuralObjectFactory factory;
+Datastore datastore("./my_network_db");
+DeclarativeLoader loader(factory, datastore);
 
-// Training mode: STDP enabled (default)
-networkPropagator->setStdpEnabled(true);
-spikeProcessor->setStdpEnabled(true);
-
-// Inject spikes
-for (auto& neuron : neurons) {
-    neuron->injectSpike(100.0);  // Spike at 100ms
-}
-
-// Inference mode: Disable STDP to prevent weight drift
-networkPropagator->setStdpEnabled(false);
-spikeProcessor->setStdpEnabled(false);
-
-// Check neuron state
-if (neuron->hasFired()) {
-    std::cout << "Neuron fired!" << std::endl;
-}
-```
-
-### Monitoring Activity
-
-```cpp
-#include "snnfw/ActivityMonitor.h"
-
-ActivityMonitor monitor(1000);  // 1000ms history
-
-// Build hierarchical cache for cluster-level monitoring
-monitor.buildHierarchicalCache(brain->getId());
-
-// Get activity snapshot
-auto snapshot = monitor.getActivitySnapshot();
-for (const auto& [clusterId, spikeCount] : snapshot.clusterActivity) {
-    std::cout << "Cluster " << clusterId << ": " << spikeCount << " spikes" << std::endl;
-}
-```
-
-### Visualization
-
-```cpp
-#include "snnfw/VisualizationManager.h"
-
-VisualizationManager vizManager(1920, 1080);
-vizManager.initialize();
-
-// Render loop
-while (!vizManager.shouldClose()) {
-    vizManager.update(deltaTime);
-    vizManager.render();
-}
+// Load from any supported format
+auto network = loader.loadNetwork("configs/my_network.snnf.json");
+// Or: loader.loadNetwork("configs/model.nml");
+// Or: loader.loadNetwork("configs/circuit_config.json");
+// Or: loader.loadNetwork("configs/model.hoc");
 ```
 
 ## Performance Characteristics
@@ -280,11 +347,14 @@ Key test categories:
 
 ## Documentation
 
+- `docs/DEVELOPER_MANUAL.md` - Comprehensive developer manual
+- `docs/DEVELOPER_GUIDE_PATTERNS.md` - Common patterns and recipes
+- `docs/DEVELOPER_GUIDE_ADVANCED.md` - Advanced topics and custom parsers
+- `docs/API_REFERENCE.md` - API class reference
+- `docs/DOCUMENTATION_INDEX.md` - Full documentation index
 - `docs/QUICK_REFERENCE.md` - Quick API reference
 - `docs/CONFIGURATION_GUIDE.md` - Configuration system guide
-- `docs/VISUALIZATION_QUICK_START.md` - Visualization setup
-- `docs/RECORDING_PLAYBACK_USAGE.md` - Recording and playback
-- `docs/HIERARCHICAL_ACTIVITY_USAGE.md` - Activity monitoring
+- `docs/FORMAT_REFERENCE.md` - Declarative format specifications
 
 ## Contributing
 
@@ -321,5 +391,5 @@ For issues, questions, or suggestions:
 ---
 
 **Status**: Production-ready
-**Latest Version**: 1.0.0
-**Last Updated**: 2026-01-10
+**Latest Version**: 1.1.0
+**Last Updated**: 2026-02-06
