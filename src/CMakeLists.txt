@@ -64,6 +64,9 @@ set(LIB_SOURCES
     NetworkStructureExporter.cpp
     declarative/NetworkIR.cpp
     declarative/NativeJSONParser.cpp
+    declarative/SONATAParser.cpp
+    declarative/NeuroMLParser.cpp
+    declarative/HOCParser.cpp
     declarative/NetworkConstructor.cpp
     declarative/DeclarativeLoader.cpp
 )

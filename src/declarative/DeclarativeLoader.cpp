@@ -1,5 +1,8 @@
 #include "snnfw/declarative/DeclarativeLoader.h"
 #include "snnfw/declarative/NativeJSONParser.h"
+#include "snnfw/declarative/SONATAParser.h"
+#include "snnfw/declarative/NeuroMLParser.h"
+#include "snnfw/declarative/HOCParser.h"
 #include "snnfw/Logger.h"
 #include <stdexcept>
 
@@ -10,6 +13,9 @@ DeclarativeLoader::DeclarativeLoader(NeuralObjectFactory& factory, Datastore& da
     : factory_(factory), datastore_(datastore) {
     // Register built-in parsers
     parsers_.push_back(std::make_unique<NativeJSONParser>());
+    parsers_.push_back(std::make_unique<SONATAParser>());
+    parsers_.push_back(std::make_unique<NeuroMLParser>());
+    parsers_.push_back(std::make_unique<HOCParser>());
 }
 
 ConstructedNetwork DeclarativeLoader::loadNetwork(const std::string& descriptionFile,
