@@ -62,6 +62,37 @@ private:
     /// Build a default hierarchy wrapper around flat populations
     void buildDefaultHierarchy(NetworkIR& ir,
                                const std::string& networkName) const;
+
+    // --- Extended snnframe section parsers ---
+
+    /// Parse brain hierarchy from snnframe.brain JSON
+    BrainIR parseBrain(const nlohmann::json& j) const;
+    HemisphereIR parseHemisphere(const nlohmann::json& j) const;
+    LobeIR parseLobe(const nlohmann::json& j) const;
+    RegionIR parseRegion(const nlohmann::json& j) const;
+    NucleusIR parseNucleus(const nlohmann::json& j) const;
+    ColumnIR parseColumn(const nlohmann::json& j) const;
+    ColumnTemplateIR parseColumnTemplate(const nlohmann::json& j) const;
+    LayerIR parseLayer(const nlohmann::json& j) const;
+    PopulationIR parsePopulation(const nlohmann::json& j) const;
+
+    /// Parse projection from snnframe.projections JSON array element
+    ProjectionIR parseProjection(const nlohmann::json& j) const;
+
+    /// Parse simulation config from snnframe.simulation JSON
+    SimulationConfigIR parseSimulation(const nlohmann::json& j) const;
+
+    /// Parse saccade config from snnframe.saccades JSON
+    SaccadeConfigIR parseSaccades(const nlohmann::json& j) const;
+
+    /// Parse input_layer with full neuron_params support
+    InputLayerIR parseInputLayer(const nlohmann::json& j) const;
+
+    /// Parse output_layer with full neuron_params support
+    OutputLayerIR parseOutputLayer(const nlohmann::json& j) const;
+
+    /// Parse neuron params object
+    NeuronParamsIR parseNeuronParams(const nlohmann::json& j) const;
 };
 
 } // namespace declarative

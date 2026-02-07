@@ -57,28 +57,37 @@ NetworkIR SONATAParser::parseCircuitConfig(const nlohmann::json& config,
     // Parse SNNFrame-specific extensions if present
     if (config.contains("snnframe")) {
         const auto& snnfw = config["snnframe"];
+
+        // Neuron parameter sets
         if (snnfw.contains("neuron_params")) {
             for (auto& [key, val] : snnfw["neuron_params"].items()) {
-                NeuronParamsIR params;
+                auto params = parseNeuronParams(val);
                 params.name = key;
-                params.windowSizeMs = val.value("window_size_ms", 500.0);
-                params.similarityThreshold = val.value("similarity_threshold", 0.93);
-                params.maxReferencePatterns = val.value("max_reference_patterns", 500);
-                params.similarityMetric = val.value("similarity_metric", "cosine");
                 ir.neuronParamSets[key] = params;
             }
         }
+
+        // Input / output layers
         if (snnfw.contains("input_layer")) {
-            const auto& il = snnfw["input_layer"];
-            ir.inputLayer.rows = il.value("rows", 28);
-            ir.inputLayer.cols = il.value("cols", 28);
-            ir.inputLayer.latencyMs = il.value("latency_ms", 15.0);
+            ir.inputLayer = parseInputLayer(snnfw["input_layer"]);
         }
         if (snnfw.contains("output_layer")) {
-            const auto& ol = snnfw["output_layer"];
-            ir.outputLayer.numClasses = ol.value("num_classes", 26);
-            ir.outputLayer.neuronsPerClass = ol.value("neurons_per_class", 3);
+            ir.outputLayer = parseOutputLayer(snnfw["output_layer"]);
         }
+
+        // Full brain hierarchy (column templates, layers, etc.)
+        if (snnfw.contains("brain")) {
+            ir.brain = parseBrain(snnfw["brain"]);
+        }
+
+        // Projections (connectivity rules)
+        if (snnfw.contains("projections")) {
+            for (const auto& proj : snnfw["projections"]) {
+                ir.projections.push_back(parseProjection(proj));
+            }
+        }
+
+        // Feature extraction
         if (snnfw.contains("gabor")) {
             const auto& g = snnfw["gabor"];
             ir.gabor.freqLow = g.value("freq_low", 8.0);
@@ -87,6 +96,16 @@ NetworkIR SONATAParser::parseCircuitConfig(const nlohmann::json& config,
             ir.gabor.gamma = g.value("gamma", 0.5);
             ir.gabor.threshold = g.value("threshold", 0.5);
             ir.gabor.kernelSize = g.value("kernel_size", 7);
+        }
+
+        // Saccades
+        if (snnfw.contains("saccades")) {
+            ir.saccades = parseSaccades(snnfw["saccades"]);
+        }
+
+        // Simulation config
+        if (snnfw.contains("simulation")) {
+            ir.simulation = parseSimulation(snnfw["simulation"]);
         }
     }
 
@@ -328,6 +347,214 @@ void SONATAParser::buildDefaultHierarchy(NetworkIR& ir,
     brain.hemispheres.push_back(hemi);
 
     ir.brain = brain;
+}
+
+// ---------------------------------------------------------------------------
+// Extended snnframe section parsers
+// ---------------------------------------------------------------------------
+
+NeuronParamsIR SONATAParser::parseNeuronParams(const nlohmann::json& j) const {
+    NeuronParamsIR p;
+    p.windowSizeMs = j.value("window_size_ms", 500.0);
+    p.similarityThreshold = j.value("similarity_threshold", 0.93);
+    p.maxReferencePatterns = j.value("max_reference_patterns", 500);
+    p.similarityMetric = j.value("similarity_metric", "cosine");
+    return p;
+}
+
+PopulationIR SONATAParser::parsePopulation(const nlohmann::json& j) const {
+    PopulationIR p;
+    p.name = j.value("name", "");
+    p.count = j.value("count", 0);
+    p.neuronParams = j.value("neuron_params", "");
+    p.gridLayout = j.value("grid_layout", "");
+    return p;
+}
+
+LayerIR SONATAParser::parseLayer(const nlohmann::json& j) const {
+    LayerIR l;
+    l.name = j.value("name", "");
+    if (j.contains("populations")) {
+        for (const auto& pop : j["populations"]) {
+            l.populations.push_back(parsePopulation(pop));
+        }
+    }
+    return l;
+}
+
+ColumnIR SONATAParser::parseColumn(const nlohmann::json& j) const {
+    ColumnIR c;
+    c.name = j.value("name", "");
+    if (j.contains("properties")) {
+        for (auto& [key, val] : j["properties"].items()) {
+            c.properties[key] = val.get<double>();
+        }
+    }
+    if (j.contains("layers")) {
+        for (const auto& layer : j["layers"]) {
+            c.layers.push_back(parseLayer(layer));
+        }
+    }
+    return c;
+}
+
+ColumnTemplateIR SONATAParser::parseColumnTemplate(const nlohmann::json& j) const {
+    ColumnTemplateIR t;
+    t.templateName = j.value("template_name", "");
+    t.namingPattern = j.value("naming_pattern", "Orient_{orientation}_Freq_{frequency}");
+    if (j.contains("orientations")) {
+        t.orientations = j["orientations"].get<std::vector<double>>();
+    }
+    if (j.contains("frequencies")) {
+        t.frequencies = j["frequencies"].get<std::vector<double>>();
+    }
+    if (j.contains("layers")) {
+        for (const auto& layer : j["layers"]) {
+            t.layers.push_back(parseLayer(layer));
+        }
+    }
+    return t;
+}
+
+NucleusIR SONATAParser::parseNucleus(const nlohmann::json& j) const {
+    NucleusIR n;
+    n.name = j.value("name", "");
+    if (j.contains("column_template")) {
+        n.columnTemplate = parseColumnTemplate(j["column_template"]);
+    }
+    if (j.contains("columns")) {
+        for (const auto& col : j["columns"]) {
+            n.columns.push_back(parseColumn(col));
+        }
+    }
+    return n;
+}
+
+RegionIR SONATAParser::parseRegion(const nlohmann::json& j) const {
+    RegionIR r;
+    r.name = j.value("name", "");
+    if (j.contains("nuclei")) {
+        for (const auto& nuc : j["nuclei"]) {
+            r.nuclei.push_back(parseNucleus(nuc));
+        }
+    }
+    return r;
+}
+
+LobeIR SONATAParser::parseLobe(const nlohmann::json& j) const {
+    LobeIR l;
+    l.name = j.value("name", "");
+    if (j.contains("regions")) {
+        for (const auto& reg : j["regions"]) {
+            l.regions.push_back(parseRegion(reg));
+        }
+    }
+    return l;
+}
+
+HemisphereIR SONATAParser::parseHemisphere(const nlohmann::json& j) const {
+    HemisphereIR h;
+    h.name = j.value("name", "");
+    if (j.contains("lobes")) {
+        for (const auto& lobe : j["lobes"]) {
+            h.lobes.push_back(parseLobe(lobe));
+        }
+    }
+    return h;
+}
+
+BrainIR SONATAParser::parseBrain(const nlohmann::json& j) const {
+    BrainIR b;
+    b.name = j.value("name", "");
+    if (j.contains("hemispheres")) {
+        for (const auto& hemi : j["hemispheres"]) {
+            b.hemispheres.push_back(parseHemisphere(hemi));
+        }
+    }
+    return b;
+}
+
+ProjectionIR SONATAParser::parseProjection(const nlohmann::json& j) const {
+    ProjectionIR p;
+    p.name = j.value("name", "");
+    p.source = j.value("source", "");
+    p.target = j.value("target", "");
+    p.pattern = j.value("pattern", "random_sparse");
+    p.probability = j.value("probability", 1.0);
+    p.weight = j.value("weight", 1.0);
+    p.maxWeight = j.value("max_weight", 10.0);
+    p.delay = j.value("delay", 1.5);
+    p.scope = j.value("scope", "intra_column");
+    p.synapseGroup = j.value("synapse_group", "");
+    return p;
+}
+
+InputLayerIR SONATAParser::parseInputLayer(const nlohmann::json& j) const {
+    InputLayerIR il;
+    il.name = j.value("name", "InputGrid");
+    il.rows = j.value("rows", 28);
+    il.cols = j.value("cols", 28);
+    il.latencyMs = j.value("latency_ms", 15.0);
+    il.pixelThreshold = j.value("pixel_threshold", 0.4);
+    if (j.contains("neuron_params") && j["neuron_params"].is_object()) {
+        il.neuronParams = parseNeuronParams(j["neuron_params"]);
+    }
+    return il;
+}
+
+OutputLayerIR SONATAParser::parseOutputLayer(const nlohmann::json& j) const {
+    OutputLayerIR ol;
+    ol.name = j.value("name", "OutputLayer");
+    ol.numClasses = j.value("num_classes", 26);
+    ol.neuronsPerClass = j.value("neurons_per_class", 3);
+    if (j.contains("neuron_params") && j["neuron_params"].is_object()) {
+        ol.neuronParams = parseNeuronParams(j["neuron_params"]);
+    }
+    return ol;
+}
+
+SimulationConfigIR SONATAParser::parseSimulation(const nlohmann::json& j) const {
+    SimulationConfigIR sim;
+    if (j.contains("spike_processor")) {
+        const auto& sp = j["spike_processor"];
+        sim.spikeProcessorTimeSlices = sp.value("time_slices", 10000);
+        sim.spikeProcessorThreads = sp.value("threads", 24);
+        sim.realTimeSync = sp.value("real_time_sync", false);
+    }
+    if (j.contains("stdp")) {
+        const auto& stdp = j["stdp"];
+        sim.stdpEnabled = stdp.value("enabled", true);
+        sim.stdpLtdScale = stdp.value("ltd_scale", 0.3);
+        sim.stdpLtdWindowMs = stdp.value("ltd_window_ms", 70.0);
+        sim.traceStdp = stdp.value("trace_stdp", true);
+        sim.freezeStdpDuringTesting = stdp.value("freeze_during_testing", true);
+    }
+    if (j.contains("competition")) {
+        const auto& comp = j["competition"];
+        sim.l4Keep = comp.value("l4_keep", 8);
+        sim.l5Keep = comp.value("l5_keep", 8);
+        sim.enableL5Inhibition = comp.value("enable_l5_inhibition", true);
+    }
+    sim.interImageGapMs = j.value("inter_image_gap_ms", 550.0);
+    return sim;
+}
+
+SaccadeConfigIR SONATAParser::parseSaccades(const nlohmann::json& j) const {
+    SaccadeConfigIR s;
+    s.enabled = j.value("enabled", false);
+    s.numFixations = j.value("num_fixations", 4);
+    if (j.contains("regions")) {
+        for (const auto& reg : j["regions"]) {
+            FixationRegionIR fr;
+            fr.name = reg.value("name", "");
+            fr.rowStart = reg.value("row_start", 0);
+            fr.rowEnd = reg.value("row_end", 0);
+            fr.colStart = reg.value("col_start", 0);
+            fr.colEnd = reg.value("col_end", 0);
+            s.regions.push_back(fr);
+        }
+    }
+    return s;
 }
 
 } // namespace declarative

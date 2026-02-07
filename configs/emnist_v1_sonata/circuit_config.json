@@ -1,0 +1,262 @@
+{
+  "network_name": "EMNIST_V1_Visual_Processing",
+  "manifest": {
+    "$BASE_DIR": ".",
+    "$NETWORK_DIR": "$BASE_DIR/networks"
+  },
+  "networks": {
+    "nodes": [],
+    "edges": []
+  },
+  "snnframe": {
+    "neuron_params": {
+      "cortical_default": {
+        "window_size_ms": 500.0,
+        "similarity_threshold": 1.2,
+        "max_reference_patterns": 500,
+        "similarity_metric": "cosine"
+      },
+      "input_neuron": {
+        "window_size_ms": 500.0,
+        "similarity_threshold": 1.2,
+        "max_reference_patterns": 500,
+        "similarity_metric": "cosine"
+      },
+      "output_neuron": {
+        "window_size_ms": 500.0,
+        "similarity_threshold": 1.2,
+        "max_reference_patterns": 500,
+        "similarity_metric": "cosine"
+      }
+    },
+    "input_layer": {
+      "name": "InputGrid",
+      "rows": 28,
+      "cols": 28,
+      "latency_ms": 15.0,
+      "pixel_threshold": 0.4,
+      "neuron_params": {
+        "window_size_ms": 500.0,
+        "similarity_threshold": 1.2,
+        "max_reference_patterns": 500
+      }
+    },
+    "output_layer": {
+      "name": "OutputLayer",
+      "num_classes": 26,
+      "neurons_per_class": 3,
+      "neuron_params": {
+        "window_size_ms": 500.0,
+        "similarity_threshold": 1.2,
+        "max_reference_patterns": 500
+      }
+    },
+    "brain": {
+      "name": "Visual Processing Network",
+      "hemispheres": [
+        {
+          "name": "Left Hemisphere",
+          "lobes": [
+            {
+              "name": "Occipital Lobe",
+              "regions": [
+                {
+                  "name": "Primary Visual Cortex (V1)",
+                  "nuclei": [
+                    {
+                      "name": "V1 Multi-Column Nucleus",
+                      "column_template": {
+                        "template_name": "CorticalMicroCircuit",
+                        "naming_pattern": "Orient_{orientation}_Freq_{frequency}",
+                        "orientations": [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5],
+                        "frequencies": [1.0, 1.0],
+                        "layers": [
+                          {
+                            "name": "L1",
+                            "populations": [
+                              {
+                                "name": "L1_modulatory",
+                                "count": 32,
+                                "neuron_params": "cortical_default"
+                              }
+                            ]
+                          },
+                          {
+                            "name": "L2_3",
+                            "populations": [
+                              {
+                                "name": "L2_3_pyramidal",
+                                "count": 448,
+                                "neuron_params": "cortical_default"
+                              }
+                            ]
+                          },
+                          {
+                            "name": "L4",
+                            "populations": [
+                              {
+                                "name": "L4_stellate",
+                                "count": 49,
+                                "neuron_params": "cortical_default",
+                                "grid_layout": "7x7"
+                              }
+                            ]
+                          },
+                          {
+                            "name": "L5",
+                            "populations": [
+                              {
+                                "name": "L5_pyramidal",
+                                "count": 80,
+                                "neuron_params": "cortical_default"
+                              }
+                            ]
+                          },
+                          {
+                            "name": "L6",
+                            "populations": [
+                              {
+                                "name": "L6_corticothalamic",
+                                "count": 32,
+                                "neuron_params": "cortical_default"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "projections": [
+      {
+        "name": "Input_to_L4",
+        "source": "InputGrid",
+        "target": "V1/*/L4",
+        "pattern": "random_sparse",
+        "probability": 0.3,
+        "weight": 0.1,
+        "max_weight": 0.5,
+        "delay": 1.5,
+        "scope": "global",
+        "synapse_group": "InputToL4"
+      },
+      {
+        "name": "L4_to_L2_3",
+        "source": "V1/*/L4",
+        "target": "V1/*/L2_3",
+        "pattern": "random_sparse",
+        "probability": 0.25,
+        "weight": 0.1,
+        "max_weight": 0.5,
+        "delay": 1.0,
+        "scope": "intra_column",
+        "synapse_group": ""
+      },
+      {
+        "name": "L4_to_L5",
+        "source": "V1/*/L4",
+        "target": "V1/*/L5",
+        "pattern": "random_sparse",
+        "probability": 0.002,
+        "weight": 0.1,
+        "max_weight": 0.5,
+        "delay": 1.0,
+        "scope": "intra_column",
+        "synapse_group": "L4ToL5"
+      },
+      {
+        "name": "L2_3_to_L5",
+        "source": "V1/*/L2_3",
+        "target": "V1/*/L5",
+        "pattern": "random_sparse",
+        "probability": 0.002,
+        "weight": 0.1,
+        "max_weight": 0.5,
+        "delay": 1.0,
+        "scope": "intra_column",
+        "synapse_group": ""
+      },
+      {
+        "name": "L5_to_L6",
+        "source": "V1/*/L5",
+        "target": "V1/*/L6",
+        "pattern": "random_sparse",
+        "probability": 0.3,
+        "weight": 0.1,
+        "max_weight": 0.5,
+        "delay": 1.0,
+        "scope": "intra_column",
+        "synapse_group": ""
+      },
+      {
+        "name": "L6_to_L4_feedback",
+        "source": "V1/*/L6",
+        "target": "V1/*/L4",
+        "pattern": "random_sparse",
+        "probability": 0.2,
+        "weight": 0.1,
+        "max_weight": 0.5,
+        "delay": 1.5,
+        "scope": "intra_column",
+        "synapse_group": ""
+      },
+      {
+        "name": "L5_to_Output",
+        "source": "V1/*/L5",
+        "target": "OutputLayer",
+        "pattern": "random_sparse",
+        "probability": 0.02,
+        "weight": 0.02,
+        "max_weight": 0.5,
+        "delay": 1.5,
+        "scope": "global",
+        "synapse_group": "L5ToOutput"
+      }
+    ],
+    "gabor": {
+      "freq_low": 8.0,
+      "freq_high": 3.0,
+      "sigma": 2.0,
+      "gamma": 0.5,
+      "threshold": 0.5,
+      "kernel_size": 7
+    },
+    "saccades": {
+      "enabled": true,
+      "num_fixations": 4,
+      "regions": [
+        { "name": "top",    "row_start": 0,  "row_end": 13, "col_start": 0, "col_end": 27 },
+        { "name": "bottom", "row_start": 14, "row_end": 27, "col_start": 0, "col_end": 27 },
+        { "name": "center", "row_start": 7,  "row_end": 20, "col_start": 7, "col_end": 20 },
+        { "name": "full",   "row_start": 0,  "row_end": 27, "col_start": 0, "col_end": 27 }
+      ]
+    },
+    "simulation": {
+      "spike_processor": {
+        "time_slices": 10000,
+        "threads": 24,
+        "real_time_sync": false
+      },
+      "stdp": {
+        "enabled": true,
+        "ltd_scale": 0.3,
+        "ltd_window_ms": 70.0,
+        "trace_stdp": true,
+        "freeze_during_testing": true
+      },
+      "competition": {
+        "l4_keep": 8,
+        "l5_keep": 8,
+        "enable_l5_inhibition": true
+      },
+      "inter_image_gap_ms": 550.0
+    }
+  }
+}
+

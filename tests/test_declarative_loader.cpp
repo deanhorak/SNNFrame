@@ -523,6 +523,165 @@ TEST_F(DeclarativeLoaderTest, SONATAParser_ParseFile_NonExistent) {
     EXPECT_THROW(parser.parse("nonexistent_circuit_config.json"), ParseError);
 }
 
+TEST_F(DeclarativeLoaderTest, SONATAParser_FullModel_WithHierarchyAndProjections) {
+    // Test the extended snnframe section with brain hierarchy, projections,
+    // simulation, and saccades — mirrors the EMNIST V1 model structure.
+    nlohmann::json config = {
+        {"network_name", "TestFullSONATA"},
+        {"manifest", {{"$BASE_DIR", "."}}},
+        {"networks", {{"nodes", nlohmann::json::array()}, {"edges", nlohmann::json::array()}}},
+        {"snnframe", {
+            {"neuron_params", {
+                {"cortical", {
+                    {"window_size_ms", 500.0},
+                    {"similarity_threshold", 1.2},
+                    {"max_reference_patterns", 500},
+                    {"similarity_metric", "cosine"}
+                }}
+            }},
+            {"input_layer", {
+                {"name", "InputGrid"},
+                {"rows", 28},
+                {"cols", 28},
+                {"latency_ms", 15.0},
+                {"pixel_threshold", 0.4},
+                {"neuron_params", {
+                    {"window_size_ms", 500.0},
+                    {"similarity_threshold", 1.2},
+                    {"max_reference_patterns", 500}
+                }}
+            }},
+            {"output_layer", {
+                {"name", "OutputLayer"},
+                {"num_classes", 26},
+                {"neurons_per_class", 3},
+                {"neuron_params", {
+                    {"window_size_ms", 500.0},
+                    {"similarity_threshold", 1.2},
+                    {"max_reference_patterns", 500}
+                }}
+            }},
+            {"brain", {
+                {"name", "V1_Network"},
+                {"hemispheres", {{
+                    {"name", "Left"},
+                    {"lobes", {{
+                        {"name", "Occipital"},
+                        {"regions", {{
+                            {"name", "V1"},
+                            {"nuclei", {{
+                                {"name", "FeatureColumns"},
+                                {"column_template", {
+                                    {"template_name", "CorticalMicroCircuit"},
+                                    {"naming_pattern", "Orient_{orientation}_Freq_{frequency}"},
+                                    {"orientations", {0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5}},
+                                    {"frequencies", {1.0, 1.0}},
+                                    {"layers", {
+                                        {{"name", "L1"}, {"populations", {{{"name", "L1_mod"}, {"count", 32}, {"neuron_params", "cortical"}}}}},
+                                        {{"name", "L4"}, {"populations", {{{"name", "L4_stel"}, {"count", 49}, {"neuron_params", "cortical"}, {"grid_layout", "7x7"}}}}},
+                                        {{"name", "L5"}, {"populations", {{{"name", "L5_pyr"}, {"count", 80}, {"neuron_params", "cortical"}}}}}
+                                    }}
+                                }}
+                            }}}
+                        }}}
+                    }}}
+                }}}
+            }},
+            {"projections", {
+                {{"name", "L4_to_L5"}, {"source", "V1/*/L4"}, {"target", "V1/*/L5"},
+                 {"pattern", "random_sparse"}, {"probability", 0.002}, {"weight", 0.1},
+                 {"max_weight", 0.5}, {"delay", 1.0}, {"scope", "intra_column"}, {"synapse_group", "L4ToL5"}},
+                {{"name", "L5_to_Output"}, {"source", "V1/*/L5"}, {"target", "OutputLayer"},
+                 {"pattern", "random_sparse"}, {"probability", 0.02}, {"weight", 0.02},
+                 {"max_weight", 0.5}, {"delay", 1.5}, {"scope", "global"}, {"synapse_group", "L5ToOutput"}}
+            }},
+            {"gabor", {
+                {"freq_low", 8.0}, {"freq_high", 3.0}, {"sigma", 2.0},
+                {"gamma", 0.5}, {"threshold", 0.5}, {"kernel_size", 7}
+            }},
+            {"saccades", {
+                {"enabled", true},
+                {"num_fixations", 4},
+                {"regions", {
+                    {{"name", "top"}, {"row_start", 0}, {"row_end", 13}, {"col_start", 0}, {"col_end", 27}},
+                    {{"name", "full"}, {"row_start", 0}, {"row_end", 27}, {"col_start", 0}, {"col_end", 27}}
+                }}
+            }},
+            {"simulation", {
+                {"spike_processor", {{"time_slices", 10000}, {"threads", 24}, {"real_time_sync", false}}},
+                {"stdp", {{"enabled", true}, {"ltd_scale", 0.3}, {"ltd_window_ms", 70.0}, {"trace_stdp", true}, {"freeze_during_testing", true}}},
+                {"competition", {{"l4_keep", 8}, {"l5_keep", 8}, {"enable_l5_inhibition", true}}},
+                {"inter_image_gap_ms", 550.0}
+            }}
+        }}
+    };
+
+    SONATAParser parser;
+    auto ir = parser.parseCircuitConfig(config, ".");
+
+    // Verify source format
+    EXPECT_EQ(ir.sourceFormat, "sonata");
+
+    // Verify neuron params
+    ASSERT_EQ(ir.neuronParamSets.size(), 1);
+    EXPECT_DOUBLE_EQ(ir.neuronParamSets["cortical"].similarityThreshold, 1.2);
+
+    // Verify input layer with nested neuron_params
+    EXPECT_EQ(ir.inputLayer.rows, 28);
+    EXPECT_EQ(ir.inputLayer.cols, 28);
+    EXPECT_DOUBLE_EQ(ir.inputLayer.latencyMs, 15.0);
+    EXPECT_DOUBLE_EQ(ir.inputLayer.pixelThreshold, 0.4);
+    EXPECT_DOUBLE_EQ(ir.inputLayer.neuronParams.similarityThreshold, 1.2);
+
+    // Verify output layer
+    EXPECT_EQ(ir.outputLayer.numClasses, 26);
+    EXPECT_EQ(ir.outputLayer.neuronsPerClass, 3);
+    EXPECT_DOUBLE_EQ(ir.outputLayer.neuronParams.similarityThreshold, 1.2);
+
+    // Verify brain hierarchy
+    EXPECT_EQ(ir.brain.name, "V1_Network");
+    ASSERT_EQ(ir.brain.hemispheres.size(), 1);
+    ASSERT_EQ(ir.brain.hemispheres[0].lobes.size(), 1);
+    ASSERT_EQ(ir.brain.hemispheres[0].lobes[0].regions.size(), 1);
+    auto& nucleus = ir.brain.hemispheres[0].lobes[0].regions[0].nuclei[0];
+    EXPECT_EQ(nucleus.name, "FeatureColumns");
+    ASSERT_TRUE(nucleus.columnTemplate.has_value());
+    EXPECT_EQ(nucleus.columnTemplate->templateName, "CorticalMicroCircuit");
+    EXPECT_EQ(nucleus.columnTemplate->orientations.size(), 8);
+    EXPECT_EQ(nucleus.columnTemplate->frequencies.size(), 2);
+    EXPECT_EQ(nucleus.columnTemplate->layers.size(), 3);
+    EXPECT_EQ(nucleus.columnTemplate->layers[1].populations[0].gridLayout, "7x7");
+
+    // Verify projections
+    ASSERT_EQ(ir.projections.size(), 2);
+    EXPECT_EQ(ir.projections[0].name, "L4_to_L5");
+    EXPECT_DOUBLE_EQ(ir.projections[0].probability, 0.002);
+    EXPECT_EQ(ir.projections[0].synapseGroup, "L4ToL5");
+    EXPECT_EQ(ir.projections[1].name, "L5_to_Output");
+    EXPECT_DOUBLE_EQ(ir.projections[1].weight, 0.02);
+
+    // Verify gabor
+    EXPECT_DOUBLE_EQ(ir.gabor.freqLow, 8.0);
+    EXPECT_EQ(ir.gabor.kernelSize, 7);
+
+    // Verify saccades
+    EXPECT_TRUE(ir.saccades.enabled);
+    EXPECT_EQ(ir.saccades.numFixations, 4);
+    ASSERT_EQ(ir.saccades.regions.size(), 2);
+    EXPECT_EQ(ir.saccades.regions[0].name, "top");
+
+    // Verify simulation
+    EXPECT_EQ(ir.simulation.spikeProcessorTimeSlices, 10000);
+    EXPECT_EQ(ir.simulation.spikeProcessorThreads, 24);
+    EXPECT_TRUE(ir.simulation.stdpEnabled);
+    EXPECT_DOUBLE_EQ(ir.simulation.stdpLtdScale, 0.3);
+    EXPECT_DOUBLE_EQ(ir.simulation.stdpLtdWindowMs, 70.0);
+    EXPECT_TRUE(ir.simulation.traceStdp);
+    EXPECT_EQ(ir.simulation.l4Keep, 8);
+    EXPECT_TRUE(ir.simulation.enableL5Inhibition);
+    EXPECT_DOUBLE_EQ(ir.simulation.interImageGapMs, 550.0);
+}
+
 
 // ============================================================================
 // NeuroML Parser tests
