@@ -69,6 +69,12 @@ set(LIB_SOURCES
     declarative/HOCParser.cpp
     declarative/NetworkConstructor.cpp
     declarative/DeclarativeLoader.cpp
+    experiment/SpikeEncoder.cpp
+    experiment/CompetitionManager.cpp
+    experiment/KNNClassifier.cpp
+    experiment/SupervisedTeacher.cpp
+    experiment/TrainingPipeline.cpp
+    experiment/ExperimentRunner.cpp
 )
 
 # Create library

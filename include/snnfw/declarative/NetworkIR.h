@@ -91,6 +91,12 @@ struct ProjectionIR {
     double delay = 1.5;
     std::string scope = "intra_column"; // "intra_column", "inter_column", "global"
     std::string synapseGroup = "";      // "InputToL4", "L4ToL5", "L5ToOutput"
+
+    // Tiled receptive field parameters (for pattern == "tiled_receptive_field")
+    int tilesPerSide = 4;       // number of tiles along each axis
+    int tilesPerColumn = 3;     // tiles assigned to each column
+    int inputGridSize = 28;     // size of the input grid (assumed square)
+    int targetGridSize = 7;     // size of the L4 grid per column (assumed square)
 };
 
 /// Input layer description
@@ -149,6 +155,7 @@ struct SimulationConfigIR {
     int l4Keep = 8;
     int l5Keep = 8;
     bool enableL5Inhibition = true;
+    int maskMinActive = 6;  // minimum active input pixels for column to participate
     // Timing
     double interImageGapMs = 550.0;
 };

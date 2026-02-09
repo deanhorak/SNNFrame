@@ -7,3 +7,8 @@ target_include_directories(emnist_letters_training PRIVATE ${CMAKE_SOURCE_DIR}/i
 add_executable(emnist_letters_visualized emnist_letters_visualized.cpp)
 target_link_libraries(emnist_letters_visualized PRIVATE snnfw)
 target_include_directories(emnist_letters_visualized PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# EMNIST SONATA-driven Training Experiment
+add_executable(emnist_sonata_training emnist_sonata_training.cpp)
+target_link_libraries(emnist_sonata_training PRIVATE snnfw)
+target_include_directories(emnist_sonata_training PRIVATE ${CMAKE_SOURCE_DIR}/include)

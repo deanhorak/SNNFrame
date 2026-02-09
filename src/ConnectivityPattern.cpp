@@ -1,6 +1,7 @@
 #include "snnfw/ConnectivityPattern.h"
 #include "snnfw/Logger.h"
 #include <cmath>
+#include <numeric>
 #include <stdexcept>
 #include <algorithm>
 
@@ -314,6 +315,100 @@ std::vector<Connection> SmallWorldPattern::generateConnections(
                 connections.size(), sourceNeurons.size(), targetNeurons.size(),
                 localProbability_, longRangeProbability_, localRadius_);
     
+    return connections;
+}
+
+// ============================================================================
+// TiledReceptiveFieldPattern
+// ============================================================================
+
+TiledReceptiveFieldPattern::TiledReceptiveFieldPattern(
+    int inputSize, int tilesPerSide, int tilesPerColumn,
+    int l4GridSize, int columnIndex, double weight, double delay)
+    : inputSize_(inputSize), tilesPerSide_(tilesPerSide),
+      tilesPerColumn_(tilesPerColumn), l4GridSize_(l4GridSize),
+      columnIndex_(columnIndex), weight_(weight), delay_(delay) {
+    if (tilesPerSide_ <= 0 || l4GridSize_ <= 0 || inputSize_ <= 0) {
+        throw std::invalid_argument("Grid dimensions must be positive");
+    }
+    computeTileSelection();
+}
+
+void TiledReceptiveFieldPattern::computeTileSelection() {
+    int totalTiles = tilesPerSide_ * tilesPerSide_;
+    int numTiles = std::min(tilesPerColumn_, totalTiles);
+    int tileSize = inputSize_ / tilesPerSide_;
+
+    // Deterministic per-column tile selection (matches original experiment)
+    std::mt19937 tileGen(static_cast<uint32_t>(columnIndex_ * 9973 + 17));
+    std::vector<int> allTileIndices(totalTiles);
+    std::iota(allTileIndices.begin(), allTileIndices.end(), 0);
+    std::shuffle(allTileIndices.begin(), allTileIndices.end(), tileGen);
+    tileIndices_.assign(allTileIndices.begin(), allTileIndices.begin() + numTiles);
+
+    // Build input mask: all pixels within selected tiles
+    std::vector<double> mask(inputSize_ * inputSize_, 0.0);
+    inputMaskActiveIdx_.clear();
+    for (int tileIndex : tileIndices_) {
+        int tileRow = tileIndex / tilesPerSide_;
+        int tileCol = tileIndex % tilesPerSide_;
+        int startR = tileRow * tileSize;
+        int startC = tileCol * tileSize;
+        for (int r = 0; r < tileSize; ++r) {
+            for (int c = 0; c < tileSize; ++c) {
+                int rr = startR + r;
+                int cc = startC + c;
+                int idx = rr * inputSize_ + cc;
+                if (idx >= 0 && idx < inputSize_ * inputSize_ && mask[idx] == 0.0) {
+                    mask[idx] = 1.0;
+                    inputMaskActiveIdx_.push_back(idx);
+                }
+            }
+        }
+    }
+}
+
+std::vector<Connection> TiledReceptiveFieldPattern::generateConnections(
+    const std::vector<uint64_t>& sourceNeurons,
+    const std::vector<uint64_t>& targetNeurons) {
+
+    std::vector<Connection> connections;
+    int tileSize = inputSize_ / tilesPerSide_;
+    int numTiles = static_cast<int>(tileIndices_.size());
+
+    if (numTiles == 0 || sourceNeurons.empty() || targetNeurons.empty()) {
+        return connections;
+    }
+
+    // Each target neuron (L4) connects to specific input pixels based on
+    // its grid position and the column's tile selection
+    for (size_t j = 0; j < targetNeurons.size(); ++j) {
+        int tileChoice = tileIndices_[static_cast<int>(j) % numTiles];
+        int tileRow = tileChoice / tilesPerSide_;
+        int tileCol = tileChoice % tilesPerSide_;
+        int tileStartR = tileRow * tileSize;
+        int tileStartC = tileCol * tileSize;
+        int l4Row = static_cast<int>(j) / l4GridSize_;
+        int l4Col = static_cast<int>(j) % l4GridSize_;
+        int patchSize = std::max(1, tileSize / l4GridSize_);
+        int startR = tileStartR + l4Row * patchSize;
+        int startC = tileStartC + l4Col * patchSize;
+
+        for (int pr = 0; pr < patchSize; ++pr) {
+            for (int pc = 0; pc < patchSize; ++pc) {
+                int idx = (startR + pr) * inputSize_ + (startC + pc);
+                if (idx >= 0 && idx < static_cast<int>(sourceNeurons.size())) {
+                    connections.emplace_back(sourceNeurons[idx], targetNeurons[j],
+                                             weight_, delay_);
+                }
+            }
+        }
+    }
+
+    SNNFW_DEBUG("TiledReceptiveFieldPattern: Generated {} connections for column {} "
+                "({} tiles, {}x{} L4 grid)",
+                connections.size(), columnIndex_, numTiles, l4GridSize_, l4GridSize_);
+
     return connections;
 }
 

@@ -43,6 +43,11 @@ struct ConstructedNetwork {
         double spatialFrequency = 0.0;
         /// Neurons keyed by layer name: "L4" -> [...], "L5" -> [...]
         std::map<std::string, std::vector<std::shared_ptr<Neuron>>> layerNeurons;
+
+        /// Tiled receptive field: selected tile indices for this column
+        std::vector<int> tileIndices;
+        /// Tiled receptive field: input pixel indices in this column's receptive field
+        std::vector<int> inputMaskActiveIdx;
     };
     std::vector<ColumnGroup> columns;
 

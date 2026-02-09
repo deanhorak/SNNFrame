@@ -185,11 +185,55 @@ void NetworkConstructor::createNeurons(const NetworkIR& ir, ConstructedNetwork& 
 // Phase 3: Create connectivity
 // ============================================================================
 void NetworkConstructor::createConnectivity(const NetworkIR& ir, ConstructedNetwork& result) {
-    ConnectivityBuilder connBuilder(factory_, datastore_, false);
+    ConnectivityBuilder connBuilder(factory_, datastore_, true);
 
     for (const auto& proj : ir.projections) {
-        auto pattern = createPattern(proj);
         auto synapseGroup = mapSynapseGroup(proj.synapseGroup);
+
+        // Special handling for tiled receptive field connectivity
+        if (proj.pattern == "tiled_receptive_field") {
+            auto inputNeurons = resolveSpecialPath(proj.source, result);
+            auto columnL4 = resolveNeuronPath(proj.target, result);
+            size_t totalSynapses = 0;
+
+            // Convert input neurons to IDs for the pattern
+            std::vector<uint64_t> inputIds;
+            inputIds.reserve(inputNeurons.size());
+            for (auto& n : inputNeurons) inputIds.push_back(n->getId());
+
+            for (size_t colIdx = 0; colIdx < columnL4.size(); ++colIdx) {
+                // Create per-column tiled pattern
+                TiledReceptiveFieldPattern tiledPattern(
+                    proj.inputGridSize, proj.tilesPerSide, proj.tilesPerColumn,
+                    proj.targetGridSize, static_cast<int>(colIdx),
+                    proj.weight, proj.delay);
+
+                // Store tile/mask info on the ColumnGroup
+                if (colIdx < result.columns.size()) {
+                    result.columns[colIdx].tileIndices = tiledPattern.getTileIndices();
+                    result.columns[colIdx].inputMaskActiveIdx = tiledPattern.getInputMaskActiveIdx();
+                }
+
+                connBuilder.clearCreatedObjects();
+                auto stats = connBuilder.connect(inputNeurons, columnL4[colIdx], tiledPattern);
+                for (auto& syn : connBuilder.getCreatedSynapses()) {
+                    result.allSynapses.push_back(syn);
+                    if (!proj.synapseGroup.empty()) {
+                        result.synapseGroups[proj.synapseGroup].push_back(syn);
+                    }
+                }
+                result.allAxons.insert(result.allAxons.end(),
+                    connBuilder.getCreatedAxons().begin(), connBuilder.getCreatedAxons().end());
+                result.allDendrites.insert(result.allDendrites.end(),
+                    connBuilder.getCreatedDendrites().begin(), connBuilder.getCreatedDendrites().end());
+                totalSynapses += stats.synapsesCreated;
+            }
+            SNNFW_INFO("  Projection '{}': {} synapses (tiled_receptive_field, {} columns)",
+                       proj.name, totalSynapses, columnL4.size());
+            continue;
+        }
+
+        auto pattern = createPattern(proj);
 
         // Try to resolve as special paths first (InputGrid, OutputLayer)
         auto srcSpecial = resolveSpecialPath(proj.source, result);
@@ -329,6 +373,7 @@ void NetworkConstructor::initializeRuntime(const NetworkIR& ir, ConstructedNetwo
         for (const auto& n : result.inputNeurons) {
             if (n->getId() == id) {
                 result.propagator->registerNeuron(n);
+                n->setNetworkPropagator(result.propagator);
                 goto next_id;
             }
         }
@@ -337,6 +382,7 @@ void NetworkConstructor::initializeRuntime(const NetworkIR& ir, ConstructedNetwo
             for (const auto& n : pop) {
                 if (n->getId() == id) {
                     result.propagator->registerNeuron(n);
+                    n->setNetworkPropagator(result.propagator);
                     goto next_id;
                 }
             }
@@ -347,6 +393,7 @@ void NetworkConstructor::initializeRuntime(const NetworkIR& ir, ConstructedNetwo
                 for (const auto& n : neurons) {
                     if (n->getId() == id) {
                         result.propagator->registerNeuron(n);
+                        n->setNetworkPropagator(result.propagator);
                         goto next_id;
                     }
                 }
@@ -499,6 +546,8 @@ std::unique_ptr<ConnectivityPattern>
 NetworkConstructor::createPattern(const ProjectionIR& proj) {
     if (proj.pattern == "random_sparse") {
         return std::make_unique<RandomSparsePattern>(proj.probability, proj.weight, proj.delay);
+    } else if (proj.pattern == "explicit") {
+        return std::make_unique<AllToAllPattern>(proj.weight, proj.delay);
     } else if (proj.pattern == "all_to_all") {
         return std::make_unique<AllToAllPattern>(proj.weight, proj.delay);
     } else if (proj.pattern == "one_to_one") {
@@ -541,4 +590,3 @@ NeuronParamsIR NetworkConstructor::resolveNeuronParams(const std::string& name, 
 
 } // namespace declarative
 } // namespace snnfw
-

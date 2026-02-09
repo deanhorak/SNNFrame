@@ -288,6 +288,59 @@ private:
     std::map<uint64_t, SpatialPosition> positions_;
 };
 
+/**
+ * @class TiledReceptiveFieldPattern
+ * @brief Tile-based receptive field connectivity for input-to-L4 projections
+ *
+ * Divides the input grid into tiles and assigns a subset of tiles to each
+ * column. Each L4 neuron (on a grid layout) connects to specific pixels
+ * within its column's tile regions, providing spatial locality and
+ * breaking symmetry across columns.
+ *
+ * This is a per-column pattern: a new instance must be created for each
+ * column with the appropriate column index.
+ */
+class TiledReceptiveFieldPattern : public ConnectivityPattern {
+public:
+    /**
+     * @brief Constructor
+     * @param inputSize Input grid side length (e.g. 28 for EMNIST)
+     * @param tilesPerSide Number of tiles along each axis (e.g. 4 for 4×4)
+     * @param tilesPerColumn Number of tiles assigned per column
+     * @param l4GridSize L4 grid side length (e.g. 7 for 7×7 = 49 neurons)
+     * @param columnIndex Index of the column (for deterministic tile selection)
+     * @param weight Synaptic weight
+     * @param delay Synaptic delay in milliseconds
+     */
+    TiledReceptiveFieldPattern(int inputSize, int tilesPerSide, int tilesPerColumn,
+                               int l4GridSize, int columnIndex,
+                               double weight = 0.1, double delay = 1.5);
+
+    std::vector<Connection> generateConnections(
+        const std::vector<uint64_t>& sourceNeurons,
+        const std::vector<uint64_t>& targetNeurons) override;
+
+    /// Get the input pixel indices that belong to this column's receptive field
+    const std::vector<int>& getInputMaskActiveIdx() const { return inputMaskActiveIdx_; }
+
+    /// Get the selected tile indices for this column
+    const std::vector<int>& getTileIndices() const { return tileIndices_; }
+
+private:
+    int inputSize_;
+    int tilesPerSide_;
+    int tilesPerColumn_;
+    int l4GridSize_;
+    int columnIndex_;
+    double weight_;
+    double delay_;
+
+    std::vector<int> tileIndices_;       // selected tile indices
+    std::vector<int> inputMaskActiveIdx_; // input pixel indices in receptive field
+
+    void computeTileSelection();
+};
+
 } // namespace snnfw
 
 #endif // SNNFW_CONNECTIVITY_PATTERN_H

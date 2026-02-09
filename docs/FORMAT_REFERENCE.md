@@ -339,6 +339,8 @@ Edges are stored under `/edges/<population>/` groups:
 | `weight` | float[] | Synaptic weight |
 | `delay` | float[] | Transmission delay (ms) |
 
+SNNFrame treats SONATA edges as `explicit` connectivity, approximated at the projection level as `all_to_all`.
+
 ### SNNFrame Extensions
 
 The `"snnframe"` section in `circuit_config.json` provides SNNFrame-specific configuration that is not part of the standard SONATA spec. It supports `neuron_params`, `input_layer`, `output_layer`, and `gabor` subsections.

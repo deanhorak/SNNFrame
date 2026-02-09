@@ -106,7 +106,8 @@ std::vector<std::string> NetworkIR::getValidationErrors() const {
         if (proj.pattern != "random_sparse" && proj.pattern != "all_to_all" &&
             proj.pattern != "one_to_one" && proj.pattern != "many_to_one" &&
             proj.pattern != "topographic" && proj.pattern != "distance_dependent" &&
-            proj.pattern != "small_world") {
+            proj.pattern != "small_world" && proj.pattern != "explicit" &&
+            proj.pattern != "tiled_receptive_field") {
             errors.push_back("Projection '" + proj.name +
                 "' has unknown pattern type: " + proj.pattern);
         }
@@ -130,4 +131,3 @@ std::vector<std::string> NetworkIR::getValidationErrors() const {
 
 } // namespace declarative
 } // namespace snnfw
-

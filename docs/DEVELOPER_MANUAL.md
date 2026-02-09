@@ -316,7 +316,7 @@ The most expressive format, designed specifically for SNNFrame:
 
 **Connectivity scope**: `"global"` connects across all columns; `"intra_column"` connects only within the same column.
 
-**Connectivity patterns**: `random_sparse`, `all_to_all`, `one_to_one`, `many_to_one`, `distance_dependent`, `topographic`, `small_world`.
+**Connectivity patterns**: `random_sparse`, `all_to_all`, `one_to_one`, `many_to_one`, `distance_dependent`, `topographic`, `small_world`, `explicit` (SONATA edges; approximated as `all_to_all`).
 
 #### SONATA (`circuit_config.json`, `.sonata.json`)
 
@@ -807,4 +807,3 @@ SNNFrame is released under the MIT License. See `LICENSE` for details.
 
 **Last Updated**: 2026-02-06
 **Version**: 1.1.0
-

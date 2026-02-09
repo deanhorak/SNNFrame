@@ -486,6 +486,12 @@ ProjectionIR SONATAParser::parseProjection(const nlohmann::json& j) const {
     p.delay = j.value("delay", 1.5);
     p.scope = j.value("scope", "intra_column");
     p.synapseGroup = j.value("synapse_group", "");
+
+    // Tiled receptive field parameters
+    p.tilesPerSide = j.value("tiles_per_side", 4);
+    p.tilesPerColumn = j.value("tiles_per_column", 3);
+    p.inputGridSize = j.value("input_grid_size", 28);
+    p.targetGridSize = j.value("target_grid_size", 7);
     return p;
 }
 
@@ -534,6 +540,7 @@ SimulationConfigIR SONATAParser::parseSimulation(const nlohmann::json& j) const 
         sim.l4Keep = comp.value("l4_keep", 8);
         sim.l5Keep = comp.value("l5_keep", 8);
         sim.enableL5Inhibition = comp.value("enable_l5_inhibition", true);
+        sim.maskMinActive = comp.value("mask_min_active", 6);
     }
     sim.interImageGapMs = j.value("inter_image_gap_ms", 550.0);
     return sim;
