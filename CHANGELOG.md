@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-02-10
+
+### Added
+
+- **Experiment Framework Components**
+  - `ExperimentConfig`: Centralized configuration structure for all experiment parameters
+  - `SpikeEncoder`: Converts pixel intensities to spike times with memory management
+  - `CompetitionManager`: Winner-take-all competition in L4, L5, and output layers with maskMinActive gating
+  - `KNNClassifier`: k-NN and centroid-based classification using L5 activation patterns
+  - `SupervisedTeacher`: Forces correct output neurons to fire and learn during training
+  - `TrainingPipeline`: Multi-pass training orchestrator with convergence detection
+  - `ExperimentRunner`: Top-level coordinator that loads config, builds network, runs training
+
+- **Connectivity Pattern Extensions**
+  - `TiledReceptiveFieldPattern`: Tile-based receptive fields for spatial locality
+  - Support for `tiles_per_side`, `tiles_per_column`, `input_grid_size`, `target_grid_size` parameters
+  - Deterministic tile selection per column with patch-based connectivity within tiles
+  - `maskMinActive` threshold gating for column participation in competition
+
+- **SONATA Format Extensions**
+  - Full model description support in `snnframe` extension section
+  - Brain hierarchy parsing (Brain, Hemisphere, Lobe, Region, Nucleus, Column, ColumnTemplate, Layer, Population)
+  - Projection parsing with connectivity rules and synapse groups
+  - Simulation config parsing (spike_processor, stdp, competition)
+  - Saccade configuration with fixation regions
+  - Enhanced input_layer and output_layer parsing with nested neuron_params
+
+- **Example SONATA Model**
+  - `configs/emnist_v1_sonata/circuit_config.json`: Full 6-layer V1 architecture for EMNIST letters
+  - 16 cortical columns (8 orientations × 2 frequencies)
+  - Complete layer populations and projections
+  - Gabor filter and saccade configuration
+
+### Performance
+
+- **Spike Delivery Optimizations** (~15% performance improvement)
+  - Eliminated thread creation overhead by submitting work directly to thread pool
+  - Used `shared_ptr` to avoid copying event vectors for each task
+  - Optimized `Neuron::insertSpike()` to track max spike time (O(1) instead of O(n))
+  - Added synchronous delivery for small batches (<50 events) to avoid thread pool overhead
+  - Added performance instrumentation for bottleneck identification
+
+### Changed
+
+- Updated all documentation to include declarative loading and experiment framework
+- Enhanced `FORMAT_REFERENCE.md` with tiled_receptive_field pattern documentation
+- Updated `DEVELOPER_MANUAL.md` with experiment framework usage patterns
+
 ## [1.1.0] - 2026-02-06
 
 ### Added

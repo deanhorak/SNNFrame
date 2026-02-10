@@ -21,6 +21,14 @@ A modern, production-ready C++ framework for building and simulating spiking neu
 - **NetworkIR**: Common intermediate representation enables cross-format interoperability
 - **Custom Parsers**: Extensible parser interface for adding new formats
 
+### Experiment Framework
+- **ExperimentRunner**: High-level API for loading models and running training/testing
+- **SpikeEncoder**: Converts input data to spike times with schedule horizon management
+- **CompetitionManager**: Winner-take-all competition with configurable thresholds
+- **KNNClassifier**: k-NN and centroid-based classification from activation patterns
+- **SupervisedTeacher**: Supervised learning signal for output layer training
+- **TrainingPipeline**: Multi-pass training with convergence detection
+
 ### Advanced Features
 - **Multi-Column Networks**: Support for orientation-selective and feature-selective columns
 - **Saccade-Based Attention**: Sequential spatial attention mechanism for improved feature learning
@@ -32,6 +40,8 @@ A modern, production-ready C++ framework for building and simulating spiking neu
 
 ### Performance
 - **Multi-Threaded Spike Processing**: Configurable thread pool for parallel spike delivery
+- **Optimized Spike Delivery**: ~15% performance improvement through thread pool optimization and smart batching
+- **Efficient Neuron Operations**: O(1) spike insertion with cached max spike time tracking
 - **Real-Time Synchronization**: Optional 1:1 real-time mapping (1ms simulation = 1ms wall-clock)
 - **Efficient Datastore**: LRU cache with automatic dirty-tracking and flush-on-eviction
 - **Optimized Compilation**: Release builds with -O3 optimization
@@ -76,6 +86,7 @@ make -j$(nproc)
 
 The framework includes a high-performance EMNIST letters classification experiment achieving ~90% accuracy:
 
+#### Hardcoded C++ Experiment
 ```bash
 # Training (headless, ~60 minutes)
 ./emnist_letters_training
@@ -90,12 +101,27 @@ The framework includes a high-performance EMNIST letters classification experime
 ./emnist_letters_visualized --playback emnist_session.snnr
 ```
 
+#### Declarative SONATA Experiment
+```bash
+# Run experiment from SONATA configuration
+./experiments/emnist_sonata_training \
+  --config ../configs/emnist_v1_sonata/circuit_config.json \
+  --train-images ../data/EMNIST/emnist-letters-train-images-idx3-ubyte \
+  --train-labels ../data/EMNIST/emnist-letters-train-labels-idx1-ubyte \
+  --test-images ../data/EMNIST/emnist-letters-test-images-idx3-ubyte \
+  --test-labels ../data/EMNIST/emnist-letters-test-labels-idx1-ubyte \
+  --datastore ./sonata_experiment_db \
+  --max-passes 5 \
+  --test-limit 1000
+```
+
 **Performance**: The framework achieves approximately **90% accuracy** on EMNIST letters classification (26 classes) using:
 - Cosine similarity-based pattern matching
 - STDP frozen during testing to prevent weight drift
 - Multi-column architecture with 8 orientations and 2 frequencies
 - 6-layer canonical cortical microcircuit
 - Saccade-based attention mechanism
+- Tile-based receptive fields for spatial locality
 
 ## Architecture Overview
 
