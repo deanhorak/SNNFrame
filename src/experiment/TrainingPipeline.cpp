@@ -10,6 +10,17 @@
 namespace snnfw {
 namespace experiment {
 
+// Timing helper for performance profiling
+static int g_imageCount = 0;
+static std::chrono::steady_clock::time_point g_lastReport;
+static double g_totalEncodeMs = 0;
+static double g_totalWait1Ms = 0;
+static double g_totalL4Ms = 0;
+static double g_totalWait2Ms = 0;
+static double g_totalL5Ms = 0;
+static double g_totalPropMs = 0;
+static double g_totalCollectMs = 0;
+
 TrainingPipeline::TrainingPipeline(const ExperimentConfig& config,
                                    declarative::ConstructedNetwork& network)
     : config_(config)
@@ -19,30 +30,44 @@ TrainingPipeline::TrainingPipeline(const ExperimentConfig& config,
     , classifier_(config)
     , teacher_(config)
 {
+    g_lastReport = std::chrono::steady_clock::now();
 }
 
 InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image) {
+    auto t0 = std::chrono::steady_clock::now();
+
     InferenceResult result;
     size_t totalL5 = static_cast<size_t>(config_.numColumns) * config_.layer5Neurons;
     result.l5Counts.assign(totalL5, 0);
     result.outSpikeCounts.assign(config_.numClasses, 0);
 
+    auto t1 = std::chrono::steady_clock::now();
     double baseTime = encoder_.encodeAndInject(
         image, network_.inputNeurons, network_.columns, network_.outputPopulations);
+    auto t2 = std::chrono::steady_clock::now();
+    g_totalEncodeMs += std::chrono::duration<double, std::milli>(t2 - t1).count();
 
     // Wait for input spikes to propagate
     encoder_.waitForSimTime(baseTime + config_.inputLatencyMs + 5.0, 200.0);
+    auto t3 = std::chrono::steady_clock::now();
+    g_totalWait1Ms += std::chrono::duration<double, std::milli>(t3 - t2).count();
 
     // L4 competition
     auto colHasL4 = competition_.runL4Competition(
         network_.columns, encoder_.getLastInputFired(), baseTime, network_.propagator);
+    auto t4 = std::chrono::steady_clock::now();
+    g_totalL4Ms += std::chrono::duration<double, std::milli>(t4 - t3).count();
 
     // Wait for L4->L5 propagation
     encoder_.waitForSimTime(baseTime + 30.0, 200.0);
+    auto t5 = std::chrono::steady_clock::now();
+    g_totalWait2Ms += std::chrono::duration<double, std::milli>(t5 - t4).count();
 
     // L5 competition
     auto l5Winners = competition_.runL5Competition(
         network_.columns, colHasL4, baseTime, network_.propagator);
+    auto t6 = std::chrono::steady_clock::now();
+    g_totalL5Ms += std::chrono::duration<double, std::milli>(t6 - t5).count();
 
     // Fire L5 winners and output neurons in full propagation mode
     if (config_.enableFullPropagation) {
@@ -88,6 +113,8 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
         }
     }
 
+    auto t7 = std::chrono::steady_clock::now();
+
     // Collect L5 counts
     collectL5Counts(result.l5Counts, l5Winners);
 
@@ -101,6 +128,30 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
     }
     result.rawOutSpikeCounts = result.outSpikeCounts;
     competition_.applyOutputCompetition(result.outSpikeCounts);
+
+    auto t8 = std::chrono::steady_clock::now();
+    g_totalCollectMs += std::chrono::duration<double, std::milli>(t8 - t7).count();
+    g_totalPropMs += std::chrono::duration<double, std::milli>(t7 - t6).count();
+
+    // Report timing every 100 images
+    g_imageCount++;
+    if (g_imageCount % 100 == 0) {
+        auto now = std::chrono::steady_clock::now();
+        double totalSec = std::chrono::duration<double>(now - g_lastReport).count();
+        std::cout << "[PERF] 100 images in " << totalSec << "s ("
+                  << (100.0 / totalSec) << " img/s) - "
+                  << "Encode:" << (g_totalEncodeMs/100.0) << "ms "
+                  << "Wait1:" << (g_totalWait1Ms/100.0) << "ms "
+                  << "L4:" << (g_totalL4Ms/100.0) << "ms "
+                  << "Wait2:" << (g_totalWait2Ms/100.0) << "ms "
+                  << "L5:" << (g_totalL5Ms/100.0) << "ms "
+                  << "Prop:" << (g_totalPropMs/100.0) << "ms "
+                  << "Collect:" << (g_totalCollectMs/100.0) << "ms"
+                  << std::endl;
+        g_lastReport = now;
+        g_totalEncodeMs = g_totalWait1Ms = g_totalL4Ms = g_totalWait2Ms = 0;
+        g_totalL5Ms = g_totalPropMs = g_totalCollectMs = 0;
+    }
 
     return result;
 }

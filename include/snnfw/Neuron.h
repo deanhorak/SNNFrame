@@ -168,6 +168,7 @@ public:
     void clearSpikes() {
         std::lock_guard<std::mutex> lock(spikesMutex_);
         spikes.clear();
+        maxSpikeTime_ = -std::numeric_limits<double>::infinity();
     }
 
     /**
@@ -357,6 +358,7 @@ private:
 
     std::vector<double> spikes;                          ///< Rolling spike window (temporary, converted to BinaryPattern)
     mutable std::mutex spikesMutex_;                     ///< Mutex to protect spikes vector from concurrent access
+    double maxSpikeTime_;                                ///< Maximum spike time in the buffer (for efficient cleanup)
     std::vector<BinaryPattern> referencePatterns;        ///< Learned reference patterns (200 bytes each, FIXED SIZE)
     double windowSize;                                   ///< Size of rolling window in ms
     double threshold;                                    ///< Similarity threshold for firing

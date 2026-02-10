@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iostream>
 
 namespace snnfw {
 
@@ -457,30 +458,120 @@ void SpikeProcessor::deliverSliceAsync(size_t sliceIndex, double simTime) {
         return;
     }
 
+    // DEBUG: Track delivery volume (disabled for performance)
+    // static int g_deliveryCount = 0;
+    // static size_t g_totalEvents = 0;
+    // g_totalEvents += eventsToDeliver.size();
+    // if (++g_deliveryCount % 1000 == 0) {
+    //     std::cout << "[DEBUG] SpikeProcessor: Delivered " << g_totalEvents << " events in " << g_deliveryCount
+    //               << " slices (avg " << (g_totalEvents / g_deliveryCount) << " events/slice)" << std::endl;
+    //     g_deliveryCount = 0;
+    //     g_totalEvents = 0;
+    // }
+
     SNNFW_TRACE("SpikeProcessor: Async delivering {} events at time {:.3f}ms",
                 eventsToDeliver.size(), simTime);
 
-    // Spawn a new thread to handle this timeslice's delivery
-    // This thread will further divide work among the thread pool
-    std::thread deliveryThread([this, eventsToDeliver = std::move(eventsToDeliver), simTime]() {
-        // Divide events evenly among thread pool workers
-        size_t eventsPerThread = (eventsToDeliver.size() + numDeliveryThreads - 1) / numDeliveryThreads;
+    // OPTIMIZATION: For small numbers of events, deliver synchronously to avoid thread pool overhead
+    const size_t ASYNC_THRESHOLD = 50;  // Only use thread pool if we have more than 50 events
 
-        std::vector<std::future<void>> deliveryTasks;
+    if (eventsToDeliver.size() < ASYNC_THRESHOLD) {
+        // Synchronous delivery for small batches
+        for (const auto& event : eventsToDeliver) {
+            const char* eventType = event->getEventType();
 
-        for (size_t threadIdx = 0; threadIdx < numDeliveryThreads; ++threadIdx) {
-            size_t startIdx = threadIdx * eventsPerThread;
-            size_t endIdx = std::min(startIdx + eventsPerThread, eventsToDeliver.size());
+            if (strcmp(eventType, "ActionPotential") == 0) {
+                // Forward spike - deliver to dendrite
+                auto spike = std::static_pointer_cast<ActionPotential>(event);
 
-            if (startIdx >= eventsToDeliver.size()) {
-                break;
+                std::shared_ptr<Dendrite> dendrite;
+                {
+                    std::lock_guard<std::mutex> lock(dendriteRegistryMutex);
+                    auto it = dendriteRegistry.find(spike->getDendriteId());
+                    if (it != dendriteRegistry.end()) {
+                        dendrite = it->second;
+                    }
+                }
+
+                if (dendrite) {
+                    dendrite->receiveSpike(spike);
+                    {
+                        std::lock_guard<std::mutex> lock(deliveryStatsMutex_);
+                        deliveryStats_.delivered++;
+                        if (inputToL4Dendrites_.find(spike->getDendriteId()) != inputToL4Dendrites_.end()) {
+                            deliveryStats_.deliveredInputToL4++;
+                        }
+                    }
+
+                    // Record spike in activity monitor if attached
+                    if (activityMonitor_) {
+                        activityMonitor_->recordSpike(spike, spike->getScheduledTime());
+                    }
+                } else {
+                    {
+                        std::lock_guard<std::mutex> lock(deliveryStatsMutex_);
+                        deliveryStats_.missingDendrite++;
+                        if (inputToL4Dendrites_.find(spike->getDendriteId()) != inputToL4Dendrites_.end()) {
+                            deliveryStats_.missingDendriteInputToL4++;
+                        }
+                    }
+                    SNNFW_WARN("SpikeProcessor: Dendrite {} not found for spike delivery",
+                               spike->getDendriteId());
+                }
             }
+            else if (strcmp(eventType, "RetrogradeActionPotential") == 0) {
+                // Retrograde spike - deliver to synapse for STDP
+                auto retrogradeSpike = std::static_pointer_cast<RetrogradeActionPotential>(event);
 
-            // Submit delivery task to thread pool
-            deliveryTasks.emplace_back(
-                threadPool->enqueue([this, &eventsToDeliver, startIdx, endIdx]() {
-                    for (size_t i = startIdx; i < endIdx; ++i) {
-                        const auto& event = eventsToDeliver[i];
+                std::shared_ptr<Synapse> synapse;
+                {
+                    std::lock_guard<std::mutex> lock(synapseRegistryMutex);
+                    auto it = synapseRegistry.find(retrogradeSpike->getSynapseId());
+                    if (it != synapseRegistry.end()) {
+                        synapse = it->second;
+                    }
+                }
+
+                if (synapse) {
+                    // Apply STDP based on temporal offset
+                    double temporalOffset = retrogradeSpike->getTemporalOffset();
+                    applySTDPToSynapse(synapse, temporalOffset);
+                } else {
+                    SNNFW_WARN("SpikeProcessor: Synapse {} not found for retrograde spike delivery",
+                               retrogradeSpike->getSynapseId());
+                }
+            }
+            else {
+                SNNFW_WARN("SpikeProcessor: Unknown event type: {}", eventType);
+            }
+        }
+        return;  // Done with synchronous delivery
+    }
+
+    // OPTIMIZATION: For large batches, use thread pool
+    // Instead of creating a new thread, submit work directly to thread pool
+    // and store the futures for later synchronization
+    std::vector<std::shared_ptr<std::future<void>>> deliveryFutures;
+
+    // OPTIMIZATION: Use shared_ptr to avoid copying the events vector for each task
+    auto eventsPtr = std::make_shared<std::vector<std::shared_ptr<EventObject>>>(std::move(eventsToDeliver));
+
+    // Divide events evenly among thread pool workers
+    size_t eventsPerThread = (eventsPtr->size() + numDeliveryThreads - 1) / numDeliveryThreads;
+
+    for (size_t threadIdx = 0; threadIdx < numDeliveryThreads; ++threadIdx) {
+        size_t startIdx = threadIdx * eventsPerThread;
+        size_t endIdx = std::min(startIdx + eventsPerThread, eventsPtr->size());
+
+        if (startIdx >= eventsPtr->size()) {
+            break;
+        }
+
+        // Submit delivery task to thread pool and capture the future
+        auto future = std::make_shared<std::future<void>>(
+            threadPool->enqueue([this, eventsPtr, startIdx, endIdx]() {
+                for (size_t i = startIdx; i < endIdx; ++i) {
+                    const auto& event = (*eventsPtr)[i];
 
                         // Check event type and deliver accordingly
                         const char* eventType = event->getEventType();
@@ -552,21 +643,17 @@ void SpikeProcessor::deliverSliceAsync(size_t sliceIndex, double simTime) {
                     }
                 })
             );
-        }
-
-        // Wait for all delivery tasks to complete
-        for (auto& task : deliveryTasks) {
-            task.get();
-        }
-
-        SNNFW_TRACE("SpikeProcessor: Completed async delivery for time {:.3f}ms", simTime);
-    });
-
-    // Add to active threads list
-    {
-        std::lock_guard<std::mutex> lock(deliveryThreadsMutex);
-        activeDeliveryThreads.push_back(std::move(deliveryThread));
+        deliveryFutures.push_back(future);
     }
+
+    // Store futures for synchronization in waitForDeliveryThreads()
+    {
+        std::lock_guard<std::mutex> lock(deliveryFuturesMutex_);
+        activeDeliveryFutures_.push_back(std::move(deliveryFutures));
+    }
+
+    SNNFW_TRACE("SpikeProcessor: Submitted {} delivery tasks for time {:.3f}ms",
+                deliveryFutures.size(), simTime);
 }
 
 void SpikeProcessor::cleanupCompletedThreads() {
@@ -602,15 +689,21 @@ size_t SpikeProcessor::getActiveDeliveryThreadCount() const {
 }
 
 void SpikeProcessor::waitForDeliveryThreads() {
-    std::lock_guard<std::mutex> lock(deliveryThreadsMutex);
+    std::vector<std::vector<std::shared_ptr<std::future<void>>>> futuresToWait;
+    {
+        std::lock_guard<std::mutex> lock(deliveryFuturesMutex_);
+        futuresToWait = std::move(activeDeliveryFutures_);
+        activeDeliveryFutures_.clear();
+    }
 
-    // Join all active delivery threads
-    for (auto& thread : activeDeliveryThreads) {
-        if (thread.joinable()) {
-            thread.join();
+    // Wait for all delivery futures to complete
+    for (auto& futureGroup : futuresToWait) {
+        for (auto& future : futureGroup) {
+            if (future && future->valid()) {
+                future->get();
+            }
         }
     }
-    activeDeliveryThreads.clear();
 }
 
 void SpikeProcessor::getTimingStats(double& avgLoopTime, double& maxLoop, double& driftMs) const {

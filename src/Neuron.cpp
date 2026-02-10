@@ -18,6 +18,7 @@ namespace snnfw {
 Neuron::Neuron(double windowSizeMs, double similarityThreshold, size_t maxReferencePatterns, uint64_t neuronId)
     : NeuralObject(neuronId),
       windowSize(windowSizeMs),
+      maxSpikeTime_(-std::numeric_limits<double>::infinity()),  // Initialize to -infinity
       threshold(similarityThreshold),
       maxPatterns(maxReferencePatterns),
       axonId(0),
@@ -37,10 +38,14 @@ Neuron::Neuron(double windowSizeMs, double similarityThreshold, size_t maxRefere
 void Neuron::insertSpike(double spikeTime) {
     std::lock_guard<std::mutex> lock(spikesMutex_);
     spikes.push_back(spikeTime);
+
+    // OPTIMIZATION: Track max spike time instead of recomputing with std::max_element
     // Spikes may arrive out-of-order under async delivery.
     // Maintain the rolling window relative to the newest spike we have seen.
-    const double referenceTime = *std::max_element(spikes.begin(), spikes.end());
-    removeOldSpikesUnsafe(referenceTime);
+    if (spikes.size() == 1 || spikeTime > maxSpikeTime_) {
+        maxSpikeTime_ = spikeTime;
+    }
+    removeOldSpikesUnsafe(maxSpikeTime_);
 
     // NOTE: Removed shouldFire() check here because it causes issues during training
     // When learning patterns, we don't want the neuron to fire based on previously
@@ -147,10 +152,19 @@ void Neuron::removeOldSpikes(double currentTime) {
 void Neuron::removeOldSpikesUnsafe(double currentTime) {
     // Note: Caller must hold spikesMutex_ lock
     // Do not assume insertion order (async delivery can insert out-of-order).
+    size_t oldSize = spikes.size();
     spikes.erase(
         std::remove_if(spikes.begin(), spikes.end(),
                        [this, currentTime](double t) { return (currentTime - t) > windowSize; }),
         spikes.end());
+
+    // If we removed spikes and the max was removed, recompute it
+    if (spikes.size() < oldSize && !spikes.empty()) {
+        // Only recompute if we actually removed spikes
+        maxSpikeTime_ = *std::max_element(spikes.begin(), spikes.end());
+    } else if (spikes.empty()) {
+        maxSpikeTime_ = -std::numeric_limits<double>::infinity();
+    }
 }
 
 // Convert spike pattern to temporal histogram (fuzzy representation)

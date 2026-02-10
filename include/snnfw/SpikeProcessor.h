@@ -290,9 +290,13 @@ private:
     // Thread pool for parallel spike delivery
     std::unique_ptr<ThreadPool> threadPool;
 
-    // Async delivery threads management
-    std::deque<std::thread> activeDeliveryThreads;  ///< Active timeslice delivery threads
-    mutable std::mutex deliveryThreadsMutex;        ///< Protects activeDeliveryThreads
+    // Async delivery threads management (DEPRECATED - now using futures)
+    std::deque<std::thread> activeDeliveryThreads;  ///< Active timeslice delivery threads (legacy)
+    mutable std::mutex deliveryThreadsMutex;        ///< Protects activeDeliveryThreads (legacy)
+
+    // Async delivery futures management (NEW - optimized)
+    std::vector<std::vector<std::shared_ptr<std::future<void>>>> activeDeliveryFutures_;
+    mutable std::mutex deliveryFuturesMutex_;
 
     // Background processing thread
     std::thread processingThread;
