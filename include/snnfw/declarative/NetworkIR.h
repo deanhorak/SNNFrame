@@ -155,6 +155,14 @@ struct SimulationConfigIR {
     int l4Keep = 8;
     int l5Keep = 8;
     bool enableL5Inhibition = true;
+    bool enableL5InterColumnInhibition = false;
+    double l5InterColumnInhibit = 0.1;
+    double l5InterColumnMinOverlap = 0.2;
+    double l5InterColumnWinnerScale = 0.25;
+    double l5InterColumnMaxInhibit = 1.0;
+    double l5InterColumnMaxOrientationDeltaDeg = 45.0;
+    double l5InterColumnMaxFrequencyOctaveDelta = 0.75;
+    int l5InterColumnMaxNeighbors = 8;
     int maskMinActive = 6;  // minimum active input pixels for column to participate
     // Timing
     double interImageGapMs = 550.0;
@@ -196,5 +204,3 @@ struct NetworkIR {
 } // namespace snnfw
 
 #endif // SNNFW_DECLARATIVE_NETWORK_IR_H
-
-

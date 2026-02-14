@@ -1,9 +1,15 @@
 #include "snnfw/experiment/CompetitionManager.h"
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 namespace snnfw {
 namespace experiment {
+
+namespace {
+constexpr double kOrientationSigmaDeg = 30.0;
+constexpr double kFrequencySigmaOctaves = 0.75;
+}
 
 CompetitionManager::CompetitionManager(const ExperimentConfig& config)
     : config_(config)
@@ -14,6 +20,87 @@ CompetitionManager::CompetitionManager(const ExperimentConfig& config)
 
 void CompetitionManager::setSeed(unsigned int seed) {
     gen_.seed(seed);
+}
+
+double CompetitionManager::computeOverlapRatio(
+    const std::vector<int>& a,
+    const std::vector<int>& b)
+{
+    if (a.empty() || b.empty()) return 0.0;
+    const std::vector<int>* smaller = &a;
+    const std::vector<int>* larger = &b;
+    if (smaller->size() > larger->size()) std::swap(smaller, larger);
+    std::unordered_set<int> largerSet;
+    largerSet.reserve(larger->size());
+    for (int idx : *larger) largerSet.insert(idx);
+    size_t intersection = 0;
+    for (int idx : *smaller) {
+        if (largerSet.find(idx) != largerSet.end()) intersection++;
+    }
+    if (intersection == 0) return 0.0;
+    return static_cast<double>(intersection) /
+           static_cast<double>(std::min(a.size(), b.size()));
+}
+
+double CompetitionManager::computeFeatureGate(
+    const declarative::ConstructedNetwork::ColumnGroup& target,
+    const declarative::ConstructedNetwork::ColumnGroup& source,
+    double maxOrientationDeltaDeg,
+    double maxFrequencyOctaveDelta)
+{
+    const double oriDeltaRaw = std::fabs(target.orientation - source.orientation);
+    const double oriDelta = std::min(oriDeltaRaw, 180.0 - oriDeltaRaw);
+    if (oriDelta > maxOrientationDeltaDeg) {
+        return 0.0;
+    }
+    const double oriWeight =
+        std::exp(-(oriDelta * oriDelta) / (2.0 * kOrientationSigmaDeg * kOrientationSigmaDeg));
+
+    double freqWeight = 1.0;
+    if (target.spatialFrequency > 0.0 && source.spatialFrequency > 0.0) {
+        const double octaveDelta =
+            std::fabs(std::log2(target.spatialFrequency / source.spatialFrequency));
+        if (octaveDelta > maxFrequencyOctaveDelta) {
+            return 0.0;
+        }
+        freqWeight = std::exp(
+            -(octaveDelta * octaveDelta) / (2.0 * kFrequencySigmaOctaves * kFrequencySigmaOctaves));
+    }
+
+    return oriWeight * freqWeight;
+}
+
+void CompetitionManager::rebuildInterColumnCache(
+    const std::vector<declarative::ConstructedNetwork::ColumnGroup>& columns)
+{
+    interColumnIncoming_.assign(columns.size(), {});
+    const int maxNeighbors = std::max(1, config_.l5InterColumnMaxNeighbors);
+    for (size_t target = 0; target < columns.size(); ++target) {
+        for (size_t source = 0; source < columns.size(); ++source) {
+            if (target == source) continue;
+            const double overlap = computeOverlapRatio(
+                columns[target].inputMaskActiveIdx, columns[source].inputMaskActiveIdx);
+            if (overlap < config_.l5InterColumnMinOverlap) continue;
+            const double featureGate = computeFeatureGate(
+                columns[target],
+                columns[source],
+                config_.l5InterColumnMaxOrientationDeltaDeg,
+                config_.l5InterColumnMaxFrequencyOctaveDelta);
+            const double weight = overlap * featureGate;
+            if (weight <= 0.0) continue;
+            interColumnIncoming_[target].push_back({source, weight});
+        }
+        auto& incoming = interColumnIncoming_[target];
+        std::sort(incoming.begin(), incoming.end(),
+                  [](const InterColumnEdge& a, const InterColumnEdge& b) {
+                      return a.weight > b.weight;
+                  });
+        if (static_cast<int>(incoming.size()) > maxNeighbors) {
+            incoming.resize(static_cast<size_t>(maxNeighbors));
+        }
+    }
+    interColumnCacheColumns_ = columns.size();
+    interColumnCacheValid_ = true;
 }
 
 std::vector<bool> CompetitionManager::runL4Competition(
@@ -75,6 +162,7 @@ std::vector<bool> CompetitionManager::runL4Competition(
             colHasL4[colIdxSeq] = true;
             winners++;
         }
+
         colIdxSeq++;
     }
     return colHasL4;
@@ -86,6 +174,15 @@ std::vector<bool> CompetitionManager::runL5Competition(
     double baseTime,
     std::shared_ptr<NetworkPropagator> propagator)
 {
+    (void)baseTime;
+    (void)propagator;
+
+    struct ColumnState {
+        std::vector<bool> localWinners;
+        double winnerDrive = 0.0;
+        bool active = false;
+    };
+
     // Count total L5 neurons
     size_t totalL5 = 0;
     for (auto& col : columns) {
@@ -93,8 +190,9 @@ std::vector<bool> CompetitionManager::runL5Competition(
         if (it != col.layerNeurons.end()) totalL5 += it->second.size();
     }
 
-    const int L5_KEEP = std::max(1, config_.l5Keep);
+    const int l5Keep = std::max(1, config_.l5Keep);
     std::vector<bool> l5WinnerGlobal(totalL5, false);
+    std::vector<ColumnState> perColumn(columns.size());
     int colIdxSeq = 0;
     size_t l5Offset = 0;
 
@@ -110,6 +208,7 @@ std::vector<bool> CompetitionManager::runL5Competition(
             colIdxSeq++;
             continue;
         }
+        perColumn[colIdxSeq].active = true;
 
         std::vector<std::pair<size_t, size_t>> ranked;
         ranked.reserve(l5Neurons.size());
@@ -121,15 +220,20 @@ std::vector<bool> CompetitionManager::runL5Competition(
 
         int winners = 0;
         std::vector<bool> l5WinnerLocal(l5Neurons.size(), false);
-        for (size_t i = 0; i < ranked.size() && winners < L5_KEEP; ++i) {
+        double winnerDrive = 0.0;
+        for (size_t i = 0; i < ranked.size() && winners < l5Keep; ++i) {
             if (ranked[i].first < static_cast<size_t>(config_.l5MinSpikes)) break;
             l5WinnerGlobal[l5Offset + ranked[i].second] = true;
             l5WinnerLocal[ranked[i].second] = true;
+            winnerDrive += static_cast<double>(ranked[i].first);
             winners++;
         }
+        perColumn[colIdxSeq].localWinners = std::move(l5WinnerLocal);
+        perColumn[colIdxSeq].winnerDrive = winnerDrive;
+
         if (config_.enableL5Inhibition) {
             for (size_t i = 0; i < l5Neurons.size(); ++i) {
-                if (!l5WinnerLocal[i]) {
+                if (!perColumn[colIdxSeq].localWinners[i]) {
                     l5Neurons[i]->applyInhibition(config_.l5InhibitLoser);
                 }
             }
@@ -137,6 +241,46 @@ std::vector<bool> CompetitionManager::runL5Competition(
         l5Offset += l5Neurons.size();
         colIdxSeq++;
     }
+
+    if (config_.enableL5InterColumnInhibition && config_.l5InterColumnInhibit > 0.0) {
+        if (!interColumnCacheValid_ || interColumnCacheColumns_ != columns.size()) {
+            rebuildInterColumnCache(columns);
+        }
+        for (size_t i = 0; i < columns.size(); ++i) {
+            auto l5It = columns[i].layerNeurons.find("L5");
+            if (l5It == columns[i].layerNeurons.end()) continue;
+            auto& l5Neurons = l5It->second;
+            if (l5Neurons.empty()) continue;
+            if (i >= perColumn.size() || !perColumn[i].active) continue;
+            if (perColumn[i].winnerDrive <= 0.0) continue;
+
+            double crossDrive = 0.0;
+            for (const auto& edge : interColumnIncoming_[i]) {
+                if (edge.sourceColumn >= perColumn.size()) continue;
+                if (!perColumn[edge.sourceColumn].active) continue;
+                if (perColumn[edge.sourceColumn].winnerDrive <= 0.0) continue;
+                crossDrive += edge.weight * perColumn[edge.sourceColumn].winnerDrive;
+            }
+            if (crossDrive <= 0.0) continue;
+
+            double interColumnInhibition =
+                std::min(config_.l5InterColumnMaxInhibit,
+                         crossDrive * config_.l5InterColumnInhibit);
+            if (interColumnInhibition <= 0.0) continue;
+
+            for (size_t localIdx = 0; localIdx < l5Neurons.size(); ++localIdx) {
+                double scale = 1.0;
+                if (localIdx < perColumn[i].localWinners.size() &&
+                    perColumn[i].localWinners[localIdx]) {
+                    scale = config_.l5InterColumnWinnerScale;
+                }
+                if (scale > 0.0) {
+                    l5Neurons[localIdx]->applyInhibition(interColumnInhibition * scale);
+                }
+            }
+        }
+    }
+
     return l5WinnerGlobal;
 }
 
@@ -160,4 +304,3 @@ void CompetitionManager::applyOutputCompetition(std::vector<int>& counts) {
 
 } // namespace experiment
 } // namespace snnfw
-

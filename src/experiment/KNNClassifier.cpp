@@ -76,6 +76,12 @@ double KNNClassifier::centroidSimilarity(const L5CountVector& testCounts, int cl
 }
 
 std::pair<int, double> KNNClassifier::classifyKNN(const L5CountVector& testCounts) const {
+    const bool hasTestActivity = std::any_of(
+        testCounts.begin(), testCounts.end(), [](uint16_t v) { return v > 0; });
+    if (!hasTestActivity) {
+        return {-1, 0.0};
+    }
+
     const int K = config_.knnK;
     std::vector<std::pair<double, int>> allSimilarities;
 
@@ -90,6 +96,10 @@ std::pair<int, double> KNNClassifier::classifyKNN(const L5CountVector& testCount
 
     std::sort(allSimilarities.begin(), allSimilarities.end(),
               [](const auto& a, const auto& b) { return a.first > b.first; });
+
+    if (allSimilarities.empty()) {
+        return {-1, 0.0};
+    }
 
     std::vector<int> votes(numClasses_, 0);
     double maxSim = 0.0;
@@ -112,6 +122,12 @@ std::pair<int, double> KNNClassifier::classifyKNN(const L5CountVector& testCount
 }
 
 std::pair<int, double> KNNClassifier::classifyCentroid(const L5CountVector& testCounts) const {
+    const bool hasTestActivity = std::any_of(
+        testCounts.begin(), testCounts.end(), [](uint16_t v) { return v > 0; });
+    if (!hasTestActivity) {
+        return {-1, 0.0};
+    }
+
     int bestLabel = -1;
     double bestSim = -1.0;
     for (int cls = 0; cls < numClasses_; ++cls) {
@@ -139,4 +155,3 @@ size_t KNNClassifier::getPatternCount(int classLabel) const {
 
 } // namespace experiment
 } // namespace snnfw
-

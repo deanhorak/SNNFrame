@@ -121,6 +121,16 @@ void ExperimentRunner::syncConfigFromIR(const declarative::NetworkIR& ir) {
     config_.l4Keep = ir.simulation.l4Keep;
     config_.l5Keep = ir.simulation.l5Keep;
     config_.enableL5Inhibition = ir.simulation.enableL5Inhibition;
+    config_.enableL5InterColumnInhibition = ir.simulation.enableL5InterColumnInhibition;
+    config_.l5InterColumnInhibit = ir.simulation.l5InterColumnInhibit;
+    config_.l5InterColumnMinOverlap = ir.simulation.l5InterColumnMinOverlap;
+    config_.l5InterColumnWinnerScale = ir.simulation.l5InterColumnWinnerScale;
+    config_.l5InterColumnMaxInhibit = ir.simulation.l5InterColumnMaxInhibit;
+    config_.l5InterColumnMaxOrientationDeltaDeg =
+        ir.simulation.l5InterColumnMaxOrientationDeltaDeg;
+    config_.l5InterColumnMaxFrequencyOctaveDelta =
+        ir.simulation.l5InterColumnMaxFrequencyOctaveDelta;
+    config_.l5InterColumnMaxNeighbors = ir.simulation.l5InterColumnMaxNeighbors;
     config_.maskMinActive = ir.simulation.maskMinActive;
     config_.stdpLtdScale = ir.simulation.stdpLtdScale;
     config_.stdpLtdWindowMs = ir.simulation.stdpLtdWindowMs;

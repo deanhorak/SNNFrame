@@ -9,6 +9,7 @@
 #include <vector>
 #include <array>
 #include <random>
+#include <cstddef>
 
 namespace snnfw {
 namespace experiment {
@@ -62,13 +63,33 @@ public:
     void setSeed(unsigned int seed);
 
 private:
+    struct InterColumnEdge {
+        size_t sourceColumn = 0;
+        double weight = 0.0;
+    };
+
+    void rebuildInterColumnCache(
+        const std::vector<declarative::ConstructedNetwork::ColumnGroup>& columns);
+
+    static double computeOverlapRatio(
+        const std::vector<int>& a,
+        const std::vector<int>& b);
+
+    static double computeFeatureGate(
+        const declarative::ConstructedNetwork::ColumnGroup& target,
+        const declarative::ConstructedNetwork::ColumnGroup& source,
+        double maxOrientationDeltaDeg,
+        double maxFrequencyOctaveDelta);
+
     const ExperimentConfig& config_;
     std::mt19937 gen_;
     std::normal_distribution<double> l4PostJitterDist_;
+    std::vector<std::vector<InterColumnEdge>> interColumnIncoming_;
+    size_t interColumnCacheColumns_ = 0;
+    bool interColumnCacheValid_ = false;
 };
 
 } // namespace experiment
 } // namespace snnfw
 
 #endif // SNNFW_EXPERIMENT_COMPETITION_MANAGER_H
-

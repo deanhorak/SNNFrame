@@ -61,6 +61,14 @@ int main(int argc, char* argv[]) {
     config.l5InhibitLoser = 1.2;
     config.l5InhibitThreshold = 0.5;
     config.l5MinSpikes = 1;
+    config.enableL5InterColumnInhibition = true;
+    config.l5InterColumnInhibit = 0.02;
+    config.l5InterColumnMinOverlap = 0.30;
+    config.l5InterColumnWinnerScale = 0.50;
+    config.l5InterColumnMaxInhibit = 0.35;
+    config.l5InterColumnMaxOrientationDeltaDeg = 90.0;
+    config.l5InterColumnMaxFrequencyOctaveDelta = 2.0;
+    config.l5InterColumnMaxNeighbors = 64;
 
     // STDP
     config.stdpLtdScale = 0.3;
@@ -68,16 +76,17 @@ int main(int argc, char* argv[]) {
     config.traceStdp = true;
 
     // Classification
-    config.knnK = 5;
-    config.maxPatternsPerClass = 1024;
-    config.enableOutputVote = true;
+    config.knnK = 7;
+    config.maxPatternsPerClass = 2048;
+    config.keepL5History = true;
+    config.enableOutputVote = false;
     config.enableFullPropagation = true;
     config.disableOutputTeach = false;
 
     // Output competition
     config.enableOutputCompetition = true;
-    config.outputCompetitionKeep = 3;
-    config.outputCompetitionMinSpikes = 3;
+    config.outputCompetitionKeep = 1;
+    config.outputCompetitionMinSpikes = 5;
 
     // Convergence
     config.accuracyEpsilon = 0.001;
@@ -111,6 +120,27 @@ int main(int argc, char* argv[]) {
             config.numThreads = std::atoi(argv[++i]);
         } else if (arg == "--seed" && i + 1 < argc) {
             config.seed = std::atoi(argv[++i]);
+        } else if (arg == "--no-output-vote") {
+            config.enableOutputVote = false;
+        } else if (arg == "--output-vote") {
+            config.enableOutputVote = true;
+        } else if (arg == "--no-output-competition") {
+            config.enableOutputCompetition = false;
+        } else if (arg == "--no-output-teach") {
+            config.disableOutputTeach = true;
+        } else if (arg == "--keep-l5-history") {
+            config.keepL5History = true;
+        } else if (arg == "--no-l5-inter-column-inhibit") {
+            config.enableL5InterColumnInhibition = false;
+        } else if (arg == "--l5-inter-column-inhibit" && i + 1 < argc) {
+            config.enableL5InterColumnInhibition = true;
+            config.l5InterColumnInhibit = std::atof(argv[++i]);
+        } else if (arg == "--l5-inter-column-min-overlap" && i + 1 < argc) {
+            config.l5InterColumnMinOverlap = std::atof(argv[++i]);
+        } else if (arg == "--l5-inter-column-winner-scale" && i + 1 < argc) {
+            config.l5InterColumnWinnerScale = std::atof(argv[++i]);
+        } else if (arg == "--l5-inter-column-max" && i + 1 < argc) {
+            config.l5InterColumnMaxInhibit = std::atof(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -125,6 +155,16 @@ int main(int argc, char* argv[]) {
                       << "  --test-limit <n>          Max test images (0 = all)\n"
                       << "  --threads <n>             Spike processor threads\n"
                       << "  --seed <n>                Random seed\n"
+                      << "  --output-vote             Enable output-spike voting\n"
+                      << "  --no-output-vote          Disable output-spike voting\n"
+                      << "  --no-output-competition   Disable output winner masking\n"
+                      << "  --no-output-teach         Disable supervised output teaching\n"
+                      << "  --keep-l5-history         Keep class patterns across passes\n"
+                      << "  --no-l5-inter-column-inhibit Disable cross-column L5 inhibition\n"
+                      << "  --l5-inter-column-inhibit <v>  Set cross-column inhibition strength\n"
+                      << "  --l5-inter-column-min-overlap <v> Min RF overlap for inhibition\n"
+                      << "  --l5-inter-column-winner-scale <v> Winner inhibition scaling [0..1]\n"
+                      << "  --l5-inter-column-max <v>   Max inhibition injected per column\n"
                       << std::endl;
             return 0;
         } else {
@@ -142,4 +182,3 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 }
-

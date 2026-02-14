@@ -44,6 +44,7 @@ int SupervisedTeacher::teach(
                 if (globalIdx < l5WinnerGlobal.size() && l5WinnerGlobal[globalIdx] &&
                     l5Neuron->getInhibition() <= config_.l5InhibitThreshold) {
                     double l5FireTime = baseTime + 15.0 + (colIdxSeq * 0.1) + (localIdx * 0.02);
+                    l5Neuron->fireSignature(l5FireTime);
                     propagator->fireNeuron(l5Neuron->getId(), l5FireTime);
                     l5Neuron->fireAndAcknowledge(l5FireTime);
                     l5Neuron->learnCurrentPattern();
@@ -73,4 +74,3 @@ int SupervisedTeacher::teach(
 
 } // namespace experiment
 } // namespace snnfw
-

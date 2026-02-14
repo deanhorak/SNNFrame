@@ -6,9 +6,14 @@
 #include <thread>
 #include <cmath>
 #include <set>
+#include <random>
 
 namespace snnfw {
 namespace experiment {
+
+namespace {
+constexpr double kL4ToL5SettleMs = 30.0;
+}
 
 // Timing helper for performance profiling
 static int g_imageCount = 0;
@@ -58,8 +63,8 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
     auto t4 = std::chrono::steady_clock::now();
     g_totalL4Ms += std::chrono::duration<double, std::milli>(t4 - t3).count();
 
-    // Wait for L4->L5 propagation
-    encoder_.waitForSimTime(baseTime + 30.0, 200.0);
+    // Wait for L4 signatures (~0-100ms) to propagate into L5 before competition.
+    encoder_.waitForSimTime(baseTime + kL4ToL5SettleMs, 200.0);
     auto t5 = std::chrono::steady_clock::now();
     g_totalWait2Ms += std::chrono::duration<double, std::milli>(t5 - t4).count();
 
@@ -88,6 +93,7 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
                     l5Winners[l5Offset + localIdx] &&
                     l5Neuron->getInhibition() <= config_.l5InhibitThreshold) {
                     double l5FireTime = baseTime + 15.0 + (colIdxSeq * 0.1) + (localIdx * 0.02);
+                    l5Neuron->fireSignature(l5FireTime);
                     network_.propagator->fireNeuron(l5Neuron->getId(), l5FireTime);
                     l5Neuron->fireAndAcknowledge(l5FireTime);
                 }
@@ -232,8 +238,8 @@ double TrainingPipeline::run(EMNISTLoader& trainLoader, EMNISTLoader& testLoader
             auto colHasL4 = competition_.runL4Competition(
                 network_.columns, encoder_.getLastInputFired(), baseTime, network_.propagator);
 
-            // Wait for L4->L5 propagation
-            encoder_.waitForSimTime(baseTime + 30.0, 200.0);
+            // Wait for L4 signatures (~0-100ms) to propagate into L5 before competition.
+            encoder_.waitForSimTime(baseTime + kL4ToL5SettleMs, 200.0);
 
             // L5 competition
             auto l5Winners = competition_.runL5Competition(
@@ -323,14 +329,55 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
 
     std::vector<size_t> testIndices;
     testIndices.reserve(testLoader.size());
-    for (size_t idx = 0; idx < testLoader.size(); ++idx) {
-        int label = testLoader.getImage(idx).label - 1;
-        if (label < 0 || label >= config_.numClasses) continue;
-        if (!config_.includeClasses.empty() &&
-            label < static_cast<int>(config_.includeClasses.size()) &&
-            !config_.includeClasses[label]) continue;
-        testIndices.push_back(idx);
-        if (config_.testLimit > 0 && testIndices.size() >= static_cast<size_t>(config_.testLimit)) break;
+    if (config_.testLimit > 0) {
+        std::vector<std::vector<size_t>> byClass(config_.numClasses);
+        for (size_t idx = 0; idx < testLoader.size(); ++idx) {
+            int label = testLoader.getImage(idx).label - 1;
+            if (label < 0 || label >= config_.numClasses) continue;
+            if (!config_.includeClasses.empty() &&
+                label < static_cast<int>(config_.includeClasses.size()) &&
+                !config_.includeClasses[label]) continue;
+            byClass[label].push_back(idx);
+        }
+        std::mt19937 rng(config_.seed);
+        std::vector<int> activeClasses;
+        for (int cls = 0; cls < config_.numClasses; ++cls) {
+            if (!config_.includeClasses.empty() &&
+                cls < static_cast<int>(config_.includeClasses.size()) &&
+                !config_.includeClasses[cls]) {
+                continue;
+            }
+            if (!byClass[cls].empty()) {
+                std::shuffle(byClass[cls].begin(), byClass[cls].end(), rng);
+                activeClasses.push_back(cls);
+            }
+        }
+        if (!activeClasses.empty()) {
+            size_t cursor = 0;
+            while (testIndices.size() < static_cast<size_t>(config_.testLimit)) {
+                bool pushed = false;
+                for (int cls : activeClasses) {
+                    if (cursor < byClass[cls].size()) {
+                        testIndices.push_back(byClass[cls][cursor]);
+                        pushed = true;
+                        if (testIndices.size() >= static_cast<size_t>(config_.testLimit)) {
+                            break;
+                        }
+                    }
+                }
+                if (!pushed) break;
+                cursor++;
+            }
+        }
+    } else {
+        for (size_t idx = 0; idx < testLoader.size(); ++idx) {
+            int label = testLoader.getImage(idx).label - 1;
+            if (label < 0 || label >= config_.numClasses) continue;
+            if (!config_.includeClasses.empty() &&
+                label < static_cast<int>(config_.includeClasses.size()) &&
+                !config_.includeClasses[label]) continue;
+            testIndices.push_back(idx);
+        }
     }
 
     size_t numTestImages = testIndices.size();
@@ -338,6 +385,9 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
 
     int testCorrect = 0;
     int testTotal = 0;
+    std::vector<std::vector<int>> confusion(
+        config_.numClasses, std::vector<int>(config_.numClasses, 0));
+    std::vector<int> unknownByClass(config_.numClasses, 0);
 
     for (size_t testPos = 0; testPos < numTestImages; ++testPos) {
         size_t testIdx = testIndices[testPos];
@@ -390,7 +440,14 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
         }
 
         testTotal++;
-        if (predictedLabel == label) testCorrect++;
+        if (predictedLabel == label) {
+            testCorrect++;
+        }
+        if (predictedLabel >= 0 && predictedLabel < config_.numClasses) {
+            confusion[label][predictedLabel]++;
+        } else {
+            unknownByClass[label]++;
+        }
 
         if (testTotal % 50 == 0 || testTotal == 1) {
             double acc = 100.0 * testCorrect / testTotal;
@@ -403,9 +460,42 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
     network_.propagator->setStdpEnabled(true);
     network_.spikeProcessor->setStdpEnabled(true);
 
+    // Confusion matrix (rows = true, cols = predicted)
+    std::cout << "\n  Confusion Matrix (rows=true, cols=pred):" << std::endl;
+    std::cout << "     ";
+    for (int c = 0; c < config_.numClasses; ++c) {
+        char labelChar = (c < 26) ? static_cast<char>('A' + c) : '?';
+        std::cout << std::setw(4) << labelChar;
+    }
+    std::cout << std::setw(6) << "UNK";
+    std::cout << std::endl;
+    for (int r = 0; r < config_.numClasses; ++r) {
+        char labelChar = (r < 26) ? static_cast<char>('A' + r) : '?';
+        std::cout << "  " << std::setw(2) << labelChar << " ";
+        for (int c = 0; c < config_.numClasses; ++c) {
+            std::cout << std::setw(4) << confusion[r][c];
+        }
+        std::cout << std::setw(6) << unknownByClass[r];
+        std::cout << std::endl;
+    }
+
+    // Per-class accuracy summary
+    std::cout << "\n  Per-class accuracy:" << std::endl;
+    for (int cls = 0; cls < config_.numClasses; ++cls) {
+        int rowTotal = 0;
+        for (int c = 0; c < config_.numClasses; ++c) {
+            rowTotal += confusion[cls][c];
+        }
+        rowTotal += unknownByClass[cls];
+        double acc = (rowTotal > 0) ? (100.0 * confusion[cls][cls] / rowTotal) : 0.0;
+        char labelChar = (cls < 26) ? static_cast<char>('A' + cls) : '?';
+        std::cout << "    " << labelChar << ": " << std::fixed << std::setprecision(2)
+                  << acc << "% (" << confusion[cls][cls] << "/" << rowTotal << ")"
+                  << std::endl;
+    }
+
     return (testTotal > 0) ? (100.0 * testCorrect / testTotal) : 0.0;
 }
 
 } // namespace experiment
 } // namespace snnfw
-

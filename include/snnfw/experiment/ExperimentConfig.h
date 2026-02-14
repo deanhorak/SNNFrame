@@ -69,6 +69,14 @@ struct ExperimentConfig {
     double l5InhibitLoser = 1.2;
     double l5InhibitThreshold = 0.5;
     int l5MinSpikes = 1;
+    bool enableL5InterColumnInhibition = false;
+    double l5InterColumnInhibit = 0.1;
+    double l5InterColumnMinOverlap = 0.2;
+    double l5InterColumnWinnerScale = 0.25;
+    double l5InterColumnMaxInhibit = 1.0;
+    double l5InterColumnMaxOrientationDeltaDeg = 45.0;
+    double l5InterColumnMaxFrequencyOctaveDelta = 0.75;
+    int l5InterColumnMaxNeighbors = 8;
 
     // --- STDP ---
     double stdpLtdScale = 0.3;
@@ -115,4 +123,3 @@ struct ExperimentConfig {
 } // namespace snnfw
 
 #endif // SNNFW_EXPERIMENT_CONFIG_H
-

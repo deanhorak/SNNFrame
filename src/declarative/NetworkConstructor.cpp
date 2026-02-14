@@ -7,6 +7,8 @@
 #include <sstream>
 #include <algorithm>
 #include <stdexcept>
+#include <random>
+#include <unordered_set>
 
 namespace snnfw {
 namespace declarative {
@@ -36,6 +38,9 @@ ConstructedNetwork NetworkConstructor::construct(const NetworkIR& ir) {
 
     SNNFW_INFO("NetworkConstructor: Phase 3 - Creating connectivity...");
     createConnectivity(ir, result);
+
+    SNNFW_INFO("NetworkConstructor: Phase 3b - Applying connectivity safeguards...");
+    applyConnectivitySafeguards(ir, result);
 
     SNNFW_INFO("NetworkConstructor: Phase 4 - Initializing runtime...");
     initializeRuntime(ir, result);
@@ -357,9 +362,15 @@ void NetworkConstructor::initializeRuntime(const NetworkIR& ir, ConstructedNetwo
     // Create SpikeProcessor
     result.spikeProcessor = std::make_shared<SpikeProcessor>(
         sim.spikeProcessorTimeSlices, sim.spikeProcessorThreads);
+    result.spikeProcessor->setRealTimeSync(sim.realTimeSync);
 
     // Create NetworkPropagator
     result.propagator = std::make_shared<NetworkPropagator>(result.spikeProcessor);
+    result.propagator->setTraceStdpEnabled(sim.traceStdp);
+    result.propagator->setStdpLtdScale(sim.stdpLtdScale);
+    result.propagator->setStdpLtdWindowMs(sim.stdpLtdWindowMs);
+    result.propagator->setStdpEnabled(sim.stdpEnabled);
+    result.spikeProcessor->setStdpEnabled(sim.stdpEnabled);
 
     // Register all dendrites with SpikeProcessor
     for (const auto& dendrite : result.allDendrites) {
@@ -410,6 +421,7 @@ void NetworkConstructor::initializeRuntime(const NetworkIR& ir, ConstructedNetwo
     // Register dendrites
     for (const auto& dendrite : result.allDendrites) {
         result.propagator->registerDendrite(dendrite);
+        dendrite->setNetworkPropagator(result.propagator);
     }
 
     // Register synapses and assign synapse groups
@@ -425,10 +437,173 @@ void NetworkConstructor::initializeRuntime(const NetworkIR& ir, ConstructedNetwo
         }
     }
 
+    // Keep spike-delivery diagnostics parity with emnist_letters_training.cpp.
+    {
+        std::unordered_set<uint64_t> l4NeuronIds;
+        for (const auto& col : result.columns) {
+            auto it = col.layerNeurons.find("L4");
+            if (it == col.layerNeurons.end()) continue;
+            for (const auto& neuron : it->second) {
+                l4NeuronIds.insert(neuron->getId());
+            }
+        }
+        result.spikeProcessor->setInputToL4NeuronIds(l4NeuronIds);
+    }
+
     SNNFW_INFO("  Runtime initialized: SpikeProcessor({} slices, {} threads), "
                "NetworkPropagator registered {} neurons",
                sim.spikeProcessorTimeSlices, sim.spikeProcessorThreads,
                result.allNeuronIds.size());
+}
+
+void NetworkConstructor::applyConnectivitySafeguards(
+    const NetworkIR& ir, ConstructedNetwork& result) {
+    std::unordered_set<uint64_t> knownAxons;
+    std::unordered_set<uint64_t> knownDendrites;
+    for (const auto& ax : result.allAxons) {
+        if (ax) knownAxons.insert(ax->getId());
+    }
+    for (const auto& d : result.allDendrites) {
+        if (d) knownDendrites.insert(d->getId());
+    }
+
+    // Gather all neurons once.
+    std::vector<std::shared_ptr<Neuron>> allNeurons;
+    allNeurons.reserve(result.allNeuronIds.size());
+    allNeurons.insert(allNeurons.end(), result.inputNeurons.begin(), result.inputNeurons.end());
+    for (const auto& pop : result.outputPopulations) {
+        allNeurons.insert(allNeurons.end(), pop.begin(), pop.end());
+    }
+    for (const auto& col : result.columns) {
+        for (const auto& [layerName, neurons] : col.layerNeurons) {
+            allNeurons.insert(allNeurons.end(), neurons.begin(), neurons.end());
+        }
+    }
+
+    // Ensure every neuron has an axon and at least one dendrite.
+    for (const auto& neuron : allNeurons) {
+        if (!neuron) continue;
+
+        std::shared_ptr<Axon> axon;
+        if (neuron->getAxonId() == 0) {
+            axon = factory_.createAxon(neuron->getId());
+            neuron->setAxonId(axon->getId());
+            datastore_.put(axon);
+            if (knownAxons.insert(axon->getId()).second) {
+                result.allAxons.push_back(axon);
+            }
+            datastore_.put(neuron);
+        } else {
+            axon = datastore_.getAxon(neuron->getAxonId());
+            if (axon && knownAxons.insert(axon->getId()).second) {
+                result.allAxons.push_back(axon);
+            }
+        }
+
+        if (neuron->getDendriteIds().empty()) {
+            auto dendrite = factory_.createDendrite(neuron->getId());
+            neuron->addDendrite(dendrite->getId());
+            datastore_.put(dendrite);
+            if (knownDendrites.insert(dendrite->getId()).second) {
+                result.allDendrites.push_back(dendrite);
+            }
+            datastore_.put(neuron);
+        } else {
+            for (uint64_t did : neuron->getDendriteIds()) {
+                auto dendrite = datastore_.getDendrite(did);
+                if (dendrite && knownDendrites.insert(dendrite->getId()).second) {
+                    result.allDendrites.push_back(dendrite);
+                }
+            }
+        }
+    }
+
+    // Identify L5 neurons and output dendrites for L5->Output fallback wiring.
+    std::unordered_set<uint64_t> l5NeuronIds;
+    for (const auto& col : result.columns) {
+        auto it = col.layerNeurons.find("L5");
+        if (it == col.layerNeurons.end()) continue;
+        for (const auto& n : it->second) {
+            if (n) l5NeuronIds.insert(n->getId());
+        }
+    }
+    std::vector<uint64_t> outputDendrites;
+    for (const auto& pop : result.outputPopulations) {
+        for (const auto& n : pop) {
+            if (n && !n->getDendriteIds().empty()) {
+                outputDendrites.push_back(n->getDendriteIds().front());
+            }
+        }
+    }
+
+    bool hasL5ToOutputProjection = false;
+    double l5OutputWeight = 0.02;
+    double l5OutputDelay = 1.5;
+    std::string l5OutputGroup = "L5ToOutput";
+    for (const auto& proj : ir.projections) {
+        bool targetsOutput = (proj.target == ir.outputLayer.name || proj.target == "OutputLayer");
+        bool sourceIsL5 = (proj.source.find("/L5") != std::string::npos);
+        if (!targetsOutput || !sourceIsL5) continue;
+        hasL5ToOutputProjection = true;
+        l5OutputWeight = proj.weight;
+        l5OutputDelay = proj.delay;
+        if (!proj.synapseGroup.empty()) {
+            l5OutputGroup = proj.synapseGroup;
+        }
+        break;
+    }
+
+    std::mt19937 rng(42);
+    size_t addedL5Output = 0;
+    size_t addedAutapse = 0;
+    for (const auto& neuron : allNeurons) {
+        if (!neuron) continue;
+        auto axon = datastore_.getAxon(neuron->getAxonId());
+        if (!axon) continue;
+        if (axon->getSynapseCount() > 0) continue;
+
+        bool wired = false;
+        if (hasL5ToOutputProjection &&
+            l5NeuronIds.find(neuron->getId()) != l5NeuronIds.end() &&
+            !outputDendrites.empty()) {
+            std::uniform_int_distribution<size_t> pick(0, outputDendrites.size() - 1);
+            uint64_t targetDendriteId = outputDendrites[pick(rng)];
+            auto dendrite = datastore_.getDendrite(targetDendriteId);
+            if (dendrite) {
+                auto syn = factory_.createSynapse(axon->getId(), targetDendriteId,
+                                                  l5OutputWeight, l5OutputDelay);
+                axon->addSynapse(syn->getId());
+                dendrite->addSynapse(syn->getId());
+                datastore_.put(syn);
+                datastore_.put(axon);
+                datastore_.put(dendrite);
+                result.allSynapses.push_back(syn);
+                result.synapseGroups[l5OutputGroup].push_back(syn);
+                wired = true;
+                addedL5Output++;
+            }
+        }
+
+        if (!wired && !neuron->getDendriteIds().empty()) {
+            uint64_t targetDendriteId = neuron->getDendriteIds().front();
+            auto dendrite = datastore_.getDendrite(targetDendriteId);
+            if (dendrite) {
+                auto syn = factory_.createSynapse(axon->getId(), targetDendriteId, 0.1, 1.0);
+                axon->addSynapse(syn->getId());
+                dendrite->addSynapse(syn->getId());
+                datastore_.put(syn);
+                datastore_.put(axon);
+                datastore_.put(dendrite);
+                result.allSynapses.push_back(syn);
+                addedAutapse++;
+            }
+        }
+    }
+
+    if (addedL5Output > 0 || addedAutapse > 0) {
+        SNNFW_INFO("  Connectivity safeguards added {} L5->Output synapses and {} fallback autapses",
+                   addedL5Output, addedAutapse);
+    }
 }
 
 // ============================================================================

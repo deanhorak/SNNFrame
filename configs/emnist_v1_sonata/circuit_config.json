@@ -44,7 +44,7 @@
     "output_layer": {
       "name": "OutputLayer",
       "num_classes": 26,
-      "neurons_per_class": 3,
+      "neurons_per_class": 4,
       "neuron_params": {
         "window_size_ms": 500.0,
         "similarity_threshold": 1.2,
@@ -68,8 +68,8 @@
                       "column_template": {
                         "template_name": "CorticalMicroCircuit",
                         "naming_pattern": "Orient_{orientation}_Freq_{frequency}",
-                        "orientations": [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5],
-                        "frequencies": [1.0, 1.0],
+                        "orientations": [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165],
+                        "frequencies": [0.8, 1.6, 3.2],
                         "layers": [
                           {
                             "name": "L1",
@@ -214,7 +214,7 @@
         "source": "V1/*/L5",
         "target": "OutputLayer",
         "pattern": "random_sparse",
-        "probability": 0.02,
+        "probability": 0.01,
         "weight": 0.02,
         "max_weight": 0.5,
         "delay": 1.5,
@@ -257,10 +257,17 @@
         "l4_keep": 8,
         "l5_keep": 8,
         "enable_l5_inhibition": true,
+        "enable_l5_inter_column_inhibition": true,
+        "l5_inter_column_inhibit": 0.02,
+        "l5_inter_column_min_overlap": 0.30,
+        "l5_inter_column_winner_scale": 0.50,
+        "l5_inter_column_max_inhibit": 0.35,
+        "l5_inter_column_max_orientation_delta_deg": 90.0,
+        "l5_inter_column_max_frequency_octave_delta": 2.0,
+        "l5_inter_column_max_neighbors": 64,
         "mask_min_active": 6
       },
       "inter_image_gap_ms": 550.0
     }
   }
 }
-

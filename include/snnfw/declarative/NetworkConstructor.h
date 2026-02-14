@@ -101,6 +101,9 @@ private:
     // Phase 3: Create connectivity from projection rules
     void createConnectivity(const NetworkIR& ir, ConstructedNetwork& result);
 
+    // Apply parity safeguards used by the legacy C++ experiment builder
+    void applyConnectivitySafeguards(const NetworkIR& ir, ConstructedNetwork& result);
+
     // Phase 4: Initialize SpikeProcessor and NetworkPropagator
     void initializeRuntime(const NetworkIR& ir, ConstructedNetwork& result);
 
@@ -132,4 +135,3 @@ private:
 } // namespace snnfw
 
 #endif // SNNFW_DECLARATIVE_NETWORK_CONSTRUCTOR_H
-

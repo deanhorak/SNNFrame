@@ -540,6 +540,18 @@ SimulationConfigIR SONATAParser::parseSimulation(const nlohmann::json& j) const 
         sim.l4Keep = comp.value("l4_keep", 8);
         sim.l5Keep = comp.value("l5_keep", 8);
         sim.enableL5Inhibition = comp.value("enable_l5_inhibition", true);
+        sim.enableL5InterColumnInhibition =
+            comp.value("enable_l5_inter_column_inhibition", false);
+        sim.l5InterColumnInhibit = comp.value("l5_inter_column_inhibit", 0.1);
+        sim.l5InterColumnMinOverlap = comp.value("l5_inter_column_min_overlap", 0.2);
+        sim.l5InterColumnWinnerScale = comp.value("l5_inter_column_winner_scale", 0.25);
+        sim.l5InterColumnMaxInhibit = comp.value("l5_inter_column_max_inhibit", 1.0);
+        sim.l5InterColumnMaxOrientationDeltaDeg =
+            comp.value("l5_inter_column_max_orientation_delta_deg", 45.0);
+        sim.l5InterColumnMaxFrequencyOctaveDelta =
+            comp.value("l5_inter_column_max_frequency_octave_delta", 0.75);
+        sim.l5InterColumnMaxNeighbors =
+            comp.value("l5_inter_column_max_neighbors", 8);
         sim.maskMinActive = comp.value("mask_min_active", 6);
     }
     sim.interImageGapMs = j.value("inter_image_gap_ms", 550.0);
@@ -566,4 +578,3 @@ SaccadeConfigIR SONATAParser::parseSaccades(const nlohmann::json& j) const {
 
 } // namespace declarative
 } // namespace snnfw
-
