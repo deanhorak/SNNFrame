@@ -480,7 +480,8 @@ void SpikeProcessor::deliverSliceAsync(size_t sliceIndex, double simTime) {
         for (const auto& event : eventsToDeliver) {
             const char* eventType = event->getEventType();
 
-            if (strcmp(eventType, "ActionPotential") == 0) {
+            // OPTIMIZATION: Check first char instead of full string compare
+            if (eventType[0] == 'A') { // "ActionPotential"
                 // Forward spike - deliver to dendrite
                 auto spike = std::static_pointer_cast<ActionPotential>(event);
 
@@ -519,7 +520,7 @@ void SpikeProcessor::deliverSliceAsync(size_t sliceIndex, double simTime) {
                                spike->getDendriteId());
                 }
             }
-            else if (strcmp(eventType, "RetrogradeActionPotential") == 0) {
+            else if (eventType[0] == 'R') { // "RetrogradeActionPotential"
                 // Retrograde spike - deliver to synapse for STDP
                 auto retrogradeSpike = std::static_pointer_cast<RetrogradeActionPotential>(event);
 
@@ -576,7 +577,7 @@ void SpikeProcessor::deliverSliceAsync(size_t sliceIndex, double simTime) {
                         // Check event type and deliver accordingly
                         const char* eventType = event->getEventType();
 
-                        if (strcmp(eventType, "ActionPotential") == 0) {
+                        if (eventType[0] == 'A') {
                             // Forward spike - deliver to dendrite
                             auto spike = std::static_pointer_cast<ActionPotential>(event);
 
@@ -615,7 +616,7 @@ void SpikeProcessor::deliverSliceAsync(size_t sliceIndex, double simTime) {
                                            spike->getDendriteId());
                             }
                         }
-                        else if (strcmp(eventType, "RetrogradeActionPotential") == 0) {
+                        else if (eventType[0] == 'R') {
                             // Retrograde spike - deliver to synapse for STDP
                             auto retrogradeSpike = std::static_pointer_cast<RetrogradeActionPotential>(event);
 

@@ -179,14 +179,23 @@ int NetworkPropagator::fireNeuron(uint64_t neuronId, double firingTime) {
     // For each synapse, create and schedule multiple action potentials based on temporal signature
     for (uint64_t synapseId : synapseIds) {
         std::shared_ptr<Synapse> synapse;
+        
+        // OPTIMIZATION: Try to get synapse without locking if possible, 
+        // or rely on the fact that registries shouldn't change during simulation.
+        // Ideally, 'Axon' should hold vector<shared_ptr<Synapse>> instead of vector<uint64_t> IDs.
+        // For now, we minimize the scope, but this architecture needs a refactor to cache pointers.
+        
+        // Current fix: The lookup is unavoidable without changing Axon.h, 
+        // but we can at least check if the registry is read-only during run-time 
+        // to avoid the lock, or use a shared_mutex (Reader-Writer lock).
+        
+        // (Applying the lock here as is, but noting this is the #1 performance killer)
+        // See recommendation #2 above.
         {
-            std::lock_guard<std::mutex> lock(synapseMutex_);
-            auto it = synapseRegistry_.find(synapseId);
-            if (it == synapseRegistry_.end()) {
-                SNNFW_WARN("NetworkPropagator: Synapse {} not found", synapseId);
-                continue;
-            }
-            synapse = it->second;
+             std::lock_guard<std::mutex> lock(synapseMutex_);
+             auto it = synapseRegistry_.find(synapseId);
+             if (it == synapseRegistry_.end()) continue;
+             synapse = it->second;
         }
 
         double baseDelay = synapse->getDelay();
@@ -240,27 +249,31 @@ int NetworkPropagator::fireNeuron(uint64_t neuronId, double firingTime) {
             }
         }
 
-        // Schedule retrograde action potentials for STDP
-        // These travel back to the synapse to update weights based on timing
-        // Use the same delay as forward spikes (retrograde signals also take time to propagate)
-        double retrogradeArrivalTime = firingTime + baseDelay;
+        // Trace STDP already updates via pre/post traces in sendAcknowledgment()
+        // and deliverSpikeToNeuron(). Scheduling retrograde STDP in that mode
+        // would double-apply temporal updates.
+        if (!traceStdpEnabled_) {
+            // Schedule retrograde action potentials for classic acknowledgment STDP.
+            // These travel back to the synapse to update weights based on timing.
+            double retrogradeArrivalTime = firingTime + baseDelay;
 
-        auto retrogradeAP = std::make_shared<RetrogradeActionPotential>(
-            synapseId,
-            neuronId,
-            retrogradeArrivalTime,
-            firingTime,  // dispatchTime (when the forward spike was sent)
-            firingTime   // lastFiringTime (when this neuron fired)
-        );
+            auto retrogradeAP = std::make_shared<RetrogradeActionPotential>(
+                synapseId,
+                neuronId,
+                retrogradeArrivalTime,
+                firingTime,  // dispatchTime (when the forward spike was sent)
+                firingTime   // lastFiringTime (when this neuron fired)
+            );
 
-        if (spikeProcessor_->scheduleRetrogradeSpike(retrogradeAP)) {
-            SNNFW_TRACE("NetworkPropagator: Scheduled retrograde spike from neuron {} to synapse {} at time {:.3f}ms",
-                       neuronId, synapseId, retrogradeArrivalTime);
-        } else {
-            // Silently drop out-of-range retrograde spikes (common during high-frequency firing)
-            // Use TRACE level for debugging if needed
-            SNNFW_TRACE("NetworkPropagator: Failed to schedule retrograde spike from neuron {} to synapse {} (out of time range)",
-                       neuronId, synapseId);
+            if (spikeProcessor_->scheduleRetrogradeSpike(retrogradeAP)) {
+                SNNFW_TRACE("NetworkPropagator: Scheduled retrograde spike from neuron {} to synapse {} at time {:.3f}ms",
+                           neuronId, synapseId, retrogradeArrivalTime);
+            } else {
+                // Silently drop out-of-range retrograde spikes (common during high-frequency firing)
+                // Use TRACE level for debugging if needed
+                SNNFW_TRACE("NetworkPropagator: Failed to schedule retrograde spike from neuron {} to synapse {} (out of time range)",
+                           neuronId, synapseId);
+            }
         }
     }
 

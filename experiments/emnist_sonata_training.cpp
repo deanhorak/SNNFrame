@@ -82,6 +82,16 @@ int main(int argc, char* argv[]) {
     config.enableOutputVote = false;
     config.enableFullPropagation = true;
     config.disableOutputTeach = false;
+    config.enablePairDisambiguation = false;
+    config.pairDisambMarginTI = 0.0;
+    config.pairDisambMarginGQ = 0.0;
+    config.pairDisambMarginIL = 0.0;
+    config.enableTemporalLatencyReadout = false;
+    config.temporalLatencyWeight = 0.35;
+    config.enableReadoutIdfWeighting = false;
+    config.readoutIdfPower = 1.0;
+    config.enableL5DivisiveNormalization = false;
+    config.l5DivisiveTargetPerColumn = 64;
 
     // Output competition
     config.enableOutputCompetition = true;
@@ -120,6 +130,8 @@ int main(int argc, char* argv[]) {
             config.numThreads = std::atoi(argv[++i]);
         } else if (arg == "--seed" && i + 1 < argc) {
             config.seed = std::atoi(argv[++i]);
+        } else if (arg == "--pixel-threshold" && i + 1 < argc) {
+            config.pixelThreshold = std::atof(argv[++i]);
         } else if (arg == "--no-output-vote") {
             config.enableOutputVote = false;
         } else if (arg == "--output-vote") {
@@ -130,6 +142,37 @@ int main(int argc, char* argv[]) {
             config.disableOutputTeach = true;
         } else if (arg == "--keep-l5-history") {
             config.keepL5History = true;
+        } else if (arg == "--pair-disambiguation") {
+            config.enablePairDisambiguation = true;
+        } else if (arg == "--no-pair-disambiguation") {
+            config.enablePairDisambiguation = false;
+        } else if (arg == "--pair-disamb-ti-margin" && i + 1 < argc) {
+            config.pairDisambMarginTI = std::atof(argv[++i]);
+        } else if (arg == "--pair-disamb-gq-margin" && i + 1 < argc) {
+            config.pairDisambMarginGQ = std::atof(argv[++i]);
+        } else if (arg == "--pair-disamb-il-margin" && i + 1 < argc) {
+            config.pairDisambMarginIL = std::atof(argv[++i]);
+        } else if (arg == "--temporal-latency-readout") {
+            config.enableTemporalLatencyReadout = true;
+        } else if (arg == "--no-temporal-latency-readout") {
+            config.enableTemporalLatencyReadout = false;
+        } else if (arg == "--temporal-latency-weight" && i + 1 < argc) {
+            config.enableTemporalLatencyReadout = true;
+            config.temporalLatencyWeight = std::atof(argv[++i]);
+        } else if (arg == "--readout-idf-weighting") {
+            config.enableReadoutIdfWeighting = true;
+        } else if (arg == "--no-readout-idf-weighting") {
+            config.enableReadoutIdfWeighting = false;
+        } else if (arg == "--readout-idf-power" && i + 1 < argc) {
+            config.enableReadoutIdfWeighting = true;
+            config.readoutIdfPower = std::atof(argv[++i]);
+        } else if (arg == "--l5-divisive-norm") {
+            config.enableL5DivisiveNormalization = true;
+        } else if (arg == "--no-l5-divisive-norm") {
+            config.enableL5DivisiveNormalization = false;
+        } else if (arg == "--l5-divisive-target" && i + 1 < argc) {
+            config.enableL5DivisiveNormalization = true;
+            config.l5DivisiveTargetPerColumn = std::atoi(argv[++i]);
         } else if (arg == "--no-l5-inter-column-inhibit") {
             config.enableL5InterColumnInhibition = false;
         } else if (arg == "--l5-inter-column-inhibit" && i + 1 < argc) {
@@ -155,6 +198,7 @@ int main(int argc, char* argv[]) {
                       << "  --test-limit <n>          Max test images (0 = all)\n"
                       << "  --threads <n>             Spike processor threads\n"
                       << "  --seed <n>                Random seed\n"
+                      << "  --pixel-threshold <v>     Input pixel threshold [0..1]\n"
                       << "  --output-vote             Enable output-spike voting\n"
                       << "  --no-output-vote          Disable output-spike voting\n"
                       << "  --no-output-competition   Disable output winner masking\n"
@@ -165,6 +209,20 @@ int main(int argc, char* argv[]) {
                       << "  --l5-inter-column-min-overlap <v> Min RF overlap for inhibition\n"
                       << "  --l5-inter-column-winner-scale <v> Winner inhibition scaling [0..1]\n"
                       << "  --l5-inter-column-max <v>   Max inhibition injected per column\n"
+                      << "  --pair-disambiguation       Enable pair refinement for T/I and G/Q\n"
+                      << "  --no-pair-disambiguation    Disable pair refinement\n"
+                      << "  --pair-disamb-ti-margin <v> Min centroid margin to flip T/I\n"
+                      << "  --pair-disamb-gq-margin <v> Min centroid margin to flip G/Q\n"
+                      << "  --pair-disamb-il-margin <v> Min centroid margin to flip I/L\n"
+                      << "  --temporal-latency-readout Enable latency-aware L5 readout fusion\n"
+                      << "  --no-temporal-latency-readout Disable latency-aware L5 readout fusion\n"
+                      << "  --temporal-latency-weight <v> Fusion weight for latency similarity [0..1]\n"
+                      << "  --readout-idf-weighting    Enable sparse-feature weighting in readout similarity\n"
+                      << "  --no-readout-idf-weighting Disable sparse-feature weighting in readout similarity\n"
+                      << "  --readout-idf-power <v>    IDF weighting exponent (default: 1.0)\n"
+                      << "  --l5-divisive-norm         Enable per-column L5 divisive normalization\n"
+                      << "  --no-l5-divisive-norm      Disable per-column L5 divisive normalization\n"
+                      << "  --l5-divisive-target <n>   Target summed L5 activity per active column\n"
                       << std::endl;
             return 0;
         } else {

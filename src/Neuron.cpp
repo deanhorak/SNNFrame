@@ -108,7 +108,8 @@ void Neuron::learnCurrentPattern() {
             }
         }
 
-        if (bestIndex != -1 && bestSim >= threshold) {
+        const double effectiveThreshold = std::clamp(threshold, 0.0, 1.0);
+        if (bestIndex != -1 && bestSim >= effectiveThreshold) {
             // Blend new pattern into most similar existing pattern
             BinaryPattern::blend(referencePatterns[bestIndex], newPattern, 0.2);
             SNNFW_DEBUG("Neuron {}: Blended new pattern into pattern #{} (similarity={:.3f})",
@@ -266,13 +267,24 @@ double Neuron::computeSimilarity(const BinaryPattern& a, const BinaryPattern& b)
 }
 
 bool Neuron::shouldFire() const {
-    // Convert current spikes to BinaryPattern for comparison
-    BinaryPattern currentPattern(spikes, windowSize);
+    // Copy spikes under lock to avoid data races with concurrent delivery.
+    std::vector<double> spikesCopy;
+    {
+        std::lock_guard<std::mutex> lock(spikesMutex_);
+        if (spikes.empty()) {
+            return false;
+        }
+        spikesCopy = spikes;
+    }
 
+    // Convert current spikes to BinaryPattern for comparison
+    BinaryPattern currentPattern(spikesCopy, windowSize);
+
+    const double effectiveThreshold = std::clamp(threshold, 0.0, 1.0);
     for (const auto& refPattern : referencePatterns) {
         // Compare using selected similarity metric
         double similarity = computeSimilarity(currentPattern, refPattern);
-        if (similarity >= threshold) {
+        if (similarity >= effectiveThreshold) {
             return true;
         }
     }

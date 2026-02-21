@@ -95,6 +95,10 @@ void ExperimentRunner::buildNetwork() {
 }
 
 void ExperimentRunner::syncConfigFromIR(const declarative::NetworkIR& ir) {
+    // Sync encoder/input parameters from the parsed IR
+    config_.pixelThreshold = ir.inputLayer.pixelThreshold;
+    config_.inputLatencyMs = ir.inputLayer.latencyMs;
+
     // Sync architecture parameters from the parsed IR
     config_.numClasses = ir.outputLayer.numClasses;
     config_.neuronsPerOutputClass = ir.outputLayer.neuronsPerClass;

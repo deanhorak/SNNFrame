@@ -14,13 +14,16 @@ BinaryPattern::BinaryPattern(const std::vector<double>& spikeTimes, double windo
         return;  // Invalid window, treat as empty
     }
 
-    // Find the minimum spike time to use as reference (normalize to start at 0)
-    double minTime = *std::min_element(spikeTimes.begin(), spikeTimes.end());
+    // Anchor bins to the trailing temporal window rather than the first spike.
+    // This preserves latency/phase information inside the window, which is
+    // important for temporal pattern discrimination.
+    double maxTime = *std::max_element(spikeTimes.begin(), spikeTimes.end());
+    double windowStart = maxTime - windowSize;
 
     // Convert spike times to binned representation (relative to first spike)
     for (double spikeTime : spikeTimes) {
-        // Normalize to relative time (0 = first spike)
-        double relativeTime = spikeTime - minTime;
+        // Normalize to relative time within [windowStart, windowStart + windowSize)
+        double relativeTime = spikeTime - windowStart;
 
         // Only consider spikes within [0, windowSize)
         if (relativeTime < 0.0 || relativeTime >= windowSize) {

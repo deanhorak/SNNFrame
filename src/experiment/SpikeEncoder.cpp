@@ -3,6 +3,7 @@
 #include <thread>
 #include <algorithm>
 #include <iostream>
+#include <limits>
 
 namespace snnfw {
 namespace experiment {
@@ -72,8 +73,26 @@ double SpikeEncoder::encodeAndInject(
     }
 
     static int g_encodeCount = 0;
-    if (++g_encodeCount % 100 == 0) {
-        std::cout << "[DEBUG] Encoded " << spikeCount << " input spikes for image " << g_encodeCount << std::endl;
+    static int g_windowCount = 0;
+    static int g_windowSpikeSum = 0;
+    static int g_windowMin = std::numeric_limits<int>::max();
+    static int g_windowMax = 0;
+    ++g_encodeCount;
+    ++g_windowCount;
+    g_windowSpikeSum += spikeCount;
+    g_windowMin = std::min(g_windowMin, spikeCount);
+    g_windowMax = std::max(g_windowMax, spikeCount);
+    if (g_encodeCount % 100 == 0) {
+        const double avgSpikes =
+            static_cast<double>(g_windowSpikeSum) / static_cast<double>(std::max(1, g_windowCount));
+        std::cout << "[DEBUG] Encoded " << spikeCount << " input spikes for image " << g_encodeCount
+                  << " (avg=" << avgSpikes << ", min=" << g_windowMin
+                  << ", max=" << g_windowMax << " over last " << g_windowCount << ")"
+                  << std::endl;
+        g_windowCount = 0;
+        g_windowSpikeSum = 0;
+        g_windowMin = std::numeric_limits<int>::max();
+        g_windowMax = 0;
     }
 
     return baseTime;
@@ -112,4 +131,3 @@ void SpikeEncoder::waitForSimTime(double targetTimeMs, double timeoutMs) {
 
 } // namespace experiment
 } // namespace snnfw
-

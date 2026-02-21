@@ -7,6 +7,7 @@
 #include <cmath>
 #include <set>
 #include <random>
+#include <limits>
 
 namespace snnfw {
 namespace experiment {
@@ -44,6 +45,7 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
     InferenceResult result;
     size_t totalL5 = static_cast<size_t>(config_.numColumns) * config_.layer5Neurons;
     result.l5Counts.assign(totalL5, 0);
+    result.l5Latencies.assign(totalL5, std::numeric_limits<uint16_t>::max());
     result.outSpikeCounts.assign(config_.numClasses, 0);
 
     auto t1 = std::chrono::steady_clock::now();
@@ -122,7 +124,7 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
     auto t7 = std::chrono::steady_clock::now();
 
     // Collect L5 counts
-    collectL5Counts(result.l5Counts, l5Winners);
+    collectL5Readout(result.l5Counts, result.l5Latencies, l5Winners, baseTime);
 
     // Collect output spike counts
     for (int i = 0; i < config_.numClasses; ++i) {
@@ -162,8 +164,11 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
     return result;
 }
 
-void TrainingPipeline::collectL5Counts(std::vector<uint16_t>& counts,
-                                        const std::vector<bool>& l5Winners) {
+void TrainingPipeline::collectL5Readout(std::vector<uint16_t>& counts,
+                                        std::vector<uint16_t>& latencies,
+                                        const std::vector<bool>& l5Winners,
+                                        double baseTime) {
+    static constexpr uint16_t kNoLatency = std::numeric_limits<uint16_t>::max();
     size_t offset = 0;
     for (auto& col : network_.columns) {
         auto l5It = col.layerNeurons.find("L5");
@@ -177,9 +182,47 @@ void TrainingPipeline::collectL5Counts(std::vector<uint16_t>& counts,
                 if (globalIdx < counts.size()) {
                     counts[globalIdx] = static_cast<uint16_t>(std::min<size_t>(spikes, 65535));
                 }
+                if (globalIdx < latencies.size()) {
+                    const auto& spikeTimes = l5Neurons[i]->getSpikes();
+                    if (!spikeTimes.empty()) {
+                        const auto firstIt = std::min_element(spikeTimes.begin(), spikeTimes.end());
+                        const double firstMs = *firstIt - baseTime;
+                        const int latencyMs = static_cast<int>(std::lround(std::max(0.0, firstMs)));
+                        latencies[globalIdx] = static_cast<uint16_t>(std::min(latencyMs, 65534));
+                    } else {
+                        latencies[globalIdx] = kNoLatency;
+                    }
+                }
             }
         }
         offset += l5Neurons.size();
+    }
+}
+
+void TrainingPipeline::applyL5DivisiveNormalization(std::vector<uint16_t>& counts) const {
+    if (!config_.enableL5DivisiveNormalization) return;
+    if (config_.numColumns <= 0 || config_.layer5Neurons <= 0) return;
+    const int target = std::max(1, config_.l5DivisiveTargetPerColumn);
+    const size_t neuronsPerColumn = static_cast<size_t>(config_.layer5Neurons);
+    const size_t expected = static_cast<size_t>(config_.numColumns) * neuronsPerColumn;
+    if (counts.size() < expected) return;
+
+    for (int col = 0; col < config_.numColumns; ++col) {
+        const size_t start = static_cast<size_t>(col) * neuronsPerColumn;
+        const size_t end = start + neuronsPerColumn;
+        int colSum = 0;
+        for (size_t i = start; i < end; ++i) {
+            colSum += static_cast<int>(counts[i]);
+        }
+        if (colSum <= 0) continue;
+
+        const double scale = static_cast<double>(target) / static_cast<double>(colSum);
+        for (size_t i = start; i < end; ++i) {
+            if (counts[i] == 0) continue;
+            int v = static_cast<int>(std::lround(static_cast<double>(counts[i]) * scale));
+            if (v <= 0) v = 1;
+            counts[i] = static_cast<uint16_t>(std::min(v, 65535));
+        }
     }
 }
 
@@ -254,13 +297,16 @@ double TrainingPipeline::run(EMNISTLoader& trainLoader, EMNISTLoader& testLoader
             // Collect L5 counts and store for classification
             size_t totalL5 = static_cast<size_t>(config_.numColumns) * config_.layer5Neurons;
             L5CountVector firedL5Counts(totalL5, 0);
-            collectL5Counts(firedL5Counts, l5Winners);
+            L5LatencyVector firedL5Latencies(
+                totalL5, std::numeric_limits<uint16_t>::max());
+            collectL5Readout(firedL5Counts, firedL5Latencies, l5Winners, baseTime);
+            applyL5DivisiveNormalization(firedL5Counts);
 
             // Check if any L5 neurons fired
             bool hasL5Activity = false;
             for (auto c : firedL5Counts) { if (c > 0) { hasL5Activity = true; break; } }
             if (hasL5Activity) {
-                classifier_.storePattern(label, firedL5Counts);
+                classifier_.storePattern(label, firedL5Counts, firedL5Latencies);
             }
 
             trainCount[label]++;
@@ -395,6 +441,7 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
         int label = emnistImg.label - 1;
 
         auto inference = runInference(emnistImg);
+        applyL5DivisiveNormalization(inference.l5Counts);
 
         int predictedLabel = -1;
         double maxSimilarity = 0.0;
@@ -418,14 +465,36 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
 
         // Fall back to k-NN
         if (predictedLabel < 0) {
-            auto res = classifier_.classifyKNN(inference.l5Counts);
+            auto res = classifier_.classifyKNN(inference.l5Counts, inference.l5Latencies);
             predictedLabel = res.first;
             maxSimilarity = res.second;
             if (predictedLabel < 0) {
-                auto res2 = classifier_.classifyCentroid(inference.l5Counts);
+                auto res2 = classifier_.classifyCentroid(inference.l5Counts, inference.l5Latencies);
                 predictedLabel = res2.first;
                 maxSimilarity = res2.second;
             }
+        }
+
+        if (config_.enablePairDisambiguation && predictedLabel >= 0) {
+            auto refinePair = [&](int classA, int classB, double margin) {
+                if (margin <= 0.0) return;
+                if (predictedLabel != classA && predictedLabel != classB) return;
+                const double simA = classifier_.centroidSimilarity(
+                    inference.l5Counts, classA, inference.l5Latencies);
+                const double simB = classifier_.centroidSimilarity(
+                    inference.l5Counts, classB, inference.l5Latencies);
+                const int bestClass = (simA >= simB) ? classA : classB;
+                const double bestSim = std::max(simA, simB);
+                const double predSim = (predictedLabel == classA) ? simA : simB;
+                if (bestClass != predictedLabel && (bestSim - predSim) >= margin) {
+                    predictedLabel = bestClass;
+                    maxSimilarity = bestSim;
+                }
+            };
+            // Pair-specific refinement targeting dominant confusions.
+            refinePair(19, 8, config_.pairDisambMarginTI);  // T <-> I
+            refinePair(6, 16, config_.pairDisambMarginGQ);  // G <-> Q
+            refinePair(8, 11, config_.pairDisambMarginIL);  // I <-> L
         }
 
         // DEBUG: Log first few test predictions

@@ -34,7 +34,7 @@
       "rows": 28,
       "cols": 28,
       "latency_ms": 15.0,
-      "pixel_threshold": 0.36,
+      "pixel_threshold": 0.4,
       "neuron_params": {
         "window_size_ms": 500.0,
         "similarity_threshold": 1.2,

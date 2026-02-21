@@ -22,6 +22,7 @@ namespace experiment {
  */
 struct InferenceResult {
     std::vector<uint16_t> l5Counts;       // spike counts per L5 neuron
+    std::vector<uint16_t> l5Latencies;    // first-spike latency per L5 neuron
     std::vector<int> outSpikeCounts;      // per-class output spike counts
     std::vector<int> rawOutSpikeCounts;   // before output competition
     size_t totalL5Spikes = 0;
@@ -67,8 +68,11 @@ private:
     int totalPatternsLearned_ = 0;
 
     // Helpers
-    void collectL5Counts(std::vector<uint16_t>& counts,
-                         const std::vector<bool>& l5Winners);
+    void collectL5Readout(std::vector<uint16_t>& counts,
+                          std::vector<uint16_t>& latencies,
+                          const std::vector<bool>& l5Winners,
+                          double baseTime);
+    void applyL5DivisiveNormalization(std::vector<uint16_t>& counts) const;
 
     void applyHomeostasis();
 
@@ -79,4 +83,3 @@ private:
 } // namespace snnfw
 
 #endif // SNNFW_EXPERIMENT_TRAINING_PIPELINE_H
-

@@ -100,6 +100,16 @@ struct ExperimentConfig {
     bool enableOutputVote = true;
     bool enableFullPropagation = true;
     bool disableOutputTeach = false;
+    bool enablePairDisambiguation = false;
+    double pairDisambMarginTI = 0.0;
+    double pairDisambMarginGQ = 0.0;
+    double pairDisambMarginIL = 0.0;
+    bool enableTemporalLatencyReadout = false;
+    double temporalLatencyWeight = 0.35;
+    bool enableReadoutIdfWeighting = false;
+    double readoutIdfPower = 1.0;
+    bool enableL5DivisiveNormalization = false;
+    int l5DivisiveTargetPerColumn = 64;
 
     // --- Convergence ---
     double accuracyEpsilon = 0.001;
