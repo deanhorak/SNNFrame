@@ -124,6 +124,12 @@ void ExperimentRunner::syncConfigFromIR(const declarative::NetworkIR& ir) {
     config_.interImageGapMs = ir.simulation.interImageGapMs;
     config_.l4Keep = ir.simulation.l4Keep;
     config_.l5Keep = ir.simulation.l5Keep;
+    if (!config_.hasSimilarityRuntimeOverrides) {
+        config_.enableSimilarityCompetition = ir.simulation.enableSimilarityCompetition;
+        config_.l4SimilarityWeight = ir.simulation.l4SimilarityWeight;
+        config_.l5SimilarityWeight = ir.simulation.l5SimilarityWeight;
+        config_.traceSimilarityCompetition = ir.simulation.traceSimilarityCompetition;
+    }
     config_.enableL5Inhibition = ir.simulation.enableL5Inhibition;
     config_.enableL5InterColumnInhibition = ir.simulation.enableL5InterColumnInhibition;
     config_.l5InterColumnInhibit = ir.simulation.l5InterColumnInhibit;
@@ -139,6 +145,11 @@ void ExperimentRunner::syncConfigFromIR(const declarative::NetworkIR& ir) {
     config_.stdpLtdScale = ir.simulation.stdpLtdScale;
     config_.stdpLtdWindowMs = ir.simulation.stdpLtdWindowMs;
     config_.traceStdp = ir.simulation.traceStdp;
+    config_.enableStdpEligibilityGate = ir.simulation.enableStdpEligibilityGate;
+    config_.stdpEligibilityMinUpdates = ir.simulation.stdpEligibilityMinUpdates;
+    config_.stdpEligibilityMinLtp = ir.simulation.stdpEligibilityMinLtp;
+    config_.stdpEligibilityThreshold = ir.simulation.stdpEligibilityThreshold;
+    config_.stdpEligibilityLtdPenalty = ir.simulation.stdpEligibilityLtdPenalty;
     config_.numThreads = ir.simulation.spikeProcessorThreads;
 
     // Determine layer sizes from column template or first column

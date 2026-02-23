@@ -151,9 +151,18 @@ struct SimulationConfigIR {
     double stdpLtdWindowMs = 70.0;
     bool traceStdp = true;
     bool freezeStdpDuringTesting = true;
+    bool enableStdpEligibilityGate = true;
+    int stdpEligibilityMinUpdates = 1;
+    int stdpEligibilityMinLtp = 0;
+    double stdpEligibilityThreshold = -0.002;
+    double stdpEligibilityLtdPenalty = 0.5;
     // Competition
     int l4Keep = 8;
     int l5Keep = 8;
+    bool enableSimilarityCompetition = true;
+    double l4SimilarityWeight = 0.25;
+    double l5SimilarityWeight = 0.60;
+    bool traceSimilarityCompetition = false;
     bool enableL5Inhibition = true;
     bool enableL5InterColumnInhibition = false;
     double l5InterColumnInhibit = 0.1;

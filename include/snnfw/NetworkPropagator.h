@@ -80,6 +80,18 @@ public:
         StdpTimingStats other;
     };
 
+    struct NeuronStdpEligibilityStats {
+        uint64_t totalUpdates = 0;
+        uint64_t ltpUpdates = 0;
+        uint64_t ltdUpdates = 0;
+        double ltpMagnitude = 0.0;
+        double ltdMagnitude = 0.0;
+
+        double score(double ltdPenalty = 1.0) const {
+            return ltpMagnitude - (ltdPenalty * ltdMagnitude);
+        }
+    };
+
     struct DeliveryStats {
         uint64_t total = 0;
         uint64_t l5ToOutput = 0;
@@ -309,6 +321,21 @@ public:
     StdpTimingGroupStats getStdpTimingStats() const;
 
     /**
+     * @brief Reset per-neuron STDP eligibility accumulators.
+     *
+     * Call at the beginning of each training sample to track eligibility
+     * induced by that sample's spikes only.
+     */
+    void resetNeuronStdpEligibility();
+
+    /**
+     * @brief Get accumulated STDP eligibility stats for one neuron.
+     * @param neuronId Target neuron ID
+     * @return Eligibility stats (all zeros if neuron has no updates)
+     */
+    NeuronStdpEligibilityStats getNeuronStdpEligibility(uint64_t neuronId) const;
+
+    /**
      * @brief Enable trace-based STDP (pre/post traces) instead of acknowledgment timing
      * @param enabled When true, use nearest-neighbor pre/post traces for STDP
      */
@@ -349,6 +376,8 @@ public:
     ScheduleStats getScheduleStats() const;
 
 private:
+    void accumulateNeuronStdpEligibility(uint64_t neuronId, double timeDifference);
+
     // Spike processor for temporal delivery
     std::shared_ptr<SpikeProcessor> spikeProcessor_;
 
@@ -423,6 +452,10 @@ private:
 
     std::unordered_map<uint64_t, SynapseGroup> synapseGroupMap_;
     mutable std::mutex synapseGroupMutex_;
+
+    // Per-neuron STDP eligibility accumulators (thread-safe)
+    std::unordered_map<uint64_t, NeuronStdpEligibilityStats> neuronStdpEligibility_;
+    mutable std::mutex neuronStdpEligibilityMutex_;
 
     // Delivery stats (thread-safe)
     std::atomic<uint64_t> deliveryTotal_{0};

@@ -466,6 +466,10 @@ void NetworkPropagator::sendAcknowledgment(const std::shared_ptr<SpikeAcknowledg
     double timeDifference = acknowledgment->getTimeDifference();
     uint64_t synapseId = acknowledgment->getSynapseId();
 
+    // Track per-neuron STDP eligibility from timing, independent of
+    // whether the eventual synaptic update is clipped or deferred.
+    accumulateNeuronStdpEligibility(acknowledgment->getPostsynapticNeuronId(), timeDifference);
+
     if (traceStdpEnabled_) {
         double lastPreTime = 0.0;
         bool hasLastPre = false;
@@ -735,6 +739,7 @@ void NetworkPropagator::resetStdpUpdateStats() {
     stdpUpdatesReward_.store(0, std::memory_order_relaxed);
     resetStdpGroupStats();
     resetStdpTimingStats();
+    resetNeuronStdpEligibility();
 }
 
 NetworkPropagator::StdpUpdateStats NetworkPropagator::getStdpUpdateStats() const {
@@ -805,6 +810,46 @@ NetworkPropagator::StdpTimingGroupStats NetworkPropagator::getStdpTimingStats() 
     stats.other.postBeforePre = stdpOtherPostBeforePre_.load(std::memory_order_relaxed);
     stats.other.nearZero = stdpOtherNearZero_.load(std::memory_order_relaxed);
     return stats;
+}
+
+void NetworkPropagator::accumulateNeuronStdpEligibility(uint64_t neuronId, double timeDifference) {
+    if (neuronId == 0) return;
+    if (timeDifference == 0.0) return;
+
+    NeuronStdpEligibilityStats delta;
+    if (timeDifference > 0.0) {
+        delta.totalUpdates = 1;
+        delta.ltpUpdates = 1;
+        delta.ltpMagnitude = stdpAPlus_ * std::exp(-timeDifference / stdpTauPlus_);
+    } else {
+        delta.totalUpdates = 1;
+        delta.ltdUpdates = 1;
+        delta.ltdMagnitude =
+            stdpAMinus_ * stdpLtdScale_ * std::exp(timeDifference / stdpTauMinus_);
+    }
+
+    std::lock_guard<std::mutex> lock(neuronStdpEligibilityMutex_);
+    auto& stats = neuronStdpEligibility_[neuronId];
+    stats.totalUpdates += delta.totalUpdates;
+    stats.ltpUpdates += delta.ltpUpdates;
+    stats.ltdUpdates += delta.ltdUpdates;
+    stats.ltpMagnitude += delta.ltpMagnitude;
+    stats.ltdMagnitude += delta.ltdMagnitude;
+}
+
+void NetworkPropagator::resetNeuronStdpEligibility() {
+    std::lock_guard<std::mutex> lock(neuronStdpEligibilityMutex_);
+    neuronStdpEligibility_.clear();
+}
+
+NetworkPropagator::NeuronStdpEligibilityStats
+NetworkPropagator::getNeuronStdpEligibility(uint64_t neuronId) const {
+    std::lock_guard<std::mutex> lock(neuronStdpEligibilityMutex_);
+    auto it = neuronStdpEligibility_.find(neuronId);
+    if (it == neuronStdpEligibility_.end()) {
+        return {};
+    }
+    return it->second;
 }
 
 void NetworkPropagator::setTraceStdpEnabled(bool enabled) {

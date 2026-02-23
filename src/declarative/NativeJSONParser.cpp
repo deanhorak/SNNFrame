@@ -287,11 +287,21 @@ SimulationConfigIR NativeJSONParser::parseSimulation(const nlohmann::json& j) {
         sim.stdpLtdWindowMs = stdp.value("ltd_window_ms", 70.0);
         sim.traceStdp = stdp.value("trace_stdp", true);
         sim.freezeStdpDuringTesting = stdp.value("freeze_during_testing", true);
+        sim.enableStdpEligibilityGate = stdp.value("eligibility_gate", true);
+        sim.stdpEligibilityMinUpdates = stdp.value("eligibility_min_updates", 1);
+        sim.stdpEligibilityMinLtp = stdp.value("eligibility_min_ltp", 0);
+        sim.stdpEligibilityThreshold = stdp.value("eligibility_threshold", -0.002);
+        sim.stdpEligibilityLtdPenalty = stdp.value("eligibility_ltd_penalty", 0.5);
     }
     if (j.contains("competition")) {
         const auto& comp = j["competition"];
         sim.l4Keep = comp.value("l4_keep", 8);
         sim.l5Keep = comp.value("l5_keep", 8);
+        sim.enableSimilarityCompetition = comp.value("enable_similarity_competition", true);
+        sim.l4SimilarityWeight = comp.value("l4_similarity_weight", 0.25);
+        sim.l5SimilarityWeight = comp.value("l5_similarity_weight", 0.60);
+        sim.traceSimilarityCompetition =
+            comp.value("trace_similarity_competition", false);
         sim.enableL5Inhibition = comp.value("enable_l5_inhibition", true);
         sim.enableL5InterColumnInhibition =
             comp.value("enable_l5_inter_column_inhibition", false);

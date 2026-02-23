@@ -14,8 +14,8 @@ namespace experiment {
 /**
  * @brief Supervised teaching signal: forces the correct output population to spike.
  *
- * During training, fires the correct output neurons and has them learn
- * the current pattern so STDP can bind L5 activity to label-specific outputs.
+ * During training, fires the correct output neurons and learns patterns
+ * only when STDP-derived eligibility criteria are met.
  */
 class SupervisedTeacher {
 public:
@@ -52,4 +52,3 @@ private:
 } // namespace snnfw
 
 #endif // SNNFW_EXPERIMENT_SUPERVISED_TEACHER_H
-

@@ -1,8 +1,30 @@
 #include "snnfw/experiment/SupervisedTeacher.h"
 #include "snnfw/declarative/NetworkConstructor.h"
+#include <algorithm>
 
 namespace snnfw {
 namespace experiment {
+
+namespace {
+bool meetsStdpEligibility(const ExperimentConfig& config,
+                          const std::shared_ptr<NetworkPropagator>& propagator,
+                          uint64_t neuronId) {
+    if (!config.enableStdpEligibilityGate || !propagator) {
+        return true;
+    }
+
+    const auto stats = propagator->getNeuronStdpEligibility(neuronId);
+    const uint64_t minUpdates = static_cast<uint64_t>(
+        std::max(0, config.stdpEligibilityMinUpdates));
+    const uint64_t minLtp = static_cast<uint64_t>(
+        std::max(0, config.stdpEligibilityMinLtp));
+
+    if (stats.totalUpdates < minUpdates || stats.ltpUpdates < minLtp) {
+        return false;
+    }
+    return stats.score(config.stdpEligibilityLtdPenalty) >= config.stdpEligibilityThreshold;
+}
+} // namespace
 
 SupervisedTeacher::SupervisedTeacher(const ExperimentConfig& config)
     : config_(config)
@@ -22,6 +44,7 @@ int SupervisedTeacher::teach(
 
     if (config_.enableFullPropagation) {
         // Fire L5 winners in full propagation mode so downstream STDP can occur
+        bool hasEligibleL5Winner = false;
         int colIdxSeq = 0;
         size_t l5Offset = 0;
         for (auto& col : columns) {
@@ -47,7 +70,11 @@ int SupervisedTeacher::teach(
                     l5Neuron->fireSignature(l5FireTime);
                     propagator->fireNeuron(l5Neuron->getId(), l5FireTime);
                     l5Neuron->fireAndAcknowledge(l5FireTime);
-                    l5Neuron->learnCurrentPattern();
+                    const bool eligible = meetsStdpEligibility(config_, propagator, l5Neuron->getId());
+                    hasEligibleL5Winner = hasEligibleL5Winner || eligible;
+                    if (eligible) {
+                        l5Neuron->learnCurrentPattern();
+                    }
                 }
                 localIdx++;
             }
@@ -63,8 +90,16 @@ int SupervisedTeacher::teach(
                 outputNeuron->fireSignature(teachTime);
                 propagator->fireNeuron(outputNeuron->getId(), teachTime);
                 outputNeuron->fireAndAcknowledge(teachTime);
-                outputNeuron->learnCurrentPattern();
-                patternsLearned++;
+                bool outputEligible = meetsStdpEligibility(config_, propagator, outputNeuron->getId());
+                if (config_.enableStdpEligibilityGate && !outputEligible && hasEligibleL5Winner) {
+                    // When output STDP traces lag, allow supervised write if upstream winners
+                    // for this image already satisfied STDP eligibility.
+                    outputEligible = true;
+                }
+                if (outputEligible) {
+                    outputNeuron->learnCurrentPattern();
+                    patternsLearned++;
+                }
             }
         }
     }

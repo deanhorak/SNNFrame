@@ -1,6 +1,7 @@
 #include "snnfw/experiment/CompetitionManager.h"
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <unordered_set>
 
 namespace snnfw {
@@ -70,6 +71,20 @@ double CompetitionManager::computeFeatureGate(
     return oriWeight * freqWeight;
 }
 
+double CompetitionManager::computeHybridCompetitionScore(
+    size_t spikeCount,
+    size_t maxSpikeCount,
+    double bestSimilarity,
+    double similarityWeight)
+{
+    const double weight = std::clamp(similarityWeight, 0.0, 1.0);
+    const double spikeDrive = static_cast<double>(spikeCount);
+    const double similarity = std::clamp(bestSimilarity, 0.0, 1.0);
+    const double similarityScale = std::max(1.0, static_cast<double>(maxSpikeCount));
+    const double similarityDrive = similarity * similarityScale;
+    return ((1.0 - weight) * spikeDrive) + (weight * similarityDrive);
+}
+
 void CompetitionManager::rebuildInterColumnCache(
     const std::vector<declarative::ConstructedNetwork::ColumnGroup>& columns)
 {
@@ -111,6 +126,14 @@ std::vector<bool> CompetitionManager::runL4Competition(
 {
     std::vector<bool> colHasL4(columns.size(), false);
     int colIdxSeq = 0;
+    double callWinnerSpikeSum = 0.0;
+    double callWinnerSimSum = 0.0;
+    double callWinnerScoreSum = 0.0;
+    double callPoolSpikeSum = 0.0;
+    double callPoolSimSum = 0.0;
+    double callPoolScoreSum = 0.0;
+    int callWinnerCount = 0;
+    int callPoolCount = 0;
 
     for (auto& col : columns) {
         auto l4It = col.layerNeurons.find("L4");
@@ -136,18 +159,48 @@ std::vector<bool> CompetitionManager::runL4Competition(
         }
 
         const int L4_KEEP = std::max(1, config_.l4Keep);
-        std::vector<std::pair<size_t, size_t>> ranked;
+        struct RankedNeuron {
+            double score = 0.0;
+            size_t spikes = 0;
+            double similarity = 0.0;
+            size_t idx = 0;
+        };
+
+        std::vector<RankedNeuron> ranked;
         ranked.reserve(l4Neurons.size());
+        size_t maxSpikes = 0;
         for (size_t i = 0; i < l4Neurons.size(); ++i) {
-            ranked.emplace_back(l4Neurons[i]->getSpikes().size(), i);
+            RankedNeuron candidate;
+            candidate.idx = i;
+            candidate.spikes = l4Neurons[i]->getSpikes().size();
+            candidate.similarity = std::max(0.0, l4Neurons[i]->getBestSimilarity());
+            ranked.push_back(candidate);
+            maxSpikes = std::max(maxSpikes, candidate.spikes);
+        }
+        for (auto& candidate : ranked) {
+            candidate.score = config_.enableSimilarityCompetition
+                ? computeHybridCompetitionScore(
+                    candidate.spikes, maxSpikes, candidate.similarity, config_.l4SimilarityWeight)
+                : static_cast<double>(candidate.spikes);
+            if (candidate.spikes > 0) {
+                callPoolSpikeSum += static_cast<double>(candidate.spikes);
+                callPoolSimSum += candidate.similarity;
+                callPoolScoreSum += candidate.score;
+                callPoolCount++;
+            }
         }
         std::sort(ranked.begin(), ranked.end(),
-                  [](const auto& a, const auto& b) { return a.first > b.first; });
+                  [](const RankedNeuron& a, const RankedNeuron& b) {
+                      if (a.score != b.score) return a.score > b.score;
+                      if (a.spikes != b.spikes) return a.spikes > b.spikes;
+                      if (a.similarity != b.similarity) return a.similarity > b.similarity;
+                      return a.idx < b.idx;
+                  });
 
         int winners = 0;
         for (size_t i = 0; i < ranked.size() && winners < L4_KEEP; ++i) {
-            if (ranked[i].first == 0) break;
-            int localIdx = static_cast<int>(ranked[i].second);
+            if (ranked[i].spikes == 0) break;
+            int localIdx = static_cast<int>(ranked[i].idx);
             int l4Row = localIdx / config_.layer4Size;
             int l4Col = localIdx % config_.layer4Size;
             double spatialDelay = (l4Row * config_.l4RowDelay) + (l4Col * config_.l4ColDelay);
@@ -160,10 +213,31 @@ std::vector<bool> CompetitionManager::runL4Competition(
             propagator->fireNeuron(l4Neuron->getId(), l4Fire);
             l4Neuron->fireAndAcknowledge(l4Fire);
             colHasL4[colIdxSeq] = true;
+            callWinnerSpikeSum += static_cast<double>(ranked[i].spikes);
+            callWinnerSimSum += ranked[i].similarity;
+            callWinnerScoreSum += ranked[i].score;
+            callWinnerCount++;
             winners++;
         }
 
         colIdxSeq++;
+    }
+
+    l4CompetitionCalls_++;
+    if (config_.traceSimilarityCompetition && (l4CompetitionCalls_ % 200 == 0) && callPoolCount > 0) {
+        const double winnerCountSafe = static_cast<double>(std::max(1, callWinnerCount));
+        const double poolCountSafe = static_cast<double>(callPoolCount);
+        std::cout << "[SIM][L4] call=" << l4CompetitionCalls_
+                  << " winners=" << callWinnerCount
+                  << " avgWinnerSpikes=" << (callWinnerSpikeSum / winnerCountSafe)
+                  << " avgWinnerSim=" << (callWinnerSimSum / winnerCountSafe)
+                  << " avgWinnerScore=" << (callWinnerScoreSum / winnerCountSafe)
+                  << " avgPoolSpikes=" << (callPoolSpikeSum / poolCountSafe)
+                  << " avgPoolSim=" << (callPoolSimSum / poolCountSafe)
+                  << " avgPoolScore=" << (callPoolScoreSum / poolCountSafe)
+                  << " simWeight=" << config_.l4SimilarityWeight
+                  << " enabled=" << (config_.enableSimilarityCompetition ? "1" : "0")
+                  << std::endl;
     }
     return colHasL4;
 }
@@ -195,6 +269,14 @@ std::vector<bool> CompetitionManager::runL5Competition(
     std::vector<ColumnState> perColumn(columns.size());
     int colIdxSeq = 0;
     size_t l5Offset = 0;
+    double callWinnerSpikeSum = 0.0;
+    double callWinnerSimSum = 0.0;
+    double callWinnerScoreSum = 0.0;
+    double callPoolSpikeSum = 0.0;
+    double callPoolSimSum = 0.0;
+    double callPoolScoreSum = 0.0;
+    int callWinnerCount = 0;
+    int callPoolCount = 0;
 
     for (auto& col : columns) {
         auto it = col.layerNeurons.find("L5");
@@ -210,22 +292,56 @@ std::vector<bool> CompetitionManager::runL5Competition(
         }
         perColumn[colIdxSeq].active = true;
 
-        std::vector<std::pair<size_t, size_t>> ranked;
+        struct RankedNeuron {
+            double score = 0.0;
+            size_t spikes = 0;
+            double similarity = 0.0;
+            size_t idx = 0;
+        };
+
+        std::vector<RankedNeuron> ranked;
         ranked.reserve(l5Neurons.size());
+        size_t maxSpikes = 0;
         for (size_t i = 0; i < l5Neurons.size(); ++i) {
-            ranked.emplace_back(l5Neurons[i]->getSpikes().size(), i);
+            RankedNeuron candidate;
+            candidate.idx = i;
+            candidate.spikes = l5Neurons[i]->getSpikes().size();
+            candidate.similarity = std::max(0.0, l5Neurons[i]->getBestSimilarity());
+            ranked.push_back(candidate);
+            maxSpikes = std::max(maxSpikes, candidate.spikes);
+        }
+        for (auto& candidate : ranked) {
+            candidate.score = config_.enableSimilarityCompetition
+                ? computeHybridCompetitionScore(
+                    candidate.spikes, maxSpikes, candidate.similarity, config_.l5SimilarityWeight)
+                : static_cast<double>(candidate.spikes);
+            if (candidate.spikes > 0) {
+                callPoolSpikeSum += static_cast<double>(candidate.spikes);
+                callPoolSimSum += candidate.similarity;
+                callPoolScoreSum += candidate.score;
+                callPoolCount++;
+            }
         }
         std::sort(ranked.begin(), ranked.end(),
-                  [](const auto& a, const auto& b) { return a.first > b.first; });
+                  [](const RankedNeuron& a, const RankedNeuron& b) {
+                      if (a.score != b.score) return a.score > b.score;
+                      if (a.spikes != b.spikes) return a.spikes > b.spikes;
+                      if (a.similarity != b.similarity) return a.similarity > b.similarity;
+                      return a.idx < b.idx;
+                  });
 
         int winners = 0;
         std::vector<bool> l5WinnerLocal(l5Neurons.size(), false);
         double winnerDrive = 0.0;
         for (size_t i = 0; i < ranked.size() && winners < l5Keep; ++i) {
-            if (ranked[i].first < static_cast<size_t>(config_.l5MinSpikes)) break;
-            l5WinnerGlobal[l5Offset + ranked[i].second] = true;
-            l5WinnerLocal[ranked[i].second] = true;
-            winnerDrive += static_cast<double>(ranked[i].first);
+            if (ranked[i].spikes < static_cast<size_t>(config_.l5MinSpikes)) break;
+            l5WinnerGlobal[l5Offset + ranked[i].idx] = true;
+            l5WinnerLocal[ranked[i].idx] = true;
+            winnerDrive += ranked[i].score;
+            callWinnerSpikeSum += static_cast<double>(ranked[i].spikes);
+            callWinnerSimSum += ranked[i].similarity;
+            callWinnerScoreSum += ranked[i].score;
+            callWinnerCount++;
             winners++;
         }
         perColumn[colIdxSeq].localWinners = std::move(l5WinnerLocal);
@@ -279,6 +395,23 @@ std::vector<bool> CompetitionManager::runL5Competition(
                 }
             }
         }
+    }
+
+    l5CompetitionCalls_++;
+    if (config_.traceSimilarityCompetition && (l5CompetitionCalls_ % 200 == 0) && callPoolCount > 0) {
+        const double winnerCountSafe = static_cast<double>(std::max(1, callWinnerCount));
+        const double poolCountSafe = static_cast<double>(callPoolCount);
+        std::cout << "[SIM][L5] call=" << l5CompetitionCalls_
+                  << " winners=" << callWinnerCount
+                  << " avgWinnerSpikes=" << (callWinnerSpikeSum / winnerCountSafe)
+                  << " avgWinnerSim=" << (callWinnerSimSum / winnerCountSafe)
+                  << " avgWinnerScore=" << (callWinnerScoreSum / winnerCountSafe)
+                  << " avgPoolSpikes=" << (callPoolSpikeSum / poolCountSafe)
+                  << " avgPoolSim=" << (callPoolSimSum / poolCountSafe)
+                  << " avgPoolScore=" << (callPoolScoreSum / poolCountSafe)
+                  << " simWeight=" << config_.l5SimilarityWeight
+                  << " enabled=" << (config_.enableSimilarityCompetition ? "1" : "0")
+                  << std::endl;
     }
 
     return l5WinnerGlobal;

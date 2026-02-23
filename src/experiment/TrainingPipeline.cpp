@@ -270,6 +270,9 @@ double TrainingPipeline::run(EMNISTLoader& trainLoader, EMNISTLoader& testLoader
                 !config_.includeClasses[label]) continue;
             if (trainCount[label] >= config_.trainingExamplesPerClass) continue;
 
+            // Track STDP eligibility per image to gate pattern memory updates.
+            network_.propagator->resetNeuronStdpEligibility();
+
             // Encode and inject spikes
             double baseTime = encoder_.encodeAndInject(
                 emnistImg, network_.inputNeurons, network_.columns, network_.outputPopulations);

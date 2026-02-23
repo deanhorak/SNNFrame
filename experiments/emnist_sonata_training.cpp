@@ -50,6 +50,10 @@ int main(int argc, char* argv[]) {
     // Competition
     config.l4Keep = 8;
     config.l5Keep = 8;
+    config.enableSimilarityCompetition = true;
+    config.l4SimilarityWeight = 0.25;
+    config.l5SimilarityWeight = 0.60;
+    config.traceSimilarityCompetition = false;
     config.l4RowDelay = 0.3;
     config.l4ColDelay = 0.2;
     config.l4PostShiftMs = -6.0;
@@ -74,6 +78,11 @@ int main(int argc, char* argv[]) {
     config.stdpLtdScale = 0.3;
     config.stdpLtdWindowMs = 70.0;
     config.traceStdp = true;
+    config.enableStdpEligibilityGate = true;
+    config.stdpEligibilityMinUpdates = 1;
+    config.stdpEligibilityMinLtp = 0;
+    config.stdpEligibilityThreshold = -0.002;
+    config.stdpEligibilityLtdPenalty = 0.5;
 
     // Classification
     config.knnK = 7;
@@ -136,10 +145,46 @@ int main(int argc, char* argv[]) {
             config.enableOutputVote = false;
         } else if (arg == "--output-vote") {
             config.enableOutputVote = true;
+        } else if (arg == "--no-similarity-competition") {
+            config.enableSimilarityCompetition = false;
+            config.hasSimilarityRuntimeOverrides = true;
+        } else if (arg == "--similarity-competition") {
+            config.enableSimilarityCompetition = true;
+            config.hasSimilarityRuntimeOverrides = true;
+        } else if (arg == "--l4-similarity-weight" && i + 1 < argc) {
+            config.enableSimilarityCompetition = true;
+            config.l4SimilarityWeight = std::atof(argv[++i]);
+            config.hasSimilarityRuntimeOverrides = true;
+        } else if (arg == "--l5-similarity-weight" && i + 1 < argc) {
+            config.enableSimilarityCompetition = true;
+            config.l5SimilarityWeight = std::atof(argv[++i]);
+            config.hasSimilarityRuntimeOverrides = true;
+        } else if (arg == "--trace-similarity-competition") {
+            config.traceSimilarityCompetition = true;
+            config.hasSimilarityRuntimeOverrides = true;
+        } else if (arg == "--no-trace-similarity-competition") {
+            config.traceSimilarityCompetition = false;
+            config.hasSimilarityRuntimeOverrides = true;
         } else if (arg == "--no-output-competition") {
             config.enableOutputCompetition = false;
         } else if (arg == "--no-output-teach") {
             config.disableOutputTeach = true;
+        } else if (arg == "--no-stdp-eligibility-gate") {
+            config.enableStdpEligibilityGate = false;
+        } else if (arg == "--stdp-eligibility-gate") {
+            config.enableStdpEligibilityGate = true;
+        } else if (arg == "--stdp-eligibility-min-updates" && i + 1 < argc) {
+            config.enableStdpEligibilityGate = true;
+            config.stdpEligibilityMinUpdates = std::atoi(argv[++i]);
+        } else if (arg == "--stdp-eligibility-min-ltp" && i + 1 < argc) {
+            config.enableStdpEligibilityGate = true;
+            config.stdpEligibilityMinLtp = std::atoi(argv[++i]);
+        } else if (arg == "--stdp-eligibility-threshold" && i + 1 < argc) {
+            config.enableStdpEligibilityGate = true;
+            config.stdpEligibilityThreshold = std::atof(argv[++i]);
+        } else if (arg == "--stdp-eligibility-ltd-penalty" && i + 1 < argc) {
+            config.enableStdpEligibilityGate = true;
+            config.stdpEligibilityLtdPenalty = std::atof(argv[++i]);
         } else if (arg == "--keep-l5-history") {
             config.keepL5History = true;
         } else if (arg == "--pair-disambiguation") {
@@ -201,8 +246,20 @@ int main(int argc, char* argv[]) {
                       << "  --pixel-threshold <v>     Input pixel threshold [0..1]\n"
                       << "  --output-vote             Enable output-spike voting\n"
                       << "  --no-output-vote          Disable output-spike voting\n"
+                      << "  --similarity-competition  Enable hybrid similarity/spike competition\n"
+                      << "  --no-similarity-competition Disable hybrid similarity/spike competition\n"
+                      << "  --l4-similarity-weight <v> Similarity weight for L4 competition [0..1]\n"
+                      << "  --l5-similarity-weight <v> Similarity weight for L5 competition [0..1]\n"
+                      << "  --trace-similarity-competition Emit periodic winner/pool similarity diagnostics\n"
+                      << "  --no-trace-similarity-competition Disable similarity diagnostics\n"
                       << "  --no-output-competition   Disable output winner masking\n"
                       << "  --no-output-teach         Disable supervised output teaching\n"
+                      << "  --stdp-eligibility-gate   Require STDP eligibility before pattern learning\n"
+                      << "  --no-stdp-eligibility-gate Disable STDP eligibility gating\n"
+                      << "  --stdp-eligibility-min-updates <n> Min STDP updates before learning\n"
+                      << "  --stdp-eligibility-min-ltp <n> Min STDP LTP updates before learning\n"
+                      << "  --stdp-eligibility-threshold <v> Min STDP eligibility score for learning\n"
+                      << "  --stdp-eligibility-ltd-penalty <v> LTD penalty in eligibility score\n"
                       << "  --keep-l5-history         Keep class patterns across passes\n"
                       << "  --no-l5-inter-column-inhibit Disable cross-column L5 inhibition\n"
                       << "  --l5-inter-column-inhibit <v>  Set cross-column inhibition strength\n"

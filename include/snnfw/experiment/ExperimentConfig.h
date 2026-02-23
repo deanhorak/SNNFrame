@@ -58,6 +58,11 @@ struct ExperimentConfig {
     int tilesPerColumn = 3;
     int l4Keep = 8;
     int l5Keep = 8;
+    bool enableSimilarityCompetition = true;
+    double l4SimilarityWeight = 0.25;
+    double l5SimilarityWeight = 0.60;
+    bool traceSimilarityCompetition = false;
+    bool hasSimilarityRuntimeOverrides = false;
     double l4RowDelay = 0.3;
     double l4ColDelay = 0.2;
     double interImageGapMs = 550.0;
@@ -82,6 +87,11 @@ struct ExperimentConfig {
     double stdpLtdScale = 0.3;
     double stdpLtdWindowMs = 70.0;
     bool traceStdp = true;
+    bool enableStdpEligibilityGate = true;
+    int stdpEligibilityMinUpdates = 1;
+    int stdpEligibilityMinLtp = 0;
+    double stdpEligibilityThreshold = -0.002;
+    double stdpEligibilityLtdPenalty = 0.5;
 
     // --- Homeostasis ---
     double l4TargetRate = 8.0;

@@ -10,6 +10,7 @@
 #include <array>
 #include <random>
 #include <cstddef>
+#include <cstdint>
 
 namespace snnfw {
 namespace experiment {
@@ -81,12 +82,20 @@ private:
         double maxOrientationDeltaDeg,
         double maxFrequencyOctaveDelta);
 
+    static double computeHybridCompetitionScore(
+        size_t spikeCount,
+        size_t maxSpikeCount,
+        double bestSimilarity,
+        double similarityWeight);
+
     const ExperimentConfig& config_;
     std::mt19937 gen_;
     std::normal_distribution<double> l4PostJitterDist_;
     std::vector<std::vector<InterColumnEdge>> interColumnIncoming_;
     size_t interColumnCacheColumns_ = 0;
     bool interColumnCacheValid_ = false;
+    uint64_t l4CompetitionCalls_ = 0;
+    uint64_t l5CompetitionCalls_ = 0;
 };
 
 } // namespace experiment

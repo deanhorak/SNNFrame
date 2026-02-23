@@ -1,6 +1,7 @@
 #include "snnfw/NeuralObjectFactory.h"
 #include "snnfw/Logger.h"
 #include <sstream>
+#include <algorithm>
 
 namespace snnfw {
 
@@ -38,9 +39,20 @@ std::shared_ptr<Neuron> NeuralObjectFactory::createNeuron(
     size_t maxReferencePatterns) {
     
     uint64_t id = getNextId(ObjectType::NEURON);
+    const double clampedThreshold = std::clamp(similarityThreshold, 0.0, 1.0);
+    if (clampedThreshold != similarityThreshold) {
+        static uint64_t invalidThresholdWarnCount = 0;
+        if (invalidThresholdWarnCount < 20) {
+            invalidThresholdWarnCount++;
+            SNNFW_WARN(
+                "NeuralObjectFactory: Clamped invalid similarity threshold {} to {} for neuron {}",
+                similarityThreshold, clampedThreshold, id);
+        }
+    }
+
     auto neuron = std::make_shared<Neuron>(
         windowSizeMs,
-        similarityThreshold,
+        clampedThreshold,
         maxReferencePatterns,
         id);
     
@@ -340,4 +352,3 @@ uint64_t NeuralObjectFactory::getNextId(ObjectType type) {
 }
 
 } // namespace snnfw
-

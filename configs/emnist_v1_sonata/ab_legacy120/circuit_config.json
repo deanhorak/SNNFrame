@@ -12,19 +12,19 @@
     "neuron_params": {
       "cortical_default": {
         "window_size_ms": 500.0,
-        "similarity_threshold": 1.0,
+        "similarity_threshold": 1.2,
         "max_reference_patterns": 500,
         "similarity_metric": "cosine"
       },
       "input_neuron": {
         "window_size_ms": 500.0,
-        "similarity_threshold": 1.0,
+        "similarity_threshold": 1.2,
         "max_reference_patterns": 500,
         "similarity_metric": "cosine"
       },
       "output_neuron": {
         "window_size_ms": 500.0,
-        "similarity_threshold": 1.0,
+        "similarity_threshold": 1.2,
         "max_reference_patterns": 500,
         "similarity_metric": "cosine"
       }
@@ -37,7 +37,7 @@
       "pixel_threshold": 0.36,
       "neuron_params": {
         "window_size_ms": 500.0,
-        "similarity_threshold": 1.0,
+        "similarity_threshold": 1.2,
         "max_reference_patterns": 500
       }
     },
@@ -47,7 +47,7 @@
       "neurons_per_class": 4,
       "neuron_params": {
         "window_size_ms": 500.0,
-        "similarity_threshold": 1.0,
+        "similarity_threshold": 1.2,
         "max_reference_patterns": 500
       }
     },
