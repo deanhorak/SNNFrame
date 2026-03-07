@@ -19,6 +19,16 @@ namespace experiment {
  */
 class SupervisedTeacher {
 public:
+    struct TeachStats {
+        int l5WinnerCandidates = 0;
+        int l5WinnerEligible = 0;
+        int l5PatternsLearned = 0;
+        int outputCandidates = 0;
+        int outputEligible = 0;
+        int outputPatternsLearned = 0;
+        int outputEligibilityFallbacks = 0;
+    };
+
     explicit SupervisedTeacher(const ExperimentConfig& config);
 
     /**
@@ -42,7 +52,8 @@ public:
               const std::vector<bool>& colHasL4,
               std::vector<std::vector<std::shared_ptr<Neuron>>>& outputPopulations,
               double baseTime,
-              std::shared_ptr<NetworkPropagator> propagator);
+              std::shared_ptr<NetworkPropagator> propagator,
+              TeachStats* statsOut = nullptr);
 
 private:
     const ExperimentConfig& config_;

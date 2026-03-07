@@ -274,6 +274,7 @@ SaccadeConfigIR NativeJSONParser::parseSaccades(const nlohmann::json& j) {
 
 SimulationConfigIR NativeJSONParser::parseSimulation(const nlohmann::json& j) {
     SimulationConfigIR sim;
+    sim.connectivitySeed = j.value("connectivity_seed", 0u);
     if (j.contains("spike_processor")) {
         const auto& sp = j["spike_processor"];
         sim.spikeProcessorTimeSlices = sp.value("time_slices", 10000);

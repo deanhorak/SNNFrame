@@ -91,6 +91,7 @@ public:
 private:
     NeuralObjectFactory& factory_;
     Datastore& datastore_;
+    unsigned int connectivitySeed_ = 0;
 
     // Phase 1: Build hierarchy using NetworkBuilder
     void buildHierarchy(const NetworkIR& ir, ConstructedNetwork& result);

@@ -65,6 +65,9 @@ int main(int argc, char* argv[]) {
     config.l5InhibitLoser = 1.2;
     config.l5InhibitThreshold = 0.5;
     config.l5MinSpikes = 1;
+    config.l5WinnerMinSimilarity = 0.0;
+    config.l5WinnerMinScoreMargin = 0.0;
+    config.l5WinnerGateBootstrapPatterns = 24;
     config.enableL5InterColumnInhibition = true;
     config.l5InterColumnInhibit = 0.02;
     config.l5InterColumnMinOverlap = 0.30;
@@ -83,9 +86,14 @@ int main(int argc, char* argv[]) {
     config.stdpEligibilityMinLtp = 0;
     config.stdpEligibilityThreshold = -0.002;
     config.stdpEligibilityLtdPenalty = 0.5;
+    config.outputFallbackMinEligibleL5 = 1;
+    config.outputFallbackMinEligibleL5Fraction = 0.0;
+    config.outputFallbackBootstrapPatterns = 24;
 
     // Classification
     config.knnK = 7;
+    config.enableKnnSimilarityWeightedVote = true;
+    config.knnSimilarityExponent = 1.0;
     config.maxPatternsPerClass = 2048;
     config.keepL5History = true;
     config.enableOutputVote = false;
@@ -95,8 +103,15 @@ int main(int argc, char* argv[]) {
     config.pairDisambMarginTI = 0.0;
     config.pairDisambMarginGQ = 0.0;
     config.pairDisambMarginIL = 0.0;
+    config.pairDisambMarginTL = 0.0;
+    config.pairDisambMarginCE = 0.0;
+    config.pairDisambToIMarginBoost = 0.0;
+    config.pairDisambFromIMarginRelax = 0.0;
     config.enableTemporalLatencyReadout = false;
     config.temporalLatencyWeight = 0.35;
+    config.enableTemporalFeatureCoding = false;
+    config.temporalFeatureGain = 0.35;
+    config.temporalFeaturePower = 1.0;
     config.enableReadoutIdfWeighting = false;
     config.readoutIdfPower = 1.0;
     config.enableL5DivisiveNormalization = false;
@@ -145,6 +160,10 @@ int main(int argc, char* argv[]) {
             config.enableOutputVote = false;
         } else if (arg == "--output-vote") {
             config.enableOutputVote = true;
+        } else if (arg == "--output-vote-min-top" && i + 1 < argc) {
+            config.outputVoteMinTopSpikes = std::atoi(argv[++i]);
+        } else if (arg == "--output-vote-min-ratio" && i + 1 < argc) {
+            config.outputVoteMinTopRatio = std::atof(argv[++i]);
         } else if (arg == "--no-similarity-competition") {
             config.enableSimilarityCompetition = false;
             config.hasSimilarityRuntimeOverrides = true;
@@ -185,8 +204,27 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--stdp-eligibility-ltd-penalty" && i + 1 < argc) {
             config.enableStdpEligibilityGate = true;
             config.stdpEligibilityLtdPenalty = std::atof(argv[++i]);
+        } else if (arg == "--output-fallback-min-eligible-l5" && i + 1 < argc) {
+            config.outputFallbackMinEligibleL5 = std::atoi(argv[++i]);
+        } else if (arg == "--output-fallback-min-eligible-frac" && i + 1 < argc) {
+            config.outputFallbackMinEligibleL5Fraction = std::atof(argv[++i]);
+        } else if (arg == "--output-fallback-bootstrap-patterns" && i + 1 < argc) {
+            config.outputFallbackBootstrapPatterns = std::atoi(argv[++i]);
+        } else if (arg == "--freeze-stdp-after-pass1") {
+            config.freezeStdpAfterPass1 = true;
+        } else if (arg == "--no-freeze-stdp-after-pass1") {
+            config.freezeStdpAfterPass1 = false;
         } else if (arg == "--keep-l5-history") {
             config.keepL5History = true;
+        } else if (arg == "--no-keep-l5-history") {
+            config.keepL5History = false;
+        } else if (arg == "--knn-similarity-weighted-vote") {
+            config.enableKnnSimilarityWeightedVote = true;
+        } else if (arg == "--no-knn-similarity-weighted-vote") {
+            config.enableKnnSimilarityWeightedVote = false;
+        } else if (arg == "--knn-similarity-exponent" && i + 1 < argc) {
+            config.enableKnnSimilarityWeightedVote = true;
+            config.knnSimilarityExponent = std::atof(argv[++i]);
         } else if (arg == "--pair-disambiguation") {
             config.enablePairDisambiguation = true;
         } else if (arg == "--no-pair-disambiguation") {
@@ -197,6 +235,14 @@ int main(int argc, char* argv[]) {
             config.pairDisambMarginGQ = std::atof(argv[++i]);
         } else if (arg == "--pair-disamb-il-margin" && i + 1 < argc) {
             config.pairDisambMarginIL = std::atof(argv[++i]);
+        } else if (arg == "--pair-disamb-tl-margin" && i + 1 < argc) {
+            config.pairDisambMarginTL = std::atof(argv[++i]);
+        } else if (arg == "--pair-disamb-ce-margin" && i + 1 < argc) {
+            config.pairDisambMarginCE = std::atof(argv[++i]);
+        } else if (arg == "--pair-disamb-to-i-boost" && i + 1 < argc) {
+            config.pairDisambToIMarginBoost = std::atof(argv[++i]);
+        } else if (arg == "--pair-disamb-from-i-relax" && i + 1 < argc) {
+            config.pairDisambFromIMarginRelax = std::atof(argv[++i]);
         } else if (arg == "--temporal-latency-readout") {
             config.enableTemporalLatencyReadout = true;
         } else if (arg == "--no-temporal-latency-readout") {
@@ -204,6 +250,16 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--temporal-latency-weight" && i + 1 < argc) {
             config.enableTemporalLatencyReadout = true;
             config.temporalLatencyWeight = std::atof(argv[++i]);
+        } else if (arg == "--temporal-feature-coding") {
+            config.enableTemporalFeatureCoding = true;
+        } else if (arg == "--no-temporal-feature-coding") {
+            config.enableTemporalFeatureCoding = false;
+        } else if (arg == "--temporal-feature-gain" && i + 1 < argc) {
+            config.enableTemporalFeatureCoding = true;
+            config.temporalFeatureGain = std::atof(argv[++i]);
+        } else if (arg == "--temporal-feature-power" && i + 1 < argc) {
+            config.enableTemporalFeatureCoding = true;
+            config.temporalFeaturePower = std::atof(argv[++i]);
         } else if (arg == "--readout-idf-weighting") {
             config.enableReadoutIdfWeighting = true;
         } else if (arg == "--no-readout-idf-weighting") {
@@ -229,6 +285,12 @@ int main(int argc, char* argv[]) {
             config.l5InterColumnWinnerScale = std::atof(argv[++i]);
         } else if (arg == "--l5-inter-column-max" && i + 1 < argc) {
             config.l5InterColumnMaxInhibit = std::atof(argv[++i]);
+        } else if (arg == "--l5-winner-min-similarity" && i + 1 < argc) {
+            config.l5WinnerMinSimilarity = std::atof(argv[++i]);
+        } else if (arg == "--l5-winner-min-margin" && i + 1 < argc) {
+            config.l5WinnerMinScoreMargin = std::atof(argv[++i]);
+        } else if (arg == "--l5-winner-bootstrap-patterns" && i + 1 < argc) {
+            config.l5WinnerGateBootstrapPatterns = std::atoi(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -246,6 +308,8 @@ int main(int argc, char* argv[]) {
                       << "  --pixel-threshold <v>     Input pixel threshold [0..1]\n"
                       << "  --output-vote             Enable output-spike voting\n"
                       << "  --no-output-vote          Disable output-spike voting\n"
+                      << "  --output-vote-min-top <n> Min top output spikes required for vote\n"
+                      << "  --output-vote-min-ratio <v> Min top/second ratio required for vote\n"
                       << "  --similarity-competition  Enable hybrid similarity/spike competition\n"
                       << "  --no-similarity-competition Disable hybrid similarity/spike competition\n"
                       << "  --l4-similarity-weight <v> Similarity weight for L4 competition [0..1]\n"
@@ -260,20 +324,40 @@ int main(int argc, char* argv[]) {
                       << "  --stdp-eligibility-min-ltp <n> Min STDP LTP updates before learning\n"
                       << "  --stdp-eligibility-threshold <v> Min STDP eligibility score for learning\n"
                       << "  --stdp-eligibility-ltd-penalty <v> LTD penalty in eligibility score\n"
+                      << "  --output-fallback-min-eligible-l5 <n> Min eligible L5 winners for output fallback write\n"
+                      << "  --output-fallback-min-eligible-frac <v> Min eligible fraction of L5 winners for output fallback\n"
+                      << "  --output-fallback-bootstrap-patterns <n> Bootstrap patterns before strict output fallback gate\n"
+                      << "  --freeze-stdp-after-pass1 Disable STDP updates after pass 1\n"
+                      << "  --no-freeze-stdp-after-pass1 Keep STDP enabled for all passes\n"
                       << "  --keep-l5-history         Keep class patterns across passes\n"
+                      << "  --no-keep-l5-history      Reset class patterns at each pass\n"
+                      << "  --knn-similarity-weighted-vote Enable similarity-weighted k-NN voting\n"
+                      << "  --no-knn-similarity-weighted-vote Disable similarity-weighted k-NN voting\n"
+                      << "  --knn-similarity-exponent <v> Similarity exponent used by weighted k-NN\n"
                       << "  --no-l5-inter-column-inhibit Disable cross-column L5 inhibition\n"
                       << "  --l5-inter-column-inhibit <v>  Set cross-column inhibition strength\n"
                       << "  --l5-inter-column-min-overlap <v> Min RF overlap for inhibition\n"
                       << "  --l5-inter-column-winner-scale <v> Winner inhibition scaling [0..1]\n"
                       << "  --l5-inter-column-max <v>   Max inhibition injected per column\n"
-                      << "  --pair-disambiguation       Enable pair refinement for T/I and G/Q\n"
+                      << "  --l5-winner-min-similarity <v> Min similarity required for L5 winner eligibility\n"
+                      << "  --l5-winner-min-margin <v> Min top-vs-second score margin to accept L5 winners\n"
+                      << "  --l5-winner-bootstrap-patterns <n> Bootstrap patterns before strict L5 winner gate\n"
+                      << "  --pair-disambiguation       Enable targeted centroid pair/triplet refinement\n"
                       << "  --no-pair-disambiguation    Disable pair refinement\n"
                       << "  --pair-disamb-ti-margin <v> Min centroid margin to flip T/I\n"
                       << "  --pair-disamb-gq-margin <v> Min centroid margin to flip G/Q\n"
                       << "  --pair-disamb-il-margin <v> Min centroid margin to flip I/L\n"
+                      << "  --pair-disamb-tl-margin <v> Min centroid margin to flip T/L\n"
+                      << "  --pair-disamb-ce-margin <v> Min centroid margin to flip C/E\n"
+                      << "  --pair-disamb-to-i-boost <v> Extra margin required when flipping T/L -> I\n"
+                      << "  --pair-disamb-from-i-relax <v> Margin relaxation when flipping I -> T/L\n"
                       << "  --temporal-latency-readout Enable latency-aware L5 readout fusion\n"
                       << "  --no-temporal-latency-readout Disable latency-aware L5 readout fusion\n"
                       << "  --temporal-latency-weight <v> Fusion weight for latency similarity [0..1]\n"
+                      << "  --temporal-feature-coding Enable per-neuron latency modulation before k-NN/centroid\n"
+                      << "  --no-temporal-feature-coding Disable per-neuron latency modulation\n"
+                      << "  --temporal-feature-gain <v> Gain for latency feature modulation (default: 0.35)\n"
+                      << "  --temporal-feature-power <v> Power for latency feature modulation (default: 1.0)\n"
                       << "  --readout-idf-weighting    Enable sparse-feature weighting in readout similarity\n"
                       << "  --no-readout-idf-weighting Disable sparse-feature weighting in readout similarity\n"
                       << "  --readout-idf-power <v>    IDF weighting exponent (default: 1.0)\n"

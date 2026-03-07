@@ -52,7 +52,8 @@ public:
         std::vector<declarative::ConstructedNetwork::ColumnGroup>& columns,
         const std::vector<bool>& colHasL4,
         double baseTime,
-        std::shared_ptr<NetworkPropagator> propagator);
+        std::shared_ptr<NetworkPropagator> propagator,
+        bool trainingPhase);
 
     /**
      * @brief Apply output competition (keep top-k classes by spike count).

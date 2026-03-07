@@ -9,9 +9,38 @@
 #include <stdexcept>
 #include <random>
 #include <unordered_set>
+#include <cstdint>
 
 namespace snnfw {
 namespace declarative {
+
+namespace {
+
+uint32_t hashStringFnv1a(const std::string& text) {
+    uint32_t h = 2166136261u;
+    for (unsigned char c : text) {
+        h ^= static_cast<uint32_t>(c);
+        h *= 16777619u;
+    }
+    return h;
+}
+
+uint32_t mixSeed(uint32_t seed, uint32_t value) {
+    // 32-bit mix from boost hash_combine to decorrelate sequential values.
+    return seed ^ (value + 0x9e3779b9u + (seed << 6) + (seed >> 2));
+}
+
+uint32_t makeProjectionSeed(uint32_t baseSeed, const ProjectionIR& proj, size_t projectionIndex) {
+    uint32_t seed = mixSeed(baseSeed, static_cast<uint32_t>(projectionIndex));
+    seed = mixSeed(seed, hashStringFnv1a(proj.name));
+    seed = mixSeed(seed, hashStringFnv1a(proj.source));
+    seed = mixSeed(seed, hashStringFnv1a(proj.target));
+    seed = mixSeed(seed, hashStringFnv1a(proj.pattern));
+    seed = mixSeed(seed, hashStringFnv1a(proj.scope));
+    return seed;
+}
+
+} // namespace
 
 NetworkConstructor::NetworkConstructor(NeuralObjectFactory& factory, Datastore& datastore)
     : factory_(factory), datastore_(datastore) {}
@@ -29,6 +58,7 @@ ConstructedNetwork NetworkConstructor::construct(const NetworkIR& ir) {
 
     ConstructedNetwork result;
     result.sourceIR = ir;
+    connectivitySeed_ = ir.simulation.connectivitySeed;
 
     SNNFW_INFO("NetworkConstructor: Phase 1 - Building hierarchy...");
     buildHierarchy(ir, result);
@@ -192,7 +222,8 @@ void NetworkConstructor::createNeurons(const NetworkIR& ir, ConstructedNetwork& 
 void NetworkConstructor::createConnectivity(const NetworkIR& ir, ConstructedNetwork& result) {
     ConnectivityBuilder connBuilder(factory_, datastore_, true);
 
-    for (const auto& proj : ir.projections) {
+    for (size_t projIdx = 0; projIdx < ir.projections.size(); ++projIdx) {
+        const auto& proj = ir.projections[projIdx];
         auto synapseGroup = mapSynapseGroup(proj.synapseGroup);
 
         // Special handling for tiled receptive field connectivity
@@ -239,6 +270,9 @@ void NetworkConstructor::createConnectivity(const NetworkIR& ir, ConstructedNetw
         }
 
         auto pattern = createPattern(proj);
+        if (connectivitySeed_ != 0) {
+            pattern->setSeed(makeProjectionSeed(connectivitySeed_, proj, projIdx));
+        }
 
         // Try to resolve as special paths first (InputGrid, OutputLayer)
         auto srcSpecial = resolveSpecialPath(proj.source, result);
@@ -553,7 +587,7 @@ void NetworkConstructor::applyConnectivitySafeguards(
         break;
     }
 
-    std::mt19937 rng(42);
+    std::mt19937 rng(connectivitySeed_ == 0 ? 42u : connectivitySeed_);
     size_t addedL5Output = 0;
     size_t addedAutapse = 0;
     for (const auto& neuron : allNeurons) {

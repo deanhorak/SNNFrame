@@ -20,6 +20,7 @@ CMD=(
   --max-passes "${MAX_PASSES}"
   --examples-per-class "${EXAMPLES_PER_CLASS}"
   --test-limit "${TEST_LIMIT}"
+  --no-output-vote
 )
 
 if [[ "${TIMEOUT_SECONDS}" -gt 0 ]]; then

@@ -72,7 +72,7 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
 
     // L5 competition
     auto l5Winners = competition_.runL5Competition(
-        network_.columns, colHasL4, baseTime, network_.propagator);
+        network_.columns, colHasL4, baseTime, network_.propagator, false);
     auto t6 = std::chrono::steady_clock::now();
     g_totalL5Ms += std::chrono::duration<double, std::milli>(t6 - t5).count();
 
@@ -249,6 +249,12 @@ double TrainingPipeline::run(EMNISTLoader& trainLoader, EMNISTLoader& testLoader
     while (currentPass < config_.maxPasses) {
         currentPass++;
         std::cout << "\n--- Training Pass " << currentPass << " ---" << std::endl;
+        const bool stdpEnabledThisPass =
+            !(config_.freezeStdpAfterPass1 && currentPass > 1);
+        network_.propagator->setStdpEnabled(stdpEnabledThisPass);
+        network_.spikeProcessor->setStdpEnabled(stdpEnabledThisPass);
+        std::cout << "  STDP mode: " << (stdpEnabledThisPass ? "enabled" : "frozen")
+                  << std::endl;
 
         // Reset classifier patterns for this pass
         classifier_.resetForPass(config_.keepL5History);
@@ -257,6 +263,7 @@ double TrainingPipeline::run(EMNISTLoader& trainLoader, EMNISTLoader& testLoader
         std::vector<int> trainCount(config_.numClasses, 0);
         int passPatterns = 0;
         int passImages = 0;
+        SupervisedTeacher::TeachStats passTeachStats;
 
         std::cout << "  Processing " << trainLoader.size() << " training images..." << std::endl;
 
@@ -289,13 +296,21 @@ double TrainingPipeline::run(EMNISTLoader& trainLoader, EMNISTLoader& testLoader
 
             // L5 competition
             auto l5Winners = competition_.runL5Competition(
-                network_.columns, colHasL4, baseTime, network_.propagator);
+                network_.columns, colHasL4, baseTime, network_.propagator, true);
 
             // Supervised teaching
+            SupervisedTeacher::TeachStats imageTeachStats;
             int taught = teacher_.teach(
                 label, network_.columns, l5Winners, colHasL4,
-                network_.outputPopulations, baseTime, network_.propagator);
+                network_.outputPopulations, baseTime, network_.propagator, &imageTeachStats);
             passPatterns += taught;
+            passTeachStats.l5WinnerCandidates += imageTeachStats.l5WinnerCandidates;
+            passTeachStats.l5WinnerEligible += imageTeachStats.l5WinnerEligible;
+            passTeachStats.l5PatternsLearned += imageTeachStats.l5PatternsLearned;
+            passTeachStats.outputCandidates += imageTeachStats.outputCandidates;
+            passTeachStats.outputEligible += imageTeachStats.outputEligible;
+            passTeachStats.outputPatternsLearned += imageTeachStats.outputPatternsLearned;
+            passTeachStats.outputEligibilityFallbacks += imageTeachStats.outputEligibilityFallbacks;
 
             // Collect L5 counts and store for classification
             size_t totalL5 = static_cast<size_t>(config_.numColumns) * config_.layer5Neurons;
@@ -336,6 +351,20 @@ double TrainingPipeline::run(EMNISTLoader& trainLoader, EMNISTLoader& testLoader
         totalPatternsLearned_ += passPatterns;
         std::cout << "  Pass " << currentPass << " complete: " << passPatterns
                   << " patterns learned, " << passImages << " images" << std::endl;
+        const double l5EligibilityRate = (passTeachStats.l5WinnerCandidates > 0)
+            ? (100.0 * static_cast<double>(passTeachStats.l5WinnerEligible) /
+               static_cast<double>(passTeachStats.l5WinnerCandidates))
+            : 0.0;
+        const double outputEligibilityRate = (passTeachStats.outputCandidates > 0)
+            ? (100.0 * static_cast<double>(passTeachStats.outputEligible) /
+               static_cast<double>(passTeachStats.outputCandidates))
+            : 0.0;
+        std::cout << "  STDP eligibility: L5 " << std::fixed << std::setprecision(2)
+                  << l5EligibilityRate << "% (" << passTeachStats.l5WinnerEligible
+                  << "/" << passTeachStats.l5WinnerCandidates << "), output "
+                  << outputEligibilityRate << "% (" << passTeachStats.outputEligible
+                  << "/" << passTeachStats.outputCandidates << "), outputFallbacks="
+                  << passTeachStats.outputEligibilityFallbacks << std::endl;
 
         // Apply homeostasis at end of pass
         applyHomeostasis();
@@ -437,6 +466,13 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
     std::vector<std::vector<int>> confusion(
         config_.numClasses, std::vector<int>(config_.numClasses, 0));
     std::vector<int> unknownByClass(config_.numClasses, 0);
+    int outputVotePredictions = 0;
+    int knnPredictions = 0;
+    int centroidPredictions = 0;
+    int unknownPredictions = 0;
+    int outputVoteCorrect = 0;
+    int knnCorrect = 0;
+    int centroidCorrect = 0;
 
     for (size_t testPos = 0; testPos < numTestImages; ++testPos) {
         size_t testIdx = testIndices[testPos];
@@ -448,6 +484,8 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
 
         int predictedLabel = -1;
         double maxSimilarity = 0.0;
+        enum class DecisionSource { Unknown, OutputVote, KNN, Centroid };
+        DecisionSource decisionSource = DecisionSource::Unknown;
 
         // First prefer output spikes
         if (config_.enableOutputVote) {
@@ -458,10 +496,13 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
                 std::sort(sorted.begin(), sorted.end(), std::greater<int>());
                 int top = sorted[0];
                 int second = sorted.size() > 1 ? sorted[1] : 0;
-                if (top >= 5 && top >= static_cast<int>(second * 1.1)) {
+                const int minTop = std::max(1, config_.outputVoteMinTopSpikes);
+                const double minRatio = std::max(1.0, config_.outputVoteMinTopRatio);
+                if (top >= minTop && static_cast<double>(top) >= static_cast<double>(second) * minRatio) {
                     predictedLabel = static_cast<int>(
                         std::distance(inference.outSpikeCounts.begin(), maxIt));
                     maxSimilarity = top;
+                    decisionSource = DecisionSource::OutputVote;
                 }
             }
         }
@@ -471,10 +512,16 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
             auto res = classifier_.classifyKNN(inference.l5Counts, inference.l5Latencies);
             predictedLabel = res.first;
             maxSimilarity = res.second;
+            if (predictedLabel >= 0) {
+                decisionSource = DecisionSource::KNN;
+            }
             if (predictedLabel < 0) {
                 auto res2 = classifier_.classifyCentroid(inference.l5Counts, inference.l5Latencies);
                 predictedLabel = res2.first;
                 maxSimilarity = res2.second;
+                if (predictedLabel >= 0) {
+                    decisionSource = DecisionSource::Centroid;
+                }
             }
         }
 
@@ -494,10 +541,65 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
                     maxSimilarity = bestSim;
                 }
             };
-            // Pair-specific refinement targeting dominant confusions.
-            refinePair(19, 8, config_.pairDisambMarginTI);  // T <-> I
+
+            // Target C/E confusion only when the predicted class is within the pair.
+            refinePair(2, 4, config_.pairDisambMarginCE);   // C <-> E
+
+            // Preserve optional legacy G/Q refinement (disabled by default with zero margin).
             refinePair(6, 16, config_.pairDisambMarginGQ);  // G <-> Q
-            refinePair(8, 11, config_.pairDisambMarginIL);  // I <-> L
+
+            // Resolve T/I/L as a triplet with pair-specific margins.
+            auto refineTILTriplet = [&]() {
+                constexpr int kT = 19;
+                constexpr int kI = 8;
+                constexpr int kL = 11;
+                if (predictedLabel != kT && predictedLabel != kI && predictedLabel != kL) return;
+
+                const double simT = classifier_.centroidSimilarity(
+                    inference.l5Counts, kT, inference.l5Latencies);
+                const double simI = classifier_.centroidSimilarity(
+                    inference.l5Counts, kI, inference.l5Latencies);
+                const double simL = classifier_.centroidSimilarity(
+                    inference.l5Counts, kL, inference.l5Latencies);
+
+                int bestClass = kT;
+                double bestSim = simT;
+                if (simI > bestSim) { bestClass = kI; bestSim = simI; }
+                if (simL > bestSim) { bestClass = kL; bestSim = simL; }
+
+                double predSim = simT;
+                if (predictedLabel == kI) predSim = simI;
+                else if (predictedLabel == kL) predSim = simL;
+
+                auto marginForPair = [&](int a, int b) {
+                    if ((a == kT && b == kI) || (a == kI && b == kT)) {
+                        return config_.pairDisambMarginTI;
+                    }
+                    if ((a == kI && b == kL) || (a == kL && b == kI)) {
+                        return config_.pairDisambMarginIL;
+                    }
+                    if ((a == kT && b == kL) || (a == kL && b == kT)) {
+                        return config_.pairDisambMarginTL;
+                    }
+                    return 0.0;
+                };
+
+                const double requiredMargin = marginForPair(predictedLabel, bestClass);
+                if (requiredMargin <= 0.0) return;
+                double guardedMargin = requiredMargin;
+                if (bestClass == kI && predictedLabel != kI) {
+                    guardedMargin += std::max(0.0, config_.pairDisambToIMarginBoost);
+                }
+                if (predictedLabel == kI && bestClass != kI) {
+                    guardedMargin = std::max(
+                        0.0, guardedMargin - std::max(0.0, config_.pairDisambFromIMarginRelax));
+                }
+                if (bestClass != predictedLabel && (bestSim - predSim) >= guardedMargin) {
+                    predictedLabel = bestClass;
+                    maxSimilarity = bestSim;
+                }
+            };
+            refineTILTriplet();
         }
 
         // DEBUG: Log first few test predictions
@@ -514,6 +616,18 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
         testTotal++;
         if (predictedLabel == label) {
             testCorrect++;
+        }
+        if (decisionSource == DecisionSource::OutputVote) {
+            outputVotePredictions++;
+            if (predictedLabel == label) outputVoteCorrect++;
+        } else if (decisionSource == DecisionSource::KNN) {
+            knnPredictions++;
+            if (predictedLabel == label) knnCorrect++;
+        } else if (decisionSource == DecisionSource::Centroid) {
+            centroidPredictions++;
+            if (predictedLabel == label) centroidCorrect++;
+        } else {
+            unknownPredictions++;
         }
         if (predictedLabel >= 0 && predictedLabel < config_.numClasses) {
             confusion[label][predictedLabel]++;
@@ -563,6 +677,58 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
         char labelChar = (cls < 26) ? static_cast<char>('A' + cls) : '?';
         std::cout << "    " << labelChar << ": " << std::fixed << std::setprecision(2)
                   << acc << "% (" << confusion[cls][cls] << "/" << rowTotal << ")"
+                  << std::endl;
+    }
+
+    std::cout << "\n  Decision source usage:" << std::endl;
+    auto printDecisionStats = [&](const char* name, int count, int correct) {
+        const double share = (testTotal > 0)
+            ? (100.0 * static_cast<double>(count) / static_cast<double>(testTotal))
+            : 0.0;
+        const double acc = (count > 0)
+            ? (100.0 * static_cast<double>(correct) / static_cast<double>(count))
+            : 0.0;
+        std::cout << "    " << name << ": " << count << " (" << std::fixed
+                  << std::setprecision(2) << share << "%), acc="
+                  << std::setprecision(2) << acc << "%" << std::endl;
+    };
+    printDecisionStats("output_vote", outputVotePredictions, outputVoteCorrect);
+    printDecisionStats("knn", knnPredictions, knnCorrect);
+    printDecisionStats("centroid", centroidPredictions, centroidCorrect);
+    std::cout << "    unknown: " << unknownPredictions << std::endl;
+
+    struct PairConfusion {
+        int total = 0;
+        int a = 0;
+        int b = 0;
+    };
+    std::vector<PairConfusion> pairConfusions;
+    pairConfusions.reserve(static_cast<size_t>(config_.numClasses * (config_.numClasses - 1) / 2));
+    for (int a = 0; a < config_.numClasses; ++a) {
+        for (int b = a + 1; b < config_.numClasses; ++b) {
+            const int ab = confusion[a][b];
+            const int ba = confusion[b][a];
+            const int total = ab + ba;
+            if (total <= 0) continue;
+            pairConfusions.push_back({total, a, b});
+        }
+    }
+    std::sort(pairConfusions.begin(), pairConfusions.end(),
+              [](const PairConfusion& lhs, const PairConfusion& rhs) {
+                  if (lhs.total != rhs.total) return lhs.total > rhs.total;
+                  if (lhs.a != rhs.a) return lhs.a < rhs.a;
+                  return lhs.b < rhs.b;
+              });
+
+    std::cout << "\n  Top confusion pairs:" << std::endl;
+    const size_t maxPairsToPrint = std::min<size_t>(10, pairConfusions.size());
+    for (size_t i = 0; i < maxPairsToPrint; ++i) {
+        const auto& p = pairConfusions[i];
+        char aLabel = static_cast<char>('A' + p.a);
+        char bLabel = static_cast<char>('A' + p.b);
+        std::cout << "    " << aLabel << "<->" << bLabel << ": " << p.total
+                  << " (" << aLabel << "->" << bLabel << "=" << confusion[p.a][p.b]
+                  << ", " << bLabel << "->" << aLabel << "=" << confusion[p.b][p.a] << ")"
                   << std::endl;
     }
 

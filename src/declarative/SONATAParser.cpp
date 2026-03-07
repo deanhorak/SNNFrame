@@ -521,6 +521,7 @@ OutputLayerIR SONATAParser::parseOutputLayer(const nlohmann::json& j) const {
 
 SimulationConfigIR SONATAParser::parseSimulation(const nlohmann::json& j) const {
     SimulationConfigIR sim;
+    sim.connectivitySeed = j.value("connectivity_seed", 0u);
     if (j.contains("spike_processor")) {
         const auto& sp = j["spike_processor"];
         sim.spikeProcessorTimeSlices = sp.value("time_slices", 10000);

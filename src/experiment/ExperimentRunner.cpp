@@ -80,6 +80,11 @@ void ExperimentRunner::buildNetwork() {
     // Sync config from the IR
     syncConfigFromIR(ir);
 
+    // Make declarative connectivity construction deterministic when --seed is set.
+    if (config_.seed != 0) {
+        ir.simulation.connectivitySeed = config_.seed;
+    }
+
     // Construct the network from the parsed IR
     network_ = std::make_unique<declarative::ConstructedNetwork>(loader.loadFromIR(ir));
 

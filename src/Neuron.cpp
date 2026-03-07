@@ -7,13 +7,28 @@
 #include <iostream>
 #include <cmath>
 #include <limits>
-#include <cstdlib>
 #include <algorithm>
 #include <random>
 
 using json = nlohmann::json;
 
 namespace snnfw {
+
+namespace {
+size_t deterministicReplacementIndex(const BinaryPattern& pattern,
+                                     size_t patternCount,
+                                     uint64_t neuronId) {
+    if (patternCount == 0) return 0;
+    // FNV-1a over pattern bins + neuron id yields deterministic replacement.
+    uint64_t hash = 1469598103934665603ULL;
+    for (uint8_t bin : pattern.getData()) {
+        hash ^= static_cast<uint64_t>(bin);
+        hash *= 1099511628211ULL;
+    }
+    hash ^= neuronId + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    return static_cast<size_t>(hash % static_cast<uint64_t>(patternCount));
+}
+} // namespace
 
 Neuron::Neuron(double windowSizeMs, double similarityThreshold, size_t maxReferencePatterns, uint64_t neuronId)
     : NeuralObject(neuronId),
@@ -115,11 +130,12 @@ void Neuron::learnCurrentPattern() {
             SNNFW_DEBUG("Neuron {}: Blended new pattern into pattern #{} (similarity={:.3f})",
                         getId(), bestIndex, bestSim);
         } else {
-            // Replace random pattern (novel pattern, low similarity to all existing)
-            size_t randIndex = rand() % referencePatterns.size();
-            referencePatterns[randIndex] = newPattern;
+            // Deterministic replacement keeps seeded A/B runs reproducible.
+            size_t replaceIndex =
+                deterministicReplacementIndex(newPattern, referencePatterns.size(), getId());
+            referencePatterns[replaceIndex] = newPattern;
             SNNFW_DEBUG("Neuron {}: Replaced pattern #{} with new pattern (best similarity={:.3f})",
-                        getId(), randIndex, bestSim);
+                        getId(), replaceIndex, bestSim);
         }
     }
 }

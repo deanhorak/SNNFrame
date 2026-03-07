@@ -145,6 +145,7 @@ struct SimulationConfigIR {
     int spikeProcessorTimeSlices = 10000;
     int spikeProcessorThreads = 24;
     bool realTimeSync = false;
+    unsigned int connectivitySeed = 0;  // 0 = nondeterministic
     // STDP
     bool stdpEnabled = true;
     double stdpLtdScale = 0.3;

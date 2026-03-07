@@ -74,6 +74,9 @@ struct ExperimentConfig {
     double l5InhibitLoser = 1.2;
     double l5InhibitThreshold = 0.5;
     int l5MinSpikes = 1;
+    double l5WinnerMinSimilarity = 0.0;
+    double l5WinnerMinScoreMargin = 0.0;
+    int l5WinnerGateBootstrapPatterns = 24;
     bool enableL5InterColumnInhibition = false;
     double l5InterColumnInhibit = 0.1;
     double l5InterColumnMinOverlap = 0.2;
@@ -87,11 +90,15 @@ struct ExperimentConfig {
     double stdpLtdScale = 0.3;
     double stdpLtdWindowMs = 70.0;
     bool traceStdp = true;
+    bool freezeStdpAfterPass1 = false;
     bool enableStdpEligibilityGate = true;
     int stdpEligibilityMinUpdates = 1;
     int stdpEligibilityMinLtp = 0;
     double stdpEligibilityThreshold = -0.002;
     double stdpEligibilityLtdPenalty = 0.5;
+    int outputFallbackMinEligibleL5 = 1;
+    double outputFallbackMinEligibleL5Fraction = 0.0;
+    int outputFallbackBootstrapPatterns = 24;
 
     // --- Homeostasis ---
     double l4TargetRate = 8.0;
@@ -102,9 +109,13 @@ struct ExperimentConfig {
     bool enableOutputCompetition = true;
     int outputCompetitionKeep = 3;
     int outputCompetitionMinSpikes = 3;
+    int outputVoteMinTopSpikes = 5;
+    double outputVoteMinTopRatio = 1.1;
 
     // --- Classification ---
     int knnK = 5;
+    bool enableKnnSimilarityWeightedVote = false;
+    double knnSimilarityExponent = 1.0;
     size_t maxPatternsPerClass = 1024;
     bool keepL5History = false;
     bool enableOutputVote = true;
@@ -114,8 +125,15 @@ struct ExperimentConfig {
     double pairDisambMarginTI = 0.0;
     double pairDisambMarginGQ = 0.0;
     double pairDisambMarginIL = 0.0;
+    double pairDisambMarginTL = 0.0;
+    double pairDisambMarginCE = 0.0;
+    double pairDisambToIMarginBoost = 0.0;
+    double pairDisambFromIMarginRelax = 0.0;
     bool enableTemporalLatencyReadout = false;
     double temporalLatencyWeight = 0.35;
+    bool enableTemporalFeatureCoding = false;
+    double temporalFeatureGain = 0.35;
+    double temporalFeaturePower = 1.0;
     bool enableReadoutIdfWeighting = false;
     double readoutIdfPower = 1.0;
     bool enableL5DivisiveNormalization = false;

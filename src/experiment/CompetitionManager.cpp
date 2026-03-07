@@ -246,10 +246,12 @@ std::vector<bool> CompetitionManager::runL5Competition(
     std::vector<declarative::ConstructedNetwork::ColumnGroup>& columns,
     const std::vector<bool>& colHasL4,
     double baseTime,
-    std::shared_ptr<NetworkPropagator> propagator)
+    std::shared_ptr<NetworkPropagator> propagator,
+    bool trainingPhase)
 {
     (void)baseTime;
     (void)propagator;
+    (void)trainingPhase;
 
     struct ColumnState {
         std::vector<bool> localWinners;
@@ -296,6 +298,7 @@ std::vector<bool> CompetitionManager::runL5Competition(
             double score = 0.0;
             size_t spikes = 0;
             double similarity = 0.0;
+            size_t patternCount = 0;
             size_t idx = 0;
         };
 
@@ -307,6 +310,7 @@ std::vector<bool> CompetitionManager::runL5Competition(
             candidate.idx = i;
             candidate.spikes = l5Neurons[i]->getSpikes().size();
             candidate.similarity = std::max(0.0, l5Neurons[i]->getBestSimilarity());
+            candidate.patternCount = l5Neurons[i]->getLearnedPatternCount();
             ranked.push_back(candidate);
             maxSpikes = std::max(maxSpikes, candidate.spikes);
         }
@@ -330,11 +334,39 @@ std::vector<bool> CompetitionManager::runL5Competition(
                       return a.idx < b.idx;
                   });
 
+        const bool enforceStrictGate = false;
+        const double minSimilarity = 0.0;
+        const double minScoreMargin = 0.0;
+        const auto hasQualifiedTopTwo = [&]() {
+            int qualified = 0;
+            double first = 0.0;
+            double second = 0.0;
+            for (const auto& candidate : ranked) {
+                if (candidate.spikes < static_cast<size_t>(config_.l5MinSpikes)) continue;
+                const bool hasPatterns = candidate.patternCount > 0;
+                if (enforceStrictGate && hasPatterns && candidate.similarity < minSimilarity) continue;
+                if (qualified == 0) {
+                    first = candidate.score;
+                    qualified = 1;
+                } else {
+                    second = candidate.score;
+                    qualified = 2;
+                    break;
+                }
+            }
+            if (qualified == 0) return false;
+            if (minScoreMargin <= 0.0 || qualified == 1) return true;
+            return (first - second) >= minScoreMargin;
+        };
+        const bool columnPassesMarginGate = hasQualifiedTopTwo();
+
         int winners = 0;
         std::vector<bool> l5WinnerLocal(l5Neurons.size(), false);
         double winnerDrive = 0.0;
-        for (size_t i = 0; i < ranked.size() && winners < l5Keep; ++i) {
+        for (size_t i = 0; i < ranked.size() && winners < l5Keep && columnPassesMarginGate; ++i) {
             if (ranked[i].spikes < static_cast<size_t>(config_.l5MinSpikes)) break;
+            const bool hasPatterns = ranked[i].patternCount > 0;
+            if (enforceStrictGate && hasPatterns && ranked[i].similarity < minSimilarity) continue;
             l5WinnerGlobal[l5Offset + ranked[i].idx] = true;
             l5WinnerLocal[ranked[i].idx] = true;
             winnerDrive += ranked[i].score;

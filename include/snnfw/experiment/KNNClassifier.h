@@ -78,9 +78,13 @@ private:
 
     static constexpr uint16_t kNoLatency = std::numeric_limits<uint16_t>::max();
     double idfWeight(size_t idx) const;
-    double weightedCosineSimilarity(const L5CountVector& a, const L5CountVector& b) const;
-    double weightedCentroidSimilarity(const L5CountVector& testCounts, int classLabel) const;
+    double weightedCosineSimilarity(const L5CountVector& a, const L5CountVector& b,
+                                    const L5LatencyVector* latA = nullptr,
+                                    const L5LatencyVector* latB = nullptr) const;
+    double weightedCentroidSimilarity(const L5CountVector& testCounts, int classLabel,
+                                      const L5LatencyVector* testLatencies = nullptr) const;
     double latencyToSignal(uint16_t latency) const;
+    double temporalFeatureScale(uint16_t latency) const;
     double latencySimilarity(const L5LatencyVector& a, const L5LatencyVector& b) const;
     double latencyCentroidSimilarity(const L5LatencyVector& testLatencies, int classLabel) const;
 };

@@ -64,6 +64,16 @@ double KNNClassifier::latencyToSignal(uint16_t latency) const {
     return 1.0 - (l / window);
 }
 
+double KNNClassifier::temporalFeatureScale(uint16_t latency) const {
+    if (!config_.enableTemporalFeatureCoding || latency == kNoLatency) {
+        return 1.0;
+    }
+    const double gain = std::max(0.0, config_.temporalFeatureGain);
+    const double power = std::max(0.1, config_.temporalFeaturePower);
+    const double signal = std::pow(std::clamp(latencyToSignal(latency), 0.0, 1.0), power);
+    return 1.0 + (gain * signal);
+}
+
 double KNNClassifier::latencySimilarity(const L5LatencyVector& a, const L5LatencyVector& b) const {
     if (a.empty() || b.empty() || a.size() != b.size()) return 0.0;
     double dot = 0.0, normA = 0.0, normB = 0.0;
@@ -102,13 +112,17 @@ double KNNClassifier::idfWeight(size_t idx) const {
     return std::pow(idf, p);
 }
 
-double KNNClassifier::weightedCosineSimilarity(const L5CountVector& a, const L5CountVector& b) const {
+double KNNClassifier::weightedCosineSimilarity(const L5CountVector& a, const L5CountVector& b,
+                                               const L5LatencyVector* latA,
+                                               const L5LatencyVector* latB) const {
     if (a.empty() || b.empty() || a.size() != b.size()) return 0.0;
     double dot = 0.0, normA = 0.0, normB = 0.0;
     for (size_t i = 0; i < a.size(); ++i) {
         const double w = idfWeight(i);
-        const double av = static_cast<double>(a[i]) * w;
-        const double bv = static_cast<double>(b[i]) * w;
+        const uint16_t la = (latA && i < latA->size()) ? (*latA)[i] : kNoLatency;
+        const uint16_t lb = (latB && i < latB->size()) ? (*latB)[i] : kNoLatency;
+        const double av = static_cast<double>(a[i]) * temporalFeatureScale(la) * w;
+        const double bv = static_cast<double>(b[i]) * temporalFeatureScale(lb) * w;
         dot += av * bv;
         normA += av * av;
         normB += bv * bv;
@@ -139,7 +153,8 @@ double KNNClassifier::latencyCentroidSimilarity(const L5LatencyVector& testLaten
 }
 
 double KNNClassifier::weightedCentroidSimilarity(const L5CountVector& testCounts,
-                                                 int classLabel) const {
+                                                 int classLabel,
+                                                 const L5LatencyVector* testLatencies) const {
     if (testCounts.empty() || classLabel < 0 || classLabel >= numClasses_) return 0.0;
     if (classPatternCounts_[classLabel] == 0) return 0.0;
 
@@ -147,9 +162,20 @@ double KNNClassifier::weightedCentroidSimilarity(const L5CountVector& testCounts
     const double invCount = 1.0 / static_cast<double>(classPatternCounts_[classLabel]);
     for (size_t idx = 0; idx < testCounts.size() && idx < totalL5Neurons_; ++idx) {
         const double w = idfWeight(idx);
-        const double testVal = static_cast<double>(testCounts[idx]) * w;
+        const uint16_t testLatency =
+            (testLatencies && idx < testLatencies->size()) ? (*testLatencies)[idx] : kNoLatency;
+        const double testVal =
+            static_cast<double>(testCounts[idx]) * temporalFeatureScale(testLatency) * w;
+        const uint32_t obs = classLatencyObsCounts_[classLabel][idx];
+        const double centroidTemporalScale = (obs > 0)
+            ? temporalFeatureScale(static_cast<uint16_t>(std::lround(
+                std::clamp((1.0 - (classLatencySums_[classLabel][idx] / static_cast<double>(obs))) *
+                           std::max(1.0, config_.neuronWindow),
+                           0.0, 65534.0))))
+            : 1.0;
         const double centroidVal =
-            static_cast<double>(classCentroids_[classLabel][idx]) * invCount * w;
+            static_cast<double>(classCentroids_[classLabel][idx]) * invCount *
+            centroidTemporalScale * w;
         dot += testVal * centroidVal;
         normTest += testVal * testVal;
         normCentroid += centroidVal * centroidVal;
@@ -163,7 +189,8 @@ double KNNClassifier::centroidSimilarity(const L5CountVector& testCounts, int cl
     if (testCounts.empty() || classLabel < 0 || classLabel >= numClasses_) return 0.0;
     if (classPatternCounts_[classLabel] == 0) return 0.0;
 
-    const double countSim = weightedCentroidSimilarity(testCounts, classLabel);
+    const double countSim = weightedCentroidSimilarity(
+        testCounts, classLabel, testLatencies.empty() ? nullptr : &testLatencies);
     if (!config_.enableTemporalLatencyReadout) return countSim;
     const double latSim = latencyCentroidSimilarity(testLatencies, classLabel);
     const double w = std::clamp(config_.temporalLatencyWeight, 0.0, 1.0);
@@ -185,7 +212,10 @@ std::pair<int, double> KNNClassifier::classifyKNN(const L5CountVector& testCount
         if (!config_.includeClasses.empty() && cls < static_cast<int>(config_.includeClasses.size())
             && !config_.includeClasses[cls]) continue;
         for (const auto& trainPattern : classPatterns_[cls]) {
-            const double countSim = weightedCosineSimilarity(testCounts, trainPattern.counts);
+            const double countSim = weightedCosineSimilarity(
+                testCounts, trainPattern.counts,
+                testLatencies.empty() ? nullptr : &testLatencies,
+                trainPattern.latencies.empty() ? nullptr : &trainPattern.latencies);
             double sim = countSim;
             if (config_.enableTemporalLatencyReadout && !testLatencies.empty() &&
                 !trainPattern.latencies.empty()) {
@@ -205,19 +235,42 @@ std::pair<int, double> KNNClassifier::classifyKNN(const L5CountVector& testCount
     }
 
     std::vector<int> votes(numClasses_, 0);
+    std::vector<double> weightedVotes(numClasses_, 0.0);
+    std::vector<double> classBestSimilarity(numClasses_, -1.0);
     double maxSim = 0.0;
     int numVotes = std::min(K, static_cast<int>(allSimilarities.size()));
+    const double exponent = std::max(0.0, config_.knnSimilarityExponent);
     for (int i = 0; i < numVotes; ++i) {
-        votes[allSimilarities[i].second]++;
-        if (i == 0) maxSim = allSimilarities[i].first;
+        const int cls = allSimilarities[i].second;
+        const double sim = std::max(0.0, allSimilarities[i].first);
+        votes[cls]++;
+        classBestSimilarity[cls] = std::max(classBestSimilarity[cls], sim);
+        weightedVotes[cls] += config_.enableKnnSimilarityWeightedVote
+            ? std::pow(sim, exponent)
+            : 1.0;
+        if (i == 0) maxSim = sim;
+    }
+    if (maxSim <= 1e-9) {
+        return {-1, 0.0};
     }
 
-    int bestLabel = -1, maxVoteCount = 0;
+    int bestLabel = -1;
+    int bestVoteCount = -1;
+    double bestWeightedVote = -1.0;
+    double bestNeighborSim = -1.0;
     for (int cls = 0; cls < numClasses_; ++cls) {
         if (!config_.includeClasses.empty() && cls < static_cast<int>(config_.includeClasses.size())
             && !config_.includeClasses[cls]) continue;
-        if (votes[cls] > maxVoteCount) {
-            maxVoteCount = votes[cls];
+        const double weightedVote = weightedVotes[cls];
+        const int voteCount = votes[cls];
+        const double classSim = classBestSimilarity[cls];
+        if (weightedVote > bestWeightedVote + 1e-12 ||
+            (std::abs(weightedVote - bestWeightedVote) <= 1e-12 &&
+             (voteCount > bestVoteCount ||
+              (voteCount == bestVoteCount && classSim > bestNeighborSim)))) {
+            bestWeightedVote = weightedVote;
+            bestVoteCount = voteCount;
+            bestNeighborSim = classSim;
             bestLabel = cls;
         }
     }

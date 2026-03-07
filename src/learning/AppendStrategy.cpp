@@ -1,9 +1,22 @@
 #include "snnfw/learning/AppendStrategy.h"
 #include "snnfw/Logger.h"
-#include <cstdlib>
+#include <cstdint>
 
 namespace snnfw {
 namespace learning {
+
+namespace {
+size_t deterministicReplacementIndex(const std::vector<double>& pattern, size_t patternCount) {
+    if (patternCount == 0) return 0;
+    uint64_t hash = 1469598103934665603ULL;
+    for (double value : pattern) {
+        const uint32_t q = static_cast<uint32_t>(value * 1000.0);
+        hash ^= static_cast<uint64_t>(q);
+        hash *= 1099511628211ULL;
+    }
+    return static_cast<size_t>(hash % static_cast<uint64_t>(patternCount));
+}
+} // namespace
 
 AppendStrategy::AppendStrategy(const Config& config)
     : PatternUpdateStrategy(config),
@@ -39,13 +52,12 @@ bool AppendStrategy::updatePatterns(
         return true;
     }
 
-    // Not similar enough - replace random pattern as fallback
-    // This is the current behavior in Neuron::learnCurrentPattern()
-    size_t randIdx = rand() % patterns.size();
-    patterns[randIdx] = newPattern;
+    // Not similar enough - deterministic replacement keeps seed-controlled A/B runs stable.
+    size_t replaceIdx = deterministicReplacementIndex(newPattern, patterns.size());
+    patterns[replaceIdx] = newPattern;
     
-    SNNFW_DEBUG("AppendStrategy: Replaced random pattern {} (best similarity={:.3f})",
-                randIdx, bestSim);
+    SNNFW_DEBUG("AppendStrategy: Replaced deterministic pattern {} (best similarity={:.3f})",
+                replaceIdx, bestSim);
     return true;
 }
 
@@ -71,4 +83,3 @@ void AppendStrategy::blendPattern(
 
 } // namespace learning
 } // namespace snnfw
-
