@@ -93,10 +93,12 @@ private:
 
     /// Parse neuron params object
     NeuronParamsIR parseNeuronParams(const nlohmann::json& j) const;
+
+    /// Parse adapter endpoint from snnframe.adapters JSON array element
+    AdapterConfigIR parseAdapter(const nlohmann::json& j) const;
 };
 
 } // namespace declarative
 } // namespace snnfw
 
 #endif // SNNFW_DECLARATIVE_SONATA_PARSER_H
-

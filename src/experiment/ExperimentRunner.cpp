@@ -1,4 +1,6 @@
 #include "snnfw/experiment/ExperimentRunner.h"
+#include "snnfw/adapters/AdapterFactory.h"
+#include "snnfw/adapters/InterneuronAdapters.h"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -87,6 +89,7 @@ void ExperimentRunner::buildNetwork() {
 
     // Construct the network from the parsed IR
     network_ = std::make_unique<declarative::ConstructedNetwork>(loader.loadFromIR(ir));
+    instantiateAdapters(ir);
 
     std::cout << "  Network built: " << network_->inputNeurons.size() << " input neurons, "
               << network_->columns.size() << " columns, "
@@ -188,6 +191,66 @@ void ExperimentRunner::syncConfigFromIR(const declarative::NetworkIR& ir) {
                 }
             }
         }
+    }
+}
+
+void ExperimentRunner::instantiateAdapters(const declarative::NetworkIR& ir) {
+    if (!network_) {
+        throw std::runtime_error("Cannot instantiate adapters before network is constructed");
+    }
+
+    adapters::ensureInterneuronAdaptersRegistered();
+    auto& factory = adapters::AdapterFactory::getInstance();
+    for (const auto& cfgIR : ir.adapters) {
+        adapters::BaseAdapter::Config cfg;
+        cfg.name = cfgIR.name;
+        cfg.type = cfgIR.type;
+        cfg.temporalWindow = cfgIR.temporalWindowMs;
+        cfg.doubleParams = cfgIR.doubleParams;
+        cfg.intParams = cfgIR.intParams;
+        cfg.stringParams = cfgIR.stringParams;
+
+        std::string role = cfgIR.role;
+        if (role.empty()) {
+            if (cfgIR.type == "interneuron_rx") {
+                role = "sensory";
+            } else if (cfgIR.type == "interneuron_tx") {
+                role = "motor";
+            }
+        }
+        if (!cfgIR.bindTo.empty()) {
+            cfg.stringParams["bind_to"] = cfgIR.bindTo;
+        }
+
+        if (role == "sensory") {
+            auto adapter = factory.createSensoryAdapter(cfg);
+            if (!adapter) {
+                throw std::runtime_error("No sensory adapter registered for type '" + cfg.type + "'");
+            }
+            if (!adapter->initialize()) {
+                throw std::runtime_error("Failed to initialize sensory adapter '" + cfg.name + "'");
+            }
+            network_->sensoryAdapters.push_back(std::move(adapter));
+            continue;
+        }
+        if (role == "motor") {
+            auto adapter = factory.createMotorAdapter(cfg);
+            if (!adapter) {
+                throw std::runtime_error("No motor adapter registered for type '" + cfg.type + "'");
+            }
+            if (!adapter->initialize()) {
+                throw std::runtime_error("Failed to initialize motor adapter '" + cfg.name + "'");
+            }
+            network_->motorAdapters.push_back(std::move(adapter));
+            continue;
+        }
+        throw std::runtime_error("Adapter '" + cfg.name + "' has unresolved role");
+    }
+
+    if (!ir.adapters.empty()) {
+        std::cout << "  Adapters initialized: "
+                  << network_->sensoryAdapters.size() << " sensory, "
+                  << network_->motorAdapters.size() << " motor" << std::endl;
     }
 }
 

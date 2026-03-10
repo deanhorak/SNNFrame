@@ -80,6 +80,13 @@ NetworkIR NativeJSONParser::parseJson(const nlohmann::json& root) {
         ir.simulation = parseSimulation(root["simulation"]);
     }
 
+    // Parse external adapters
+    if (root.contains("adapters") && root["adapters"].is_array()) {
+        for (const auto& adapter : root["adapters"]) {
+            ir.adapters.push_back(parseAdapter(adapter));
+        }
+    }
+
     return ir;
 }
 
@@ -320,6 +327,32 @@ SimulationConfigIR NativeJSONParser::parseSimulation(const nlohmann::json& j) {
     }
     sim.interImageGapMs = j.value("inter_image_gap_ms", 550.0);
     return sim;
+}
+
+AdapterConfigIR NativeJSONParser::parseAdapter(const nlohmann::json& j) {
+    AdapterConfigIR a;
+    a.name = j.value("name", "");
+    a.type = j.value("type", "");
+    a.role = j.value("role", "");
+    a.bindTo = j.value("bind_to", "");
+    a.temporalWindowMs = j.value("temporal_window_ms", 10.0);
+
+    if (j.contains("double_params") && j["double_params"].is_object()) {
+        for (auto& [key, val] : j["double_params"].items()) {
+            a.doubleParams[key] = val.get<double>();
+        }
+    }
+    if (j.contains("int_params") && j["int_params"].is_object()) {
+        for (auto& [key, val] : j["int_params"].items()) {
+            a.intParams[key] = val.get<int>();
+        }
+    }
+    if (j.contains("string_params") && j["string_params"].is_object()) {
+        for (auto& [key, val] : j["string_params"].items()) {
+            a.stringParams[key] = val.get<std::string>();
+        }
+    }
+    return a;
 }
 
 } // namespace declarative

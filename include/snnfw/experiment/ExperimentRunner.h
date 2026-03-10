@@ -61,10 +61,12 @@ private:
 
     /// Populate config fields from the loaded IR (numColumns, layer sizes, etc.)
     void syncConfigFromIR(const declarative::NetworkIR& ir);
+
+    /// Instantiate declarative adapters and attach to the constructed network.
+    void instantiateAdapters(const declarative::NetworkIR& ir);
 };
 
 } // namespace experiment
 } // namespace snnfw
 
 #endif // SNNFW_EXPERIMENT_RUNNER_H
-

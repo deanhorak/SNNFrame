@@ -5,6 +5,7 @@
 #include "snnfw/NetworkPropagator.h"
 #include "snnfw/SpikeProcessor.h"
 #include "snnfw/EMNISTLoader.h"
+#include "snnfw/adapters/SensoryAdapter.h"
 #include "snnfw/experiment/ExperimentConfig.h"
 #include "snnfw/declarative/NetworkConstructor.h"
 #include <memory>
@@ -26,7 +27,8 @@ class SpikeEncoder {
 public:
     SpikeEncoder(const ExperimentConfig& config,
                  std::shared_ptr<SpikeProcessor> spikeProcessor,
-                 std::shared_ptr<NetworkPropagator> propagator);
+                 std::shared_ptr<NetworkPropagator> propagator,
+                 std::shared_ptr<adapters::SensoryAdapter> configuredAdapter = nullptr);
 
     /**
      * @brief Encode an image and inject spikes into input neurons.
@@ -59,6 +61,9 @@ private:
     const ExperimentConfig& config_;
     std::shared_ptr<SpikeProcessor> spikeProcessor_;
     std::shared_ptr<NetworkPropagator> propagator_;
+    std::shared_ptr<adapters::SensoryAdapter> configuredAdapter_;
+    std::shared_ptr<adapters::SensoryAdapter> emnistAdapter_;
+    bool useEmnistAdapter_ = true;
 
     double lastEndTime_ = 0.0;
     double lastBaseTime_ = 0.0;
@@ -69,4 +74,3 @@ private:
 } // namespace snnfw
 
 #endif // SNNFW_EXPERIMENT_SPIKE_ENCODER_H
-

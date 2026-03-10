@@ -178,6 +178,18 @@ struct SimulationConfigIR {
     double interImageGapMs = 550.0;
 };
 
+/// Declarative adapter endpoint configuration
+struct AdapterConfigIR {
+    std::string name;
+    std::string type;
+    std::string role;        // "sensory" or "motor" (optional, inferred from type when empty)
+    std::string bindTo;      // "input" / "output" (optional hint for runtime wiring)
+    double temporalWindowMs = 10.0;
+    std::map<std::string, double> doubleParams;
+    std::map<std::string, int> intParams;
+    std::map<std::string, std::string> stringParams;
+};
+
 /// The complete intermediate representation for a network
 struct NetworkIR {
     std::string formatVersion = "1.0";
@@ -202,6 +214,9 @@ struct NetworkIR {
 
     /// Simulation parameters
     SimulationConfigIR simulation;
+
+    /// External adapters
+    std::vector<AdapterConfigIR> adapters;
 
     /// Validate the IR, returning true if valid
     bool validate() const;

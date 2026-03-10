@@ -18,6 +18,8 @@ set(LIB_SOURCES
     HyperparameterOptimizer.cpp
     ConfigOptimizer.cpp
     adapters/RetinaAdapter.cpp
+    adapters/EMNISTAdapter.cpp
+    adapters/InterneuronAdapters.cpp
     adapters/DisplayAdapter.cpp
     adapters/AudioAdapter.cpp
     encoding/RateEncoder.cpp

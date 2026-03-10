@@ -107,6 +107,13 @@ NetworkIR SONATAParser::parseCircuitConfig(const nlohmann::json& config,
         if (snnfw.contains("simulation")) {
             ir.simulation = parseSimulation(snnfw["simulation"]);
         }
+
+        // External adapters
+        if (snnfw.contains("adapters") && snnfw["adapters"].is_array()) {
+            for (const auto& adapter : snnfw["adapters"]) {
+                ir.adapters.push_back(parseAdapter(adapter));
+            }
+        }
     }
 
     // Load nodes and edges from HDF5 files if specified
@@ -585,6 +592,32 @@ SaccadeConfigIR SONATAParser::parseSaccades(const nlohmann::json& j) const {
         }
     }
     return s;
+}
+
+AdapterConfigIR SONATAParser::parseAdapter(const nlohmann::json& j) const {
+    AdapterConfigIR a;
+    a.name = j.value("name", "");
+    a.type = j.value("type", "");
+    a.role = j.value("role", "");
+    a.bindTo = j.value("bind_to", "");
+    a.temporalWindowMs = j.value("temporal_window_ms", 10.0);
+
+    if (j.contains("double_params") && j["double_params"].is_object()) {
+        for (auto& [key, val] : j["double_params"].items()) {
+            a.doubleParams[key] = val.get<double>();
+        }
+    }
+    if (j.contains("int_params") && j["int_params"].is_object()) {
+        for (auto& [key, val] : j["int_params"].items()) {
+            a.intParams[key] = val.get<int>();
+        }
+    }
+    if (j.contains("string_params") && j["string_params"].is_object()) {
+        for (auto& [key, val] : j["string_params"].items()) {
+            a.stringParams[key] = val.get<std::string>();
+        }
+    }
+    return a;
 }
 
 } // namespace declarative

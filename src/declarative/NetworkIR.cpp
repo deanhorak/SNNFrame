@@ -126,6 +126,29 @@ std::vector<std::string> NetworkIR::getValidationErrors() const {
         errors.push_back("Output layer must have positive neuronsPerClass");
     }
 
+    // Validate adapter declarations
+    for (const auto& adapter : adapters) {
+        if (adapter.name.empty()) {
+            errors.push_back("Adapter has empty name");
+        }
+        if (adapter.type.empty()) {
+            errors.push_back("Adapter '" + adapter.name + "' has empty type");
+            continue;
+        }
+        if (adapter.type != "interneuron_rx" && adapter.type != "interneuron_tx") {
+            errors.push_back("Adapter '" + adapter.name + "' has unsupported type '" +
+                             adapter.type + "'");
+        }
+        if (!adapter.role.empty() && adapter.role != "sensory" && adapter.role != "motor") {
+            errors.push_back("Adapter '" + adapter.name + "' has invalid role '" +
+                             adapter.role + "'");
+        }
+        if (!adapter.bindTo.empty() && adapter.bindTo != "input" && adapter.bindTo != "output") {
+            errors.push_back("Adapter '" + adapter.name + "' has invalid bind_to '" +
+                             adapter.bindTo + "'");
+        }
+    }
+
     return errors;
 }
 

@@ -1,21 +1,61 @@
 #include "snnfw/experiment/SpikeEncoder.h"
+#include "snnfw/adapters/AdapterFactory.h"
+#include "snnfw/adapters/EMNISTAdapter.h"
 #include <chrono>
 #include <thread>
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 
 namespace snnfw {
 namespace experiment {
 
 SpikeEncoder::SpikeEncoder(const ExperimentConfig& config,
                            std::shared_ptr<SpikeProcessor> spikeProcessor,
-                           std::shared_ptr<NetworkPropagator> propagator)
+                           std::shared_ptr<NetworkPropagator> propagator,
+                           std::shared_ptr<adapters::SensoryAdapter> configuredAdapter)
     : config_(config)
     , spikeProcessor_(std::move(spikeProcessor))
     , propagator_(std::move(propagator))
+    , configuredAdapter_(std::move(configuredAdapter))
 {
     lastEndTime_ = spikeProcessor_->getCurrentTime();
+    if (const char* env = std::getenv("SNNFW_USE_EMNIST_ADAPTER")) {
+        useEmnistAdapter_ = (std::string(env) != "0");
+    }
+
+    if (configuredAdapter_) {
+        if (!configuredAdapter_->isInitialized() && !configuredAdapter_->initialize()) {
+            throw std::runtime_error("Failed to initialize configured sensory adapter");
+        }
+    }
+
+    if (useEmnistAdapter_) {
+        adapters::BaseAdapter::Config adapterConfig;
+        adapterConfig.name = "emnist_input";
+        adapterConfig.type = "emnist";
+        adapterConfig.temporalWindow = config_.inputLatencyMs;
+        adapterConfig.doubleParams["pixel_threshold"] = config_.pixelThreshold;
+        adapterConfig.doubleParams["input_latency_ms"] = config_.inputLatencyMs;
+        adapterConfig.intParams["image_rows"] = 28;
+        adapterConfig.intParams["image_cols"] = 28;
+
+        auto& factory = adapters::AdapterFactory::getInstance();
+        if (!factory.hasSensoryAdapter("emnist")) {
+            factory.registerSensoryAdapter(
+                "emnist",
+                [](const adapters::BaseAdapter::Config& cfg) {
+                    return std::make_shared<adapters::EMNISTAdapter>(cfg);
+                });
+        }
+        emnistAdapter_ = factory.createSensoryAdapter(adapterConfig);
+        if (!emnistAdapter_ || !emnistAdapter_->initialize()) {
+            throw std::runtime_error("Failed to initialize EMNIST sensory adapter");
+        }
+    }
 }
 
 double SpikeEncoder::encodeAndInject(
@@ -58,17 +98,80 @@ double SpikeEncoder::encodeAndInject(
         }
     }
 
-    // Encode pixels as spikes
     lastInputFired_.assign(inputNeurons.size(), false);
     int spikeCount = 0;
-    for (size_t idx = 0; idx < inputNeurons.size() && idx < image.pixels.size(); ++idx) {
-        double norm = image.pixels[idx] / 255.0;
-        if (norm > config_.pixelThreshold) {
-            double fireT = baseTime + (1.0 - norm) * config_.inputLatencyMs;
-            inputNeurons[idx]->fireSignature(fireT);
-            propagator_->fireNeuron(inputNeurons[idx]->getId(), fireT);
+    if (emnistAdapter_) {
+        adapters::SensoryAdapter::DataSample sample;
+        sample.rawData = image.pixels;
+        sample.timestamp = baseTime;
+        auto encodedPattern = emnistAdapter_->processData(sample);
+        const bool parityCheckEnabled = (std::getenv("SNNFW_EMNIST_PARITY_CHECK") != nullptr);
+
+        // Encode adapter spikes as input spikes
+        const size_t maxIdx = std::min(inputNeurons.size(), encodedPattern.spikeTimes.size());
+        for (size_t idx = 0; idx < maxIdx; ++idx) {
+            if (parityCheckEnabled) {
+                const double norm = image.pixels[idx] / 255.0;
+                const bool legacyFires = norm > config_.pixelThreshold;
+                const bool adapterFires = !encodedPattern.spikeTimes[idx].empty();
+                if (legacyFires != adapterFires) {
+                    std::cout << "[PARITY] Fire mismatch idx=" << idx
+                              << " pixel=" << static_cast<int>(image.pixels[idx])
+                              << " norm=" << norm
+                              << " threshold=" << config_.pixelThreshold
+                              << " legacy=" << legacyFires
+                              << " adapter=" << adapterFires << std::endl;
+                } else if (legacyFires) {
+                    const double legacyT = (1.0 - norm) * config_.inputLatencyMs;
+                    const double adapterT = encodedPattern.spikeTimes[idx].front();
+                    if (std::abs(legacyT - adapterT) > 1e-12) {
+                        std::cout << "[PARITY] Time mismatch idx=" << idx
+                                  << " legacyT=" << legacyT
+                                  << " adapterT=" << adapterT << std::endl;
+                    }
+                }
+            }
+            if (encodedPattern.spikeTimes[idx].empty()) {
+                continue;
+            }
+            for (double relativeT : encodedPattern.spikeTimes[idx]) {
+                const double fireT = baseTime + relativeT;
+                inputNeurons[idx]->fireSignature(fireT);
+                propagator_->fireNeuron(inputNeurons[idx]->getId(), fireT);
+                ++spikeCount;
+            }
             lastInputFired_[idx] = true;
-            spikeCount++;
+        }
+    } else if (!configuredAdapter_) {
+        for (size_t idx = 0; idx < inputNeurons.size() && idx < image.pixels.size(); ++idx) {
+            double norm = image.pixels[idx] / 255.0;
+            if (norm > config_.pixelThreshold) {
+                double fireT = baseTime + (1.0 - norm) * config_.inputLatencyMs;
+                inputNeurons[idx]->fireSignature(fireT);
+                propagator_->fireNeuron(inputNeurons[idx]->getId(), fireT);
+                lastInputFired_[idx] = true;
+                ++spikeCount;
+            }
+        }
+    }
+
+    if (configuredAdapter_) {
+        adapters::SensoryAdapter::DataSample sample;
+        sample.rawData = image.pixels;
+        sample.timestamp = baseTime;
+        auto encodedPattern = configuredAdapter_->processData(sample);
+        const size_t maxIdx = std::min(inputNeurons.size(), encodedPattern.spikeTimes.size());
+        for (size_t idx = 0; idx < maxIdx; ++idx) {
+            if (encodedPattern.spikeTimes[idx].empty()) {
+                continue;
+            }
+            for (double relativeT : encodedPattern.spikeTimes[idx]) {
+                const double fireT = baseTime + relativeT;
+                inputNeurons[idx]->fireSignature(fireT);
+                propagator_->fireNeuron(inputNeurons[idx]->getId(), fireT);
+                ++spikeCount;
+            }
+            lastInputFired_[idx] = true;
         }
     }
 

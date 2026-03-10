@@ -269,6 +269,43 @@ TEST_F(DeclarativeLoaderTest, Parser_ParseGabor) {
     EXPECT_EQ(ir.gabor.kernelSize, 5);
 }
 
+TEST_F(DeclarativeLoaderTest, Parser_ParseAdapters_NativeJson) {
+    nlohmann::json root = {
+        {"brain", {{"name", "B"}, {"hemispheres", nlohmann::json::array()}}},
+        {"adapters", nlohmann::json::array({
+            {
+                {"name", "rx_bridge"},
+                {"type", "interneuron_rx"},
+                {"role", "sensory"},
+                {"bind_to", "input"},
+                {"temporal_window_ms", 12.0},
+                {"int_params", {{"bind_port", 5000}, {"neuron_count", 784}}},
+                {"string_params", {{"bind_host", "0.0.0.0"}}}
+            },
+            {
+                {"name", "tx_bridge"},
+                {"type", "interneuron_tx"},
+                {"role", "motor"},
+                {"bind_to", "output"},
+                {"double_params", {{"update_interval_ms", 10.0}}},
+                {"string_params", {{"remote_host", "127.0.0.1"}}},
+                {"int_params", {{"remote_port", 5050}}}
+            }
+        })}
+    };
+
+    NativeJSONParser parser;
+    auto ir = parser.parseJson(root);
+
+    ASSERT_EQ(ir.adapters.size(), 2);
+    EXPECT_EQ(ir.adapters[0].name, "rx_bridge");
+    EXPECT_EQ(ir.adapters[0].type, "interneuron_rx");
+    EXPECT_EQ(ir.adapters[0].bindTo, "input");
+    EXPECT_EQ(ir.adapters[0].intParams.at("neuron_count"), 784);
+    EXPECT_EQ(ir.adapters[1].type, "interneuron_tx");
+    EXPECT_EQ(ir.adapters[1].stringParams.at("remote_host"), "127.0.0.1");
+}
+
 // ============================================================================
 // DeclarativeLoader tests
 // ============================================================================
@@ -680,6 +717,41 @@ TEST_F(DeclarativeLoaderTest, SONATAParser_FullModel_WithHierarchyAndProjections
     EXPECT_EQ(ir.simulation.l4Keep, 8);
     EXPECT_TRUE(ir.simulation.enableL5Inhibition);
     EXPECT_DOUBLE_EQ(ir.simulation.interImageGapMs, 550.0);
+}
+
+TEST_F(DeclarativeLoaderTest, SONATAParser_ParseAdapters) {
+    nlohmann::json config = {
+        {"network_name", "WithAdapters"},
+        {"snnframe", {
+            {"adapters", nlohmann::json::array({
+                {
+                    {"name", "rx_bridge"},
+                    {"type", "interneuron_rx"},
+                    {"role", "sensory"},
+                    {"bind_to", "input"},
+                    {"int_params", {{"bind_port", 5000}}}
+                },
+                {
+                    {"name", "tx_bridge"},
+                    {"type", "interneuron_tx"},
+                    {"role", "motor"},
+                    {"bind_to", "output"},
+                    {"int_params", {{"remote_port", 5050}}},
+                    {"string_params", {{"remote_host", "127.0.0.1"}}}
+                }
+            })}
+        }}
+    };
+
+    SONATAParser parser;
+    auto ir = parser.parseCircuitConfig(config, ".");
+
+    ASSERT_EQ(ir.adapters.size(), 2);
+    EXPECT_EQ(ir.adapters[0].name, "rx_bridge");
+    EXPECT_EQ(ir.adapters[0].type, "interneuron_rx");
+    EXPECT_EQ(ir.adapters[0].role, "sensory");
+    EXPECT_EQ(ir.adapters[1].type, "interneuron_tx");
+    EXPECT_EQ(ir.adapters[1].bindTo, "output");
 }
 
 

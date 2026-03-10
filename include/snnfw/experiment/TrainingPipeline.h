@@ -75,6 +75,7 @@ private:
     void applyL5DivisiveNormalization(std::vector<uint16_t>& counts) const;
 
     void applyHomeostasis();
+    void processMotorAdapters(double currentTimeMs);
 
     double runTestingPhase(EMNISTLoader& testLoader);
 };

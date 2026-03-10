@@ -44,10 +44,10 @@ private:
     GaborConfigIR parseGabor(const nlohmann::json& j);
     SaccadeConfigIR parseSaccades(const nlohmann::json& j);
     SimulationConfigIR parseSimulation(const nlohmann::json& j);
+    AdapterConfigIR parseAdapter(const nlohmann::json& j);
 };
 
 } // namespace declarative
 } // namespace snnfw
 
 #endif // SNNFW_DECLARATIVE_NATIVE_JSON_PARSER_H
-

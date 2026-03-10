@@ -31,7 +31,19 @@ TrainingPipeline::TrainingPipeline(const ExperimentConfig& config,
                                    declarative::ConstructedNetwork& network)
     : config_(config)
     , network_(network)
-    , encoder_(config, network.spikeProcessor, network.propagator)
+    , encoder_(config, network.spikeProcessor, network.propagator,
+               [&network]() -> std::shared_ptr<adapters::SensoryAdapter> {
+                   if (network.sensoryAdapters.empty()) {
+                       return nullptr;
+                   }
+                   for (const auto& adapter : network.sensoryAdapters) {
+                       if (adapter &&
+                           adapter->getConfig().getStringParam("bind_to", "") == "input") {
+                           return adapter;
+                       }
+                   }
+                   return network.sensoryAdapters.front();
+               }())
     , competition_(config)
     , classifier_(config)
     , teacher_(config)
@@ -122,6 +134,8 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
     }
 
     auto t7 = std::chrono::steady_clock::now();
+
+    processMotorAdapters(baseTime + config_.neuronWindow);
 
     // Collect L5 counts
     collectL5Readout(result.l5Counts, result.l5Latencies, l5Winners, baseTime);
@@ -326,6 +340,8 @@ double TrainingPipeline::run(EMNISTLoader& trainLoader, EMNISTLoader& testLoader
             if (hasL5Activity) {
                 classifier_.storePattern(label, firedL5Counts, firedL5Latencies);
             }
+
+            processMotorAdapters(baseTime + config_.neuronWindow);
 
             trainCount[label]++;
             passImages++;
@@ -733,6 +749,23 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
     }
 
     return (testTotal > 0) ? (100.0 * testCorrect / testTotal) : 0.0;
+}
+
+void TrainingPipeline::processMotorAdapters(double currentTimeMs) {
+    if (network_.motorAdapters.empty()) {
+        return;
+    }
+
+    std::vector<std::shared_ptr<Neuron>> flatOutputNeurons;
+    for (auto& population : network_.outputPopulations) {
+        flatOutputNeurons.insert(flatOutputNeurons.end(), population.begin(), population.end());
+    }
+    for (auto& adapter : network_.motorAdapters) {
+        if (!adapter) {
+            continue;
+        }
+        adapter->processNeurons(flatOutputNeurons, currentTimeMs);
+    }
 }
 
 } // namespace experiment

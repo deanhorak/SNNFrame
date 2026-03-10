@@ -10,6 +10,8 @@
 #include "snnfw/ConnectivityPattern.h"
 #include "snnfw/Neuron.h"
 #include "snnfw/Synapse.h"
+#include "snnfw/adapters/SensoryAdapter.h"
+#include "snnfw/adapters/MotorAdapter.h"
 #include <memory>
 #include <vector>
 #include <map>
@@ -53,6 +55,10 @@ struct ConstructedNetwork {
 
     /// All synapses grouped by synapse group name
     std::map<std::string, std::vector<std::shared_ptr<Synapse>>> synapseGroups;
+
+    /// Adapters instantiated from declarative config
+    std::vector<std::shared_ptr<adapters::SensoryAdapter>> sensoryAdapters;
+    std::vector<std::shared_ptr<adapters::MotorAdapter>> motorAdapters;
 
     /// All neuron IDs for bulk operations
     std::vector<uint64_t> allNeuronIds;
