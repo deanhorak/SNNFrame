@@ -127,6 +127,20 @@ The framework includes a high-performance EMNIST letters classification experime
 The unilateral Retina reference config is `configs/emnist_retina_experimental.sonata.json`.
 The bilateral Retina reference config is `configs/emnist_retina_bilateral_experimental.sonata.json`. It uses two transformed hemisphere views and corpus-callosum-style weighted fusion over the hemisphere classifications.
 
+Reference full-run benchmarks on EMNIST letters (`3200/class`, `5200` test, `seed 42`):
+- Unilateral Retina: `86.17%`
+- Bilateral Retina: `87.29%`
+
+Reference commands:
+```bash
+./scripts/run_emnist_retina_unilateral.sh
+./scripts/run_emnist_retina_bilateral.sh
+```
+
+Expected logs:
+- `build/emnist_retina_unilateral_experimental.log`
+- `build/emnist_retina_bilateral_experimental.log`
+
 **Performance**: The framework achieves approximately **90% accuracy** on EMNIST letters classification (26 classes) using:
 - Cosine similarity-based pattern matching
 - STDP frozen during testing to prevent weight drift
