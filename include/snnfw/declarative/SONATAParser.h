@@ -96,6 +96,9 @@ private:
 
     /// Parse adapter endpoint from snnframe.adapters JSON array element
     AdapterConfigIR parseAdapter(const nlohmann::json& j) const;
+
+    /// Parse classifier/readout config from snnframe.classification JSON
+    ClassificationConfigIR parseClassification(const nlohmann::json& j) const;
 };
 
 } // namespace declarative

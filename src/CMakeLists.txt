@@ -31,6 +31,7 @@ set(LIB_SOURCES
     features/DoGOperator.cpp
     features/EdgeOperatorFactory.cpp
     classification/MajorityVoting.cpp
+    classification/HierarchicalKNN.cpp
     classification/WeightedDistance.cpp
     classification/WeightedSimilarity.cpp
     classification/ClassificationStrategyFactory.cpp

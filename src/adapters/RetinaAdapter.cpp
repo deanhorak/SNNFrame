@@ -32,11 +32,723 @@
 #include "snnfw/encoding/TemporalEncoder.h"
 #include "snnfw/encoding/PopulationEncoder.h"
 #include "snnfw/Logger.h"
+#include <array>
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
+#include <numeric>
+#include <sstream>
 
 namespace snnfw {
 namespace adapters {
+
+namespace {
+
+std::vector<double> makeGaussianKernel(double sigma) {
+    if (sigma <= 0.0) {
+        return {1.0};
+    }
+
+    const int radius = std::max(1, static_cast<int>(std::ceil(2.5 * sigma)));
+    std::vector<double> kernel(static_cast<size_t>(2 * radius + 1), 0.0);
+    double sum = 0.0;
+    for (int i = -radius; i <= radius; ++i) {
+        const double x = static_cast<double>(i);
+        const double value = std::exp(-(x * x) / (2.0 * sigma * sigma));
+        kernel[static_cast<size_t>(i + radius)] = value;
+        sum += value;
+    }
+    if (sum > 0.0) {
+        for (double& value : kernel) {
+            value /= sum;
+        }
+    }
+    return kernel;
+}
+
+int clampIndex(int value, int minValue, int maxValue) {
+    return std::max(minValue, std::min(value, maxValue));
+}
+
+struct TopologyMaps {
+    int rows = 0;
+    int cols = 0;
+    std::vector<double> contour;
+    std::vector<double> endpoints;
+    std::vector<double> junctions;
+    std::vector<double> holes;
+    std::vector<double> gapTop;
+    std::vector<double> gapRight;
+    std::vector<double> gapBottom;
+    std::vector<double> gapLeft;
+};
+
+struct ContourGraphMaps {
+    int rows = 0;
+    int cols = 0;
+    std::vector<std::vector<double>> channels;
+};
+
+struct ContourSequenceMaps {
+    int rows = 0;
+    int cols = 0;
+    std::vector<std::vector<double>> bins;
+};
+
+size_t linearIndex(int row, int col, int cols) {
+    return static_cast<size_t>(row * cols + col);
+}
+
+bool hasOccupiedNeighbor(const std::vector<uint8_t>& occupied, int rows, int cols, int row, int col) {
+    const int dr[4] = {-1, 1, 0, 0};
+    const int dc[4] = {0, 0, -1, 1};
+    for (int k = 0; k < 4; ++k) {
+        const int nr = row + dr[k];
+        const int nc = col + dc[k];
+        if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) {
+            continue;
+        }
+        if (occupied[linearIndex(nr, nc, cols)] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <typename StartFn>
+std::vector<double> buildDirectionalGapMap(const std::vector<uint8_t>& occupied,
+                                           int rows,
+                                           int cols,
+                                           StartFn&& enqueueStarts) {
+    std::vector<double> gapMap(static_cast<size_t>(rows * cols), 0.0);
+    std::vector<uint8_t> visited(static_cast<size_t>(rows * cols), 0);
+    std::vector<std::pair<int, int>> queue;
+    queue.reserve(static_cast<size_t>(rows * cols));
+
+    auto pushOpen = [&](int row, int col) {
+        const size_t idx = linearIndex(row, col, cols);
+        if (occupied[idx] == 0 && visited[idx] == 0) {
+            visited[idx] = 1;
+            queue.push_back({row, col});
+        }
+    };
+
+    enqueueStarts(pushOpen);
+
+    const int dr[4] = {-1, 1, 0, 0};
+    const int dc[4] = {0, 0, -1, 1};
+    for (size_t qi = 0; qi < queue.size(); ++qi) {
+        const auto [row, col] = queue[qi];
+        if (hasOccupiedNeighbor(occupied, rows, cols, row, col)) {
+            gapMap[linearIndex(row, col, cols)] = 1.0;
+        }
+        for (int k = 0; k < 4; ++k) {
+            const int nr = row + dr[k];
+            const int nc = col + dc[k];
+            if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) {
+                continue;
+            }
+            const size_t idx = linearIndex(nr, nc, cols);
+            if (occupied[idx] == 0 && visited[idx] == 0) {
+                visited[idx] = 1;
+                queue.push_back({nr, nc});
+            }
+        }
+    }
+
+    return gapMap;
+}
+
+TopologyMaps computeTopologyMaps(const RetinaAdapter::Image& image, double pixelThreshold) {
+    TopologyMaps maps;
+    maps.rows = image.rows;
+    maps.cols = image.cols;
+    const size_t pixelCount = static_cast<size_t>(image.rows * image.cols);
+    maps.contour.assign(pixelCount, 0.0);
+    maps.endpoints.assign(pixelCount, 0.0);
+    maps.junctions.assign(pixelCount, 0.0);
+    maps.holes.assign(pixelCount, 0.0);
+
+    std::vector<uint8_t> occupied(pixelCount, 0);
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            const size_t idx = linearIndex(row, col, image.cols);
+            occupied[idx] = image.getNormalizedPixel(row, col) >= pixelThreshold ? 1 : 0;
+        }
+    }
+
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            const size_t idx = linearIndex(row, col, image.cols);
+            if (occupied[idx] == 0) {
+                continue;
+            }
+
+            bool isContour = false;
+            const int dr[4] = {-1, 1, 0, 0};
+            const int dc[4] = {0, 0, -1, 1};
+            for (int k = 0; k < 4; ++k) {
+                const int nr = row + dr[k];
+                const int nc = col + dc[k];
+                if (nr < 0 || nr >= image.rows || nc < 0 || nc >= image.cols ||
+                    occupied[linearIndex(nr, nc, image.cols)] == 0) {
+                    isContour = true;
+                    break;
+                }
+            }
+            if (isContour) {
+                maps.contour[idx] = 1.0;
+            }
+        }
+    }
+
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            const size_t idx = linearIndex(row, col, image.cols);
+            if (maps.contour[idx] <= 0.0) {
+                continue;
+            }
+
+            int degree = 0;
+            for (int dr = -1; dr <= 1; ++dr) {
+                for (int dc = -1; dc <= 1; ++dc) {
+                    if (dr == 0 && dc == 0) {
+                        continue;
+                    }
+                    const int nr = row + dr;
+                    const int nc = col + dc;
+                    if (nr < 0 || nr >= image.rows || nc < 0 || nc >= image.cols) {
+                        continue;
+                    }
+                    if (maps.contour[linearIndex(nr, nc, image.cols)] > 0.0) {
+                        degree++;
+                    }
+                }
+            }
+
+            if (degree <= 1) {
+                maps.endpoints[idx] = 1.0;
+            } else if (degree >= 3) {
+                maps.junctions[idx] = 1.0;
+            }
+        }
+    }
+
+    std::vector<uint8_t> openVisited(pixelCount, 0);
+    std::vector<std::pair<int, int>> queue;
+    queue.reserve(pixelCount);
+    auto pushOpen = [&](int row, int col) {
+        const size_t idx = linearIndex(row, col, image.cols);
+        if (occupied[idx] == 0 && openVisited[idx] == 0) {
+            openVisited[idx] = 1;
+            queue.push_back({row, col});
+        }
+    };
+
+    for (int col = 0; col < image.cols; ++col) {
+        pushOpen(0, col);
+        pushOpen(image.rows - 1, col);
+    }
+    for (int row = 1; row < image.rows - 1; ++row) {
+        pushOpen(row, 0);
+        pushOpen(row, image.cols - 1);
+    }
+
+    const int dr4[4] = {-1, 1, 0, 0};
+    const int dc4[4] = {0, 0, -1, 1};
+    for (size_t qi = 0; qi < queue.size(); ++qi) {
+        const auto [row, col] = queue[qi];
+        for (int k = 0; k < 4; ++k) {
+            const int nr = row + dr4[k];
+            const int nc = col + dc4[k];
+            if (nr < 0 || nr >= image.rows || nc < 0 || nc >= image.cols) {
+                continue;
+            }
+            const size_t idx = linearIndex(nr, nc, image.cols);
+            if (occupied[idx] == 0 && openVisited[idx] == 0) {
+                openVisited[idx] = 1;
+                queue.push_back({nr, nc});
+            }
+        }
+    }
+
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            const size_t idx = linearIndex(row, col, image.cols);
+            if (occupied[idx] == 0 && openVisited[idx] == 0) {
+                maps.holes[idx] = 1.0;
+            }
+        }
+    }
+
+    maps.gapTop = buildDirectionalGapMap(
+        occupied, image.rows, image.cols,
+        [&](auto&& pushFn) {
+            for (int col = 0; col < image.cols; ++col) {
+                pushFn(0, col);
+            }
+        });
+    maps.gapRight = buildDirectionalGapMap(
+        occupied, image.rows, image.cols,
+        [&](auto&& pushFn) {
+            for (int row = 0; row < image.rows; ++row) {
+                pushFn(row, image.cols - 1);
+            }
+        });
+    maps.gapBottom = buildDirectionalGapMap(
+        occupied, image.rows, image.cols,
+        [&](auto&& pushFn) {
+            for (int col = 0; col < image.cols; ++col) {
+                pushFn(image.rows - 1, col);
+            }
+        });
+    maps.gapLeft = buildDirectionalGapMap(
+        occupied, image.rows, image.cols,
+        [&](auto&& pushFn) {
+            for (int row = 0; row < image.rows; ++row) {
+                pushFn(row, 0);
+            }
+        });
+
+    return maps;
+}
+
+double poolMapRegionMean(const std::vector<double>& map,
+                         int rows,
+                         int cols,
+                         int gridSize,
+                         int regionRow,
+                         int regionCol) {
+    const int startRow = (regionRow * rows) / gridSize;
+    const int endRow = ((regionRow + 1) * rows) / gridSize;
+    const int startCol = (regionCol * cols) / gridSize;
+    const int endCol = ((regionCol + 1) * cols) / gridSize;
+    const int height = std::max(1, endRow - startRow);
+    const int width = std::max(1, endCol - startCol);
+    const int count = height * width;
+
+    double sum = 0.0;
+    for (int row = startRow; row < endRow; ++row) {
+        for (int col = startCol; col < endCol; ++col) {
+            sum += map[linearIndex(row, col, cols)];
+        }
+    }
+    return count > 0 ? sum / static_cast<double>(count) : 0.0;
+}
+
+std::vector<double> poolTopologyFeatures(const TopologyMaps& maps,
+                                         int gridSize,
+                                         int regionRow,
+                                         int regionCol,
+                                         double gain) {
+    std::vector<double> features(8, 0.0);
+    features[0] = poolMapRegionMean(maps.contour, maps.rows, maps.cols, gridSize, regionRow, regionCol);
+    features[1] = poolMapRegionMean(maps.endpoints, maps.rows, maps.cols, gridSize, regionRow, regionCol);
+    features[2] = poolMapRegionMean(maps.junctions, maps.rows, maps.cols, gridSize, regionRow, regionCol);
+    features[3] = poolMapRegionMean(maps.holes, maps.rows, maps.cols, gridSize, regionRow, regionCol);
+    features[4] = poolMapRegionMean(maps.gapTop, maps.rows, maps.cols, gridSize, regionRow, regionCol);
+    features[5] = poolMapRegionMean(maps.gapRight, maps.rows, maps.cols, gridSize, regionRow, regionCol);
+    features[6] = poolMapRegionMean(maps.gapBottom, maps.rows, maps.cols, gridSize, regionRow, regionCol);
+    features[7] = poolMapRegionMean(maps.gapLeft, maps.rows, maps.cols, gridSize, regionRow, regionCol);
+
+    for (double& feature : features) {
+        feature = std::clamp(feature * gain, 0.0, 1.0);
+    }
+    return features;
+}
+
+ContourGraphMaps computeContourGraphMaps(const RetinaAdapter::Image& image, double pixelThreshold) {
+    ContourGraphMaps maps;
+    maps.rows = image.rows;
+    maps.cols = image.cols;
+    const size_t pixelCount = static_cast<size_t>(image.rows * image.cols);
+    maps.channels.assign(8, std::vector<double>(pixelCount, 0.0));
+
+    std::vector<uint8_t> occupied(pixelCount, 0);
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            occupied[linearIndex(row, col, image.cols)] =
+                image.getNormalizedPixel(row, col) >= pixelThreshold ? 1 : 0;
+        }
+    }
+
+    std::vector<uint8_t> contour(pixelCount, 0);
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            const size_t idx = linearIndex(row, col, image.cols);
+            if (occupied[idx] == 0) {
+                continue;
+            }
+            bool boundary = false;
+            const int dr4[4] = {-1, 1, 0, 0};
+            const int dc4[4] = {0, 0, -1, 1};
+            for (int k = 0; k < 4; ++k) {
+                const int nr = row + dr4[k];
+                const int nc = col + dc4[k];
+                if (nr < 0 || nr >= image.rows || nc < 0 || nc >= image.cols ||
+                    occupied[linearIndex(nr, nc, image.cols)] == 0) {
+                    boundary = true;
+                    break;
+                }
+            }
+            contour[idx] = boundary ? 1 : 0;
+        }
+    }
+
+    std::vector<uint8_t> visited(pixelCount, 0);
+    const int dr8[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    const int dc8[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            const size_t seedIdx = linearIndex(row, col, image.cols);
+            if (contour[seedIdx] == 0 || visited[seedIdx] != 0) {
+                continue;
+            }
+
+            std::vector<std::pair<int, int>> component;
+            component.reserve(32);
+            std::vector<std::pair<int, int>> queue;
+            queue.push_back({row, col});
+            visited[seedIdx] = 1;
+            for (size_t qi = 0; qi < queue.size(); ++qi) {
+                const auto [cr, cc] = queue[qi];
+                component.push_back({cr, cc});
+                for (int k = 0; k < 8; ++k) {
+                    const int nr = cr + dr8[k];
+                    const int nc = cc + dc8[k];
+                    if (nr < 0 || nr >= image.rows || nc < 0 || nc >= image.cols) {
+                        continue;
+                    }
+                    const size_t nidx = linearIndex(nr, nc, image.cols);
+                    if (contour[nidx] != 0 && visited[nidx] == 0) {
+                        visited[nidx] = 1;
+                        queue.push_back({nr, nc});
+                    }
+                }
+            }
+
+            int endpointCount = 0;
+            int junctionCount = 0;
+            int minRow = image.rows;
+            int maxRow = 0;
+            int minCol = image.cols;
+            int maxCol = 0;
+            double horizontalEdges = 0.0;
+            double verticalEdges = 0.0;
+            double diagonalEdges = 0.0;
+            double endpointTop = 0.0;
+            double endpointBottom = 0.0;
+            double endpointLeft = 0.0;
+            double endpointRight = 0.0;
+
+            for (const auto& [cr, cc] : component) {
+                minRow = std::min(minRow, cr);
+                maxRow = std::max(maxRow, cr);
+                minCol = std::min(minCol, cc);
+                maxCol = std::max(maxCol, cc);
+
+                int degree = 0;
+                for (int k = 0; k < 8; ++k) {
+                    const int nr = cr + dr8[k];
+                    const int nc = cc + dc8[k];
+                    if (nr < 0 || nr >= image.rows || nc < 0 || nc >= image.cols) {
+                        continue;
+                    }
+                    const size_t nidx = linearIndex(nr, nc, image.cols);
+                    if (contour[nidx] == 0) {
+                        continue;
+                    }
+                    degree++;
+                    if (nr > cr || (nr == cr && nc > cc)) {
+                        const int adr = std::abs(nr - cr);
+                        const int adc = std::abs(nc - cc);
+                        if (adr == 1 && adc == 1) {
+                            diagonalEdges += 1.0;
+                        } else if (adr == 1) {
+                            verticalEdges += 1.0;
+                        } else if (adc == 1) {
+                            horizontalEdges += 1.0;
+                        }
+                    }
+                }
+
+                if (degree <= 1) {
+                    endpointCount++;
+                    endpointTop += 1.0 - static_cast<double>(cr) /
+                                             static_cast<double>(std::max(1, image.rows - 1));
+                    endpointBottom += static_cast<double>(cr) /
+                                      static_cast<double>(std::max(1, image.rows - 1));
+                    endpointLeft += 1.0 - static_cast<double>(cc) /
+                                              static_cast<double>(std::max(1, image.cols - 1));
+                    endpointRight += static_cast<double>(cc) /
+                                       static_cast<double>(std::max(1, image.cols - 1));
+                } else if (degree >= 3) {
+                    junctionCount++;
+                }
+            }
+
+            const double componentSize = static_cast<double>(component.size());
+            const double edgeTotal =
+                std::max(1.0, horizontalEdges + verticalEdges + diagonalEdges);
+            const double lengthNorm = std::clamp(componentSize / 24.0, 0.0, 1.0);
+            const double closedScore =
+                endpointCount == 0 && componentSize >= 6.0 ? 1.0 : 0.0;
+            const double endpointNorm = std::clamp(static_cast<double>(endpointCount) / 4.0, 0.0, 1.0);
+            const double junctionNorm = std::clamp(static_cast<double>(junctionCount) / 3.0, 0.0, 1.0);
+            const double horizontalBias = horizontalEdges / edgeTotal;
+            const double verticalBias = verticalEdges / edgeTotal;
+            const double diagonalBias = diagonalEdges / edgeTotal;
+            const double spanHeight =
+                static_cast<double>(std::max(1, maxRow - minRow + 1));
+            const double spanWidth =
+                static_cast<double>(std::max(1, maxCol - minCol + 1));
+            const double slenderness =
+                std::clamp(std::abs(spanHeight - spanWidth) /
+                               std::max(spanHeight, spanWidth),
+                           0.0, 1.0);
+            const double endpointDenom = std::max(1.0, static_cast<double>(endpointCount));
+            const std::array<double, 8> descriptor = {
+                lengthNorm,
+                closedScore,
+                endpointNorm,
+                junctionNorm,
+                horizontalBias,
+                verticalBias,
+                diagonalBias,
+                closedScore > 0.0
+                    ? 0.5 * (1.0 - slenderness)
+                    : std::clamp((endpointTop + endpointBottom + endpointLeft + endpointRight) /
+                                     (4.0 * endpointDenom),
+                                 0.0, 1.0),
+            };
+
+            for (const auto& [cr, cc] : component) {
+                const size_t idx = linearIndex(cr, cc, image.cols);
+                for (size_t ch = 0; ch < descriptor.size(); ++ch) {
+                    maps.channels[ch][idx] = std::max(maps.channels[ch][idx], descriptor[ch]);
+                }
+            }
+        }
+    }
+
+    return maps;
+}
+
+std::vector<double> poolContourGraphFeatures(const ContourGraphMaps& maps,
+                                             int gridSize,
+                                             int regionRow,
+                                             int regionCol,
+                                             double gain) {
+    std::vector<double> features(maps.channels.size(), 0.0);
+    for (size_t ch = 0; ch < maps.channels.size(); ++ch) {
+        features[ch] = poolMapRegionMean(
+            maps.channels[ch], maps.rows, maps.cols, gridSize, regionRow, regionCol);
+        features[ch] = std::clamp(features[ch] * gain, 0.0, 1.0);
+    }
+    return features;
+}
+
+ContourSequenceMaps computeContourSequenceMaps(const RetinaAdapter::Image& image,
+                                               double pixelThreshold,
+                                               int sequenceBins) {
+    ContourSequenceMaps maps;
+    maps.rows = image.rows;
+    maps.cols = image.cols;
+    const size_t pixelCount = static_cast<size_t>(image.rows * image.cols);
+    const int binCount = std::max(1, sequenceBins);
+    maps.bins.assign(static_cast<size_t>(binCount), std::vector<double>(pixelCount, 0.0));
+
+    std::vector<uint8_t> occupied(pixelCount, 0);
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            occupied[linearIndex(row, col, image.cols)] =
+                image.getNormalizedPixel(row, col) >= pixelThreshold ? 1 : 0;
+        }
+    }
+
+    std::vector<uint8_t> contour(pixelCount, 0);
+    const int dr8[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    const int dc8[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            const size_t idx = linearIndex(row, col, image.cols);
+            if (occupied[idx] == 0) {
+                continue;
+            }
+            bool boundary = false;
+            for (int k = 0; k < 8; ++k) {
+                const int nr = row + dr8[k];
+                const int nc = col + dc8[k];
+                if (nr < 0 || nr >= image.rows || nc < 0 || nc >= image.cols ||
+                    occupied[linearIndex(nr, nc, image.cols)] == 0) {
+                    boundary = true;
+                    break;
+                }
+            }
+            contour[idx] = boundary ? 1 : 0;
+        }
+    }
+
+    std::vector<uint8_t> seen(pixelCount, 0);
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            const size_t seedIdx = linearIndex(row, col, image.cols);
+            if (contour[seedIdx] == 0 || seen[seedIdx] != 0) {
+                continue;
+            }
+
+            std::vector<std::pair<int, int>> component;
+            std::vector<std::pair<int, int>> queue;
+            queue.push_back({row, col});
+            seen[seedIdx] = 1;
+            for (size_t qi = 0; qi < queue.size(); ++qi) {
+                const auto [cr, cc] = queue[qi];
+                component.push_back({cr, cc});
+                for (int k = 0; k < 8; ++k) {
+                    const int nr = cr + dr8[k];
+                    const int nc = cc + dc8[k];
+                    if (nr < 0 || nr >= image.rows || nc < 0 || nc >= image.cols) {
+                        continue;
+                    }
+                    const size_t nidx = linearIndex(nr, nc, image.cols);
+                    if (contour[nidx] != 0 && seen[nidx] == 0) {
+                        seen[nidx] = 1;
+                        queue.push_back({nr, nc});
+                    }
+                }
+            }
+
+            if (component.size() < 4) {
+                continue;
+            }
+
+            std::vector<std::vector<size_t>> adjacency(component.size());
+            std::vector<int> degree(component.size(), 0);
+            std::unordered_map<size_t, size_t> componentIndex;
+            componentIndex.reserve(component.size());
+            for (size_t i = 0; i < component.size(); ++i) {
+                componentIndex.emplace(linearIndex(component[i].first, component[i].second, image.cols), i);
+            }
+            for (size_t i = 0; i < component.size(); ++i) {
+                const auto [cr, cc] = component[i];
+                for (int k = 0; k < 8; ++k) {
+                    const int nr = cr + dr8[k];
+                    const int nc = cc + dc8[k];
+                    if (nr < 0 || nr >= image.rows || nc < 0 || nc >= image.cols) {
+                        continue;
+                    }
+                    const auto it =
+                        componentIndex.find(linearIndex(nr, nc, image.cols));
+                    if (it != componentIndex.end()) {
+                        adjacency[i].push_back(it->second);
+                    }
+                }
+                std::sort(adjacency[i].begin(), adjacency[i].end());
+                adjacency[i].erase(std::unique(adjacency[i].begin(), adjacency[i].end()),
+                                   adjacency[i].end());
+                degree[i] = static_cast<int>(adjacency[i].size());
+            }
+
+            std::vector<size_t> ordered;
+            ordered.reserve(component.size());
+            std::vector<uint8_t> pathVisited(component.size(), 0);
+            auto endpointIt = std::find_if(
+                component.begin(), component.end(), [&](const auto& point) {
+                    const size_t idx = &point - component.data();
+                    return degree[idx] <= 1;
+                });
+
+            if (endpointIt != component.end()) {
+                size_t current = static_cast<size_t>(endpointIt - component.begin());
+                size_t previous = current;
+                while (true) {
+                    if (!pathVisited[current]) {
+                        pathVisited[current] = 1;
+                        ordered.push_back(current);
+                    }
+                    size_t next = current;
+                    bool foundNext = false;
+                    for (size_t neighbor : adjacency[current]) {
+                        if (neighbor != previous && !pathVisited[neighbor]) {
+                            next = neighbor;
+                            foundNext = true;
+                            break;
+                        }
+                    }
+                    if (!foundNext) {
+                        for (size_t neighbor : adjacency[current]) {
+                            if (!pathVisited[neighbor]) {
+                                next = neighbor;
+                                foundNext = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!foundNext) {
+                        break;
+                    }
+                    previous = current;
+                    current = next;
+                }
+            }
+
+            if (ordered.size() != component.size()) {
+                double rowSum = 0.0;
+                double colSum = 0.0;
+                for (const auto& [cr, cc] : component) {
+                    rowSum += cr;
+                    colSum += cc;
+                }
+                const double centerRow = rowSum / static_cast<double>(component.size());
+                const double centerCol = colSum / static_cast<double>(component.size());
+                std::vector<std::pair<double, size_t>> byAngle;
+                byAngle.reserve(component.size());
+                for (size_t i = 0; i < component.size(); ++i) {
+                    const double angle = std::atan2(component[i].first - centerRow,
+                                                    component[i].second - centerCol);
+                    byAngle.push_back({angle, i});
+                }
+                std::sort(byAngle.begin(), byAngle.end(),
+                          [](const auto& a, const auto& b) { return a.first < b.first; });
+                ordered.clear();
+                for (const auto& entry : byAngle) {
+                    ordered.push_back(entry.second);
+                }
+            }
+
+            const double sizeScale =
+                std::clamp(static_cast<double>(component.size()) / 24.0, 0.0, 1.0);
+            for (size_t orderIdx = 0; orderIdx < ordered.size(); ++orderIdx) {
+                const auto& point = component[ordered[orderIdx]];
+                const size_t pixelIdx = linearIndex(point.first, point.second, image.cols);
+                const int bin =
+                    std::min(binCount - 1,
+                             static_cast<int>((orderIdx * static_cast<size_t>(binCount)) /
+                                              std::max<size_t>(1, ordered.size())));
+                maps.bins[static_cast<size_t>(bin)][pixelIdx] = std::max(
+                    maps.bins[static_cast<size_t>(bin)][pixelIdx], sizeScale);
+            }
+        }
+    }
+
+    return maps;
+}
+
+std::vector<double> poolContourSequenceFeatures(const ContourSequenceMaps& maps,
+                                                int gridSize,
+                                                int regionRow,
+                                                int regionCol,
+                                                double gain) {
+    std::vector<double> features(maps.bins.size(), 0.0);
+    for (size_t bin = 0; bin < maps.bins.size(); ++bin) {
+        features[bin] = poolMapRegionMean(
+            maps.bins[bin], maps.rows, maps.cols, gridSize, regionRow, regionCol);
+        features[bin] = std::clamp(features[bin] * gain, 0.0, 1.0);
+    }
+    return features;
+}
+
+} // namespace
 
 /**
  * @brief Construct a RetinaAdapter with configuration
@@ -57,9 +769,35 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , numOrientations_(0)
     , edgeThreshold_(0.15)
     , temporalWindow_(100.0)
+    , edgeOperatorType_("sobel")
+    , activationMode_("binary")
+    , auxiliaryFeatureMode_("none")
+    , subfieldGridSize_(1)
+    , subfieldIncludePooled_(true)
+    , orientationFeatureGain_(1.0)
     , neuronWindowSize_(200.0)
     , neuronThreshold_(0.7)
     , neuronMaxPatterns_(100)
+    , minimumRegionSize_(1)
+    , maxFrequencyBandsPerFeature_(1)
+    , frequencyBlurBaseSigma_(0.6)
+    , orientationLateralInhibition_(0.0)
+    , orientationResponseGamma_(1.0)
+    , auxiliaryFeatureGain_(1.0)
+    , auxiliaryAnalysisRegionSize_(0)
+    , cornerMinDeltaDeg_(45.0)
+    , cornerMaxDeltaDeg_(110.0)
+    , curveMinDeltaDeg_(10.0)
+    , curveMaxDeltaDeg_(45.0)
+    , endstopPixelThreshold_(0.30)
+    , endstopAxisFraction_(0.35)
+    , rotationDeg_(0.0)
+    , scaleX_(1.0)
+    , scaleY_(1.0)
+    , shiftXPx_(0.0)
+    , shiftYPx_(0.0)
+    , mirrorX_(false)
+    , mirrorY_(false)
     , imageRows_(0)
     , imageCols_(0)
 {
@@ -68,15 +806,46 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     numOrientations_ = getIntParam("num_orientations", 8);
     edgeThreshold_ = getDoubleParam("edge_threshold", 0.15);
     temporalWindow_ = config.temporalWindow > 0 ? config.temporalWindow : 100.0;
+    activationMode_ = getStringParam("activation_mode", "binary");
+    edgeOperatorType_ = getStringParam("edge_operator", "sobel");
+    auxiliaryFeatureMode_ = getStringParam("auxiliary_feature_mode", "none");
+    subfieldGridSize_ = std::max(1, getIntParam("subfield_grid_size", 1));
+    subfieldIncludePooled_ = getIntParam("subfield_include_pooled", 1) != 0;
+    orientationFeatureGain_ = std::max(0.0, getDoubleParam("orientation_feature_gain", 1.0));
 
     neuronWindowSize_ = getDoubleParam("neuron_window_size", 200.0);
     neuronThreshold_ = getDoubleParam("neuron_threshold", 0.7);
     neuronMaxPatterns_ = getIntParam("neuron_max_patterns", 100);
+    minimumRegionSize_ = getIntParam(
+        "minimum_region_size",
+        edgeOperatorType_ == "sobel" ? 3 : 1);
+    maxFrequencyBandsPerFeature_ = std::max(1, getIntParam("max_frequency_bands_per_feature", 1));
+    frequencyBlurBaseSigma_ = std::max(0.0, getDoubleParam("frequency_blur_base_sigma", 0.6));
+    orientationLateralInhibition_ =
+        std::clamp(getDoubleParam("orientation_lateral_inhibition", 0.0), 0.0, 1.0);
+    orientationResponseGamma_ = std::max(0.1, getDoubleParam("orientation_response_gamma", 1.0));
+    auxiliaryFeatureGain_ = std::max(0.0, getDoubleParam("auxiliary_feature_gain", 1.0));
+    auxiliaryAnalysisRegionSize_ = std::max(0, getIntParam("auxiliary_analysis_region_size", 0));
+    cornerMinDeltaDeg_ = std::clamp(getDoubleParam("corner_min_delta_deg", 45.0), 0.0, 180.0);
+    cornerMaxDeltaDeg_ = std::clamp(getDoubleParam("corner_max_delta_deg", 110.0), 0.0, 180.0);
+    curveMinDeltaDeg_ = std::clamp(getDoubleParam("curve_min_delta_deg", 10.0), 0.0, 180.0);
+    curveMaxDeltaDeg_ = std::clamp(getDoubleParam("curve_max_delta_deg", 45.0), 0.0, 180.0);
+    endstopPixelThreshold_ = std::clamp(getDoubleParam("endstop_pixel_threshold", 0.30), 0.0, 1.0);
+    endstopAxisFraction_ = std::clamp(getDoubleParam("endstop_axis_fraction", 0.35), 0.05, 0.49);
+    rotationDeg_ = getDoubleParam("rotation_deg", 0.0);
+    const double uniformScale = getDoubleParam("scale", 1.0);
+    scaleX_ = std::max(1e-3, getDoubleParam("scale_x", uniformScale));
+    scaleY_ = std::max(1e-3, getDoubleParam("scale_y", uniformScale));
+    shiftXPx_ = getDoubleParam("shift_x_px", 0.0);
+    shiftYPx_ = getDoubleParam("shift_y_px", 0.0);
+    mirrorX_ = getIntParam("mirror_x", 0) != 0;
+    mirrorY_ = getIntParam("mirror_y", 0) != 0;
+    frequencyBands_ = parseFrequencyBands(getStringParam("frequency_values", ""));
+    configureFrequencyBands();
 
     // Create edge operator
-    std::string edgeOperatorType = getStringParam("edge_operator", "sobel");
     features::EdgeOperator::Config edgeConfig;
-    edgeConfig.name = edgeOperatorType;
+    edgeConfig.name = edgeOperatorType_;
     edgeConfig.numOrientations = numOrientations_;
     edgeConfig.edgeThreshold = edgeThreshold_;
 
@@ -92,7 +861,7 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     edgeConfig.doubleParams["sigma2"] = getDoubleParam("sigma2", 1.6);
     edgeConfig.intParams["kernel_size"] = getIntParam("kernel_size", 5);
 
-    edgeOperator_ = features::EdgeOperatorFactory::create(edgeOperatorType, edgeConfig);
+    edgeOperator_ = features::EdgeOperatorFactory::create(edgeOperatorType_, edgeConfig);
 
     // Create encoding strategy
     std::string encodingType = getStringParam("encoding_strategy", "rate");
@@ -114,7 +883,7 @@ RetinaAdapter::RetinaAdapter(const Config& config)
 
     SNNFW_INFO("RetinaAdapter '{}': grid={}x{}, orientations={}, threshold={}, edge={}, encoding={}",
                getName(), gridSize_, gridSize_, numOrientations_, edgeThreshold_,
-               edgeOperatorType, encodingType);
+               edgeOperatorType_, encodingType);
 }
 
 bool RetinaAdapter::initialize() {
@@ -148,23 +917,210 @@ void RetinaAdapter::createNeurons() {
     neurons_.clear();
     neuronGrid_.clear();
 
+    const int channelsPerRegion =
+        static_cast<int>(getChannelsPerBand() * std::max<size_t>(1, getFrequencyBandCount()));
     int numRegions = gridSize_ * gridSize_;
     neuronGrid_.resize(numRegions);
 
     int neuronId = 0;
     for (int region = 0; region < numRegions; ++region) {
-        neuronGrid_[region].resize(numOrientations_);
-        for (int orient = 0; orient < numOrientations_; ++orient) {
+        neuronGrid_[region].resize(static_cast<size_t>(channelsPerRegion));
+        for (int channel = 0; channel < channelsPerRegion; ++channel) {
             auto neuron = std::make_shared<Neuron>(
                 neuronWindowSize_,      // Temporal window for pattern learning (ms)
                 neuronThreshold_,       // Similarity threshold for pattern matching
                 neuronMaxPatterns_,     // Maximum patterns to store per neuron
                 neuronId++              // Unique neuron ID
             );
-            neuronGrid_[region][orient] = neuron;
+            neuronGrid_[region][channel] = neuron;
             neurons_.push_back(neuron);
         }
     }
+}
+
+std::vector<double> RetinaAdapter::parseFrequencyBands(const std::string& csv) const {
+    std::vector<double> bands;
+    if (csv.empty()) {
+        return bands;
+    }
+
+    std::stringstream ss(csv);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        if (token.empty()) {
+            continue;
+        }
+        try {
+            bands.push_back(std::stod(token));
+        } catch (...) {
+            // Ignore malformed frequency tokens and fall back to the remaining values.
+        }
+    }
+
+    std::sort(bands.begin(), bands.end());
+    bands.erase(std::unique(bands.begin(), bands.end(),
+                            [](double a, double b) { return std::abs(a - b) < 1e-6; }),
+                bands.end());
+    return bands;
+}
+
+void RetinaAdapter::configureFrequencyBands() {
+    blurSigmas_.clear();
+    if (frequencyBands_.empty()) {
+        blurSigmas_.push_back(0.0);
+        return;
+    }
+
+    const double maxFrequency = *std::max_element(frequencyBands_.begin(), frequencyBands_.end());
+    for (double frequency : frequencyBands_) {
+        const double safeFrequency = std::max(1e-6, frequency);
+        const double ratio = maxFrequency / safeFrequency;
+        const double sigma = std::max(0.0, (ratio - 1.0) * frequencyBlurBaseSigma_);
+        blurSigmas_.push_back(sigma);
+    }
+}
+
+size_t RetinaAdapter::getAuxiliaryChannelCount() const {
+    if (auxiliaryFeatureMode_ == "none") {
+        return 0u;
+    }
+    if (auxiliaryFeatureMode_ == "closure_bank") {
+        return 3u;
+    }
+    if (auxiliaryFeatureMode_ == "gap_bank") {
+        return 4u;
+    }
+    if (auxiliaryFeatureMode_ == "topology_maps") {
+        return 8u;
+    }
+    if (auxiliaryFeatureMode_ == "contour_graph") {
+        return 8u;
+    }
+    if (auxiliaryFeatureMode_ == "contour_sequence") {
+        return 8u;
+    }
+    return 1u;
+}
+
+size_t RetinaAdapter::getSubfieldCount() const {
+    if (subfieldGridSize_ <= 1) {
+        return 0u;
+    }
+    return static_cast<size_t>(subfieldGridSize_ * subfieldGridSize_);
+}
+
+RetinaAdapter::Image RetinaAdapter::blurImage(const Image& image, double sigma) const {
+    if (sigma <= 0.0) {
+        return image;
+    }
+
+    const auto kernel = makeGaussianKernel(sigma);
+    const int radius = static_cast<int>(kernel.size() / 2);
+    const size_t pixelCount = static_cast<size_t>(image.rows) * static_cast<size_t>(image.cols);
+    std::vector<double> horizontal(pixelCount, 0.0);
+
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            double accum = 0.0;
+            for (int k = -radius; k <= radius; ++k) {
+                const int srcCol = std::clamp(col + k, 0, image.cols - 1);
+                accum += kernel[static_cast<size_t>(k + radius)] *
+                         static_cast<double>(image.getPixel(row, srcCol));
+            }
+            horizontal[static_cast<size_t>(row * image.cols + col)] = accum;
+        }
+    }
+
+    Image blurred;
+    blurred.rows = image.rows;
+    blurred.cols = image.cols;
+    blurred.pixels.resize(pixelCount);
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            double accum = 0.0;
+            for (int k = -radius; k <= radius; ++k) {
+                const int srcRow = std::clamp(row + k, 0, image.rows - 1);
+                accum += kernel[static_cast<size_t>(k + radius)] *
+                         horizontal[static_cast<size_t>(srcRow * image.cols + col)];
+            }
+            const int value = static_cast<int>(std::lround(std::clamp(accum, 0.0, 255.0)));
+            blurred.pixels[static_cast<size_t>(row * image.cols + col)] =
+                static_cast<uint8_t>(value);
+        }
+    }
+    return blurred;
+}
+
+RetinaAdapter::Image RetinaAdapter::applyViewTransform(const Image& image) const {
+    const bool hasTransform = std::abs(rotationDeg_) > 1e-6 ||
+                              std::abs(scaleX_ - 1.0) > 1e-6 ||
+                              std::abs(scaleY_ - 1.0) > 1e-6 ||
+                              std::abs(shiftXPx_) > 1e-6 ||
+                              std::abs(shiftYPx_) > 1e-6 ||
+                              mirrorX_ || mirrorY_;
+    if (!hasTransform) {
+        return image;
+    }
+
+    Image transformed;
+    transformed.rows = image.rows;
+    transformed.cols = image.cols;
+    transformed.pixels.assign(static_cast<size_t>(image.rows * image.cols), 0);
+
+    const double centerX = 0.5 * static_cast<double>(image.cols - 1);
+    const double centerY = 0.5 * static_cast<double>(image.rows - 1);
+    const double theta = rotationDeg_ * M_PI / 180.0;
+    const double cosTheta = std::cos(theta);
+    const double sinTheta = std::sin(theta);
+
+    auto sampleBilinear = [&](double row, double col) -> uint8_t {
+        if (row < 0.0 || col < 0.0 ||
+            row > static_cast<double>(image.rows - 1) ||
+            col > static_cast<double>(image.cols - 1)) {
+            return 0;
+        }
+
+        const int r0 = static_cast<int>(std::floor(row));
+        const int c0 = static_cast<int>(std::floor(col));
+        const int r1 = std::min(r0 + 1, image.rows - 1);
+        const int c1 = std::min(c0 + 1, image.cols - 1);
+        const double fr = row - static_cast<double>(r0);
+        const double fc = col - static_cast<double>(c0);
+
+        const double p00 = static_cast<double>(image.getPixel(r0, c0));
+        const double p01 = static_cast<double>(image.getPixel(r0, c1));
+        const double p10 = static_cast<double>(image.getPixel(r1, c0));
+        const double p11 = static_cast<double>(image.getPixel(r1, c1));
+
+        const double top = p00 * (1.0 - fc) + p01 * fc;
+        const double bottom = p10 * (1.0 - fc) + p11 * fc;
+        const double value = top * (1.0 - fr) + bottom * fr;
+        return static_cast<uint8_t>(std::clamp(std::lround(value), 0L, 255L));
+    };
+
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            double x = static_cast<double>(col) - centerX;
+            double y = static_cast<double>(row) - centerY;
+            if (mirrorX_) {
+                x = -x;
+            }
+            if (mirrorY_) {
+                y = -y;
+            }
+            x -= shiftXPx_;
+            y -= shiftYPx_;
+            x /= scaleX_;
+            y /= scaleY_;
+
+            const double srcX = cosTheta * x + sinTheta * y + centerX;
+            const double srcY = -sinTheta * x + cosTheta * y + centerY;
+            transformed.pixels[static_cast<size_t>(row * image.cols + col)] =
+                sampleBilinear(srcY, srcX);
+        }
+    }
+
+    return transformed;
 }
 
 /**
@@ -184,18 +1140,38 @@ void RetinaAdapter::createNeurons() {
  * @return Flattened vector of pixel values (regionSize² elements)
  */
 std::vector<uint8_t> RetinaAdapter::extractRegion(const Image& image,
-                                                   int regionRow,
-                                                   int regionCol) const {
-    std::vector<uint8_t> region(regionSize_ * regionSize_);
+                                                  int regionRow,
+                                                  int regionCol) const {
+    return extractRegion(image, regionRow, regionCol, regionSize_);
+}
 
-    int startRow = regionRow * regionSize_;
-    int startCol = regionCol * regionSize_;
+std::vector<uint8_t> RetinaAdapter::extractRegion(const Image& image,
+                                                  int regionRow,
+                                                  int regionCol,
+                                                  int targetSize) const {
+    const int effectiveSize = std::max(1, targetSize);
+    std::vector<uint8_t> region(static_cast<size_t>(effectiveSize * effectiveSize));
 
-    for (int r = 0; r < regionSize_; ++r) {
-        for (int c = 0; c < regionSize_; ++c) {
-            int imgRow = startRow + r;
-            int imgCol = startCol + c;
-            region[r * regionSize_ + c] = image.getPixel(imgRow, imgCol);
+    const int startRow = (regionRow * image.rows) / gridSize_;
+    const int endRow = ((regionRow + 1) * image.rows) / gridSize_;
+    const int startCol = (regionCol * image.cols) / gridSize_;
+    const int endCol = ((regionCol + 1) * image.cols) / gridSize_;
+    const int sourceHeight = std::max(1, endRow - startRow);
+    const int sourceWidth = std::max(1, endCol - startCol);
+
+    for (int r = 0; r < effectiveSize; ++r) {
+        for (int c = 0; c < effectiveSize; ++c) {
+            const int localRow = clampIndex(
+                static_cast<int>(((static_cast<double>(r) + 0.5) * sourceHeight) /
+                                 static_cast<double>(effectiveSize)),
+                0, sourceHeight - 1);
+            const int localCol = clampIndex(
+                static_cast<int>(((static_cast<double>(c) + 0.5) * sourceWidth) /
+                                 static_cast<double>(effectiveSize)),
+                0, sourceWidth - 1);
+            const int imgRow = startRow + localRow;
+            const int imgCol = startCol + localCol;
+            region[static_cast<size_t>(r * effectiveSize + c)] = image.getPixel(imgRow, imgCol);
         }
     }
 
@@ -227,6 +1203,275 @@ std::vector<double> RetinaAdapter::featuresToSpikes(const std::vector<double>& f
     return featuresToSpikeTimes(features, temporalWindow_);
 }
 
+void RetinaAdapter::applyOrientationCompetition(std::vector<double>& responses) const {
+    if (responses.empty()) {
+        return;
+    }
+
+    if (orientationLateralInhibition_ > 0.0) {
+        const double totalEnergy =
+            std::accumulate(responses.begin(), responses.end(), 0.0);
+        const double denom =
+            std::max(1.0, static_cast<double>(responses.size() - 1));
+        for (double& response : responses) {
+            const double otherMean = (totalEnergy - response) / denom;
+            response = std::max(0.0, response - orientationLateralInhibition_ * otherMean);
+        }
+    }
+
+    if (std::abs(orientationResponseGamma_ - 1.0) > 1e-6) {
+        for (double& response : responses) {
+            response = std::pow(std::max(0.0, response), orientationResponseGamma_);
+        }
+    }
+}
+
+std::vector<double> RetinaAdapter::computeAuxiliaryFeatures(
+    const std::vector<double>& orientationResponses,
+    const std::vector<uint8_t>& region,
+    int regionSize) const {
+    std::vector<double> auxiliary(getAuxiliaryChannelCount(), 0.0);
+    if (auxiliary.empty() || orientationResponses.size() < 2) {
+        return auxiliary;
+    }
+
+    if (auxiliaryFeatureMode_ == "corner") {
+        double bestCorner = 0.0;
+        for (size_t a = 0; a < orientationResponses.size(); ++a) {
+            for (size_t b = a + 1; b < orientationResponses.size(); ++b) {
+                const size_t deltaBins = std::min(
+                    b - a, orientationResponses.size() - (b - a));
+                const double deltaDeg =
+                    180.0 * static_cast<double>(deltaBins) /
+                    static_cast<double>(orientationResponses.size());
+                if (deltaDeg < cornerMinDeltaDeg_ || deltaDeg > cornerMaxDeltaDeg_) {
+                    continue;
+                }
+                bestCorner = std::max(
+                    bestCorner, orientationResponses[a] * orientationResponses[b]);
+            }
+        }
+        auxiliary[0] = std::clamp(bestCorner * auxiliaryFeatureGain_, 0.0, 1.0);
+    } else if (auxiliaryFeatureMode_ == "curve") {
+        double bestCurve = 0.0;
+        for (size_t a = 0; a < orientationResponses.size(); ++a) {
+            for (size_t b = a + 1; b < orientationResponses.size(); ++b) {
+                const size_t deltaBins = std::min(
+                    b - a, orientationResponses.size() - (b - a));
+                const double deltaDeg =
+                    180.0 * static_cast<double>(deltaBins) /
+                    static_cast<double>(orientationResponses.size());
+                if (deltaDeg < curveMinDeltaDeg_ || deltaDeg > curveMaxDeltaDeg_) {
+                    continue;
+                }
+                bestCurve = std::max(
+                    bestCurve, orientationResponses[a] * orientationResponses[b]);
+            }
+        }
+        auxiliary[0] = std::clamp(bestCurve * auxiliaryFeatureGain_, 0.0, 1.0);
+    } else if (auxiliaryFeatureMode_ == "endstop") {
+        const auto bestIt = std::max_element(orientationResponses.begin(), orientationResponses.end());
+        const double dominantResponse = *bestIt;
+        if (dominantResponse <= 0.0 || region.empty() || regionSize <= 0) {
+            return auxiliary;
+        }
+
+        const int dominantOrientation = static_cast<int>(std::distance(orientationResponses.begin(), bestIt));
+        const double theta = (static_cast<double>(dominantOrientation) * M_PI) /
+                             static_cast<double>(orientationResponses.size());
+        const double axisX = -std::sin(theta);
+        const double axisY = std::cos(theta);
+        const double center = 0.5 * static_cast<double>(regionSize - 1);
+        const double endThreshold = endstopAxisFraction_ * std::max(1.0, center);
+
+        double posMass = 0.0;
+        double negMass = 0.0;
+        double centerMass = 0.0;
+        double totalMass = 0.0;
+
+        for (int r = 0; r < regionSize; ++r) {
+            for (int c = 0; c < regionSize; ++c) {
+                const double value = static_cast<double>(region[static_cast<size_t>(r * regionSize + c)]) / 255.0;
+                if (value < endstopPixelThreshold_) {
+                    continue;
+                }
+
+                const double relX = static_cast<double>(c) - center;
+                const double relY = static_cast<double>(r) - center;
+                const double projection = relX * axisX + relY * axisY;
+                totalMass += value;
+                if (projection >= endThreshold) {
+                    posMass += value;
+                } else if (projection <= -endThreshold) {
+                    negMass += value;
+                } else {
+                    centerMass += value;
+                }
+            }
+        }
+
+        if (totalMass > 0.0) {
+            const double asymmetry = std::abs(posMass - negMass) / totalMass;
+            const double centerSupport = centerMass / totalMass;
+            const double endpointScore =
+                dominantResponse * asymmetry * (0.5 + 0.5 * centerSupport);
+            auxiliary[0] = std::clamp(endpointScore * auxiliaryFeatureGain_, 0.0, 1.0);
+        }
+    } else if (auxiliaryFeatureMode_ == "closure" ||
+               auxiliaryFeatureMode_ == "closure_bank" ||
+               auxiliaryFeatureMode_ == "gap_bank") {
+        if (regionSize < 3 || region.empty()) {
+            return auxiliary;
+        }
+
+        std::vector<uint8_t> occupied(static_cast<size_t>(regionSize * regionSize), 0);
+        for (int r = 0; r < regionSize; ++r) {
+            for (int c = 0; c < regionSize; ++c) {
+                const double value =
+                    static_cast<double>(region[static_cast<size_t>(r * regionSize + c)]) / 255.0;
+                occupied[static_cast<size_t>(r * regionSize + c)] =
+                    value >= endstopPixelThreshold_ ? 1 : 0;
+            }
+        }
+
+        std::vector<uint8_t> visited(static_cast<size_t>(regionSize * regionSize), 0);
+        std::vector<std::pair<int, int>> queue;
+        queue.reserve(static_cast<size_t>(regionSize * regionSize));
+        auto pushIfOpen = [&](int rr, int cc) {
+            const size_t idx = static_cast<size_t>(rr * regionSize + cc);
+            if (!occupied[idx] && !visited[idx]) {
+                visited[idx] = 1;
+                queue.push_back({rr, cc});
+            }
+        };
+
+        for (int c = 0; c < regionSize; ++c) {
+            pushIfOpen(0, c);
+            pushIfOpen(regionSize - 1, c);
+        }
+        for (int r = 1; r < regionSize - 1; ++r) {
+            pushIfOpen(r, 0);
+            pushIfOpen(r, regionSize - 1);
+        }
+
+        for (size_t qi = 0; qi < queue.size(); ++qi) {
+            const auto [rr, cc] = queue[qi];
+            const int dr[4] = {-1, 1, 0, 0};
+            const int dc[4] = {0, 0, -1, 1};
+            for (int k = 0; k < 4; ++k) {
+                const int nr = rr + dr[k];
+                const int nc = cc + dc[k];
+                if (nr < 0 || nr >= regionSize || nc < 0 || nc >= regionSize) {
+                    continue;
+                }
+                const size_t idx = static_cast<size_t>(nr * regionSize + nc);
+                if (!occupied[idx] && !visited[idx]) {
+                    visited[idx] = 1;
+                    queue.push_back({nr, nc});
+                }
+            }
+        }
+
+        int enclosedCount = 0;
+        int openCount = 0;
+        int largestHoleArea = 0;
+        double largestHoleCenterBias = 0.0;
+        std::vector<uint8_t> holeSeen(static_cast<size_t>(regionSize * regionSize), 0);
+        for (int r = 0; r < regionSize; ++r) {
+            for (int c = 0; c < regionSize; ++c) {
+                const size_t idx = static_cast<size_t>(r * regionSize + c);
+                if (!occupied[idx]) {
+                    if (visited[idx]) {
+                        openCount++;
+                    } else {
+                        enclosedCount++;
+                        if (!holeSeen[idx]) {
+                            std::vector<std::pair<int, int>> holeQueue;
+                            holeQueue.push_back({r, c});
+                            holeSeen[idx] = 1;
+                            int holeArea = 0;
+                            double holeRowSum = 0.0;
+                            double holeColSum = 0.0;
+                            for (size_t qi = 0; qi < holeQueue.size(); ++qi) {
+                                const auto [hr, hc] = holeQueue[qi];
+                                holeArea++;
+                                holeRowSum += static_cast<double>(hr);
+                                holeColSum += static_cast<double>(hc);
+                                const int dr[4] = {-1, 1, 0, 0};
+                                const int dc[4] = {0, 0, -1, 1};
+                                for (int k = 0; k < 4; ++k) {
+                                    const int nr = hr + dr[k];
+                                    const int nc = hc + dc[k];
+                                    if (nr < 0 || nr >= regionSize || nc < 0 || nc >= regionSize) {
+                                        continue;
+                                    }
+                                    const size_t nidx = static_cast<size_t>(nr * regionSize + nc);
+                                    if (!occupied[nidx] && !visited[nidx] && !holeSeen[nidx]) {
+                                        holeSeen[nidx] = 1;
+                                        holeQueue.push_back({nr, nc});
+                                    }
+                                }
+                            }
+                            if (holeArea > largestHoleArea) {
+                                largestHoleArea = holeArea;
+                                const double center = 0.5 * static_cast<double>(regionSize - 1);
+                                const double holeRow = holeRowSum / static_cast<double>(holeArea);
+                                const double holeCol = holeColSum / static_cast<double>(holeArea);
+                                const double dist =
+                                    std::sqrt((holeRow - center) * (holeRow - center) +
+                                              (holeCol - center) * (holeCol - center));
+                                const double maxDist = std::sqrt(2.0) * center;
+                                largestHoleCenterBias =
+                                    maxDist > 0.0 ? std::clamp(1.0 - dist / maxDist, 0.0, 1.0) : 1.0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        const int backgroundCount = enclosedCount + openCount;
+        if (backgroundCount > 0) {
+            const double enclosedRatio =
+                static_cast<double>(enclosedCount) / static_cast<double>(backgroundCount);
+            const double support =
+                *std::max_element(orientationResponses.begin(), orientationResponses.end());
+            if (auxiliaryFeatureMode_ == "closure") {
+                auxiliary[0] = std::clamp(enclosedRatio * support * auxiliaryFeatureGain_, 0.0, 1.0);
+            } else if (auxiliaryFeatureMode_ == "closure_bank") {
+                const double largestHoleRatio =
+                    static_cast<double>(largestHoleArea) /
+                    static_cast<double>(std::max(1, backgroundCount));
+                auxiliary[0] = std::clamp((enclosedCount > 0 ? support : 0.0) * auxiliaryFeatureGain_, 0.0, 1.0);
+                auxiliary[1] = std::clamp(largestHoleRatio * support * auxiliaryFeatureGain_, 0.0, 1.0);
+                auxiliary[2] = std::clamp(largestHoleRatio * largestHoleCenterBias *
+                                              support * auxiliaryFeatureGain_,
+                                          0.0, 1.0);
+            } else if (auxiliaryFeatureMode_ == "gap_bank") {
+                double topOpen = 0.0;
+                double rightOpen = 0.0;
+                double bottomOpen = 0.0;
+                double leftOpen = 0.0;
+                for (int c = 0; c < regionSize; ++c) {
+                    topOpen += visited[static_cast<size_t>(c)] ? 1.0 : 0.0;
+                    bottomOpen += visited[static_cast<size_t>((regionSize - 1) * regionSize + c)] ? 1.0 : 0.0;
+                }
+                for (int r = 0; r < regionSize; ++r) {
+                    leftOpen += visited[static_cast<size_t>(r * regionSize)] ? 1.0 : 0.0;
+                    rightOpen += visited[static_cast<size_t>(r * regionSize + (regionSize - 1))] ? 1.0 : 0.0;
+                }
+                const double sideNorm = static_cast<double>(regionSize);
+                auxiliary[0] = std::clamp((topOpen / sideNorm) * support * auxiliaryFeatureGain_, 0.0, 1.0);
+                auxiliary[1] = std::clamp((rightOpen / sideNorm) * support * auxiliaryFeatureGain_, 0.0, 1.0);
+                auxiliary[2] = std::clamp((bottomOpen / sideNorm) * support * auxiliaryFeatureGain_, 0.0, 1.0);
+                auxiliary[3] = std::clamp((leftOpen / sideNorm) * support * auxiliaryFeatureGain_, 0.0, 1.0);
+            }
+        }
+    }
+
+    return auxiliary;
+}
+
 SensoryAdapter::SpikePattern RetinaAdapter::processData(const DataSample& data) {
     // Convert raw data to image
     Image image;
@@ -237,7 +1482,7 @@ SensoryAdapter::SpikePattern RetinaAdapter::processData(const DataSample& data) 
         // Assume square image
         int totalPixels = data.rawData.size();
         imageRows_ = imageCols_ = static_cast<int>(std::sqrt(totalPixels));
-        regionSize_ = imageRows_ / gridSize_;
+        regionSize_ = std::max(minimumRegionSize_, std::max(1, imageRows_ / gridSize_));
         
         SNNFW_INFO("RetinaAdapter '{}': inferred image size {}x{}, region size {}", 
                    getName(), imageRows_, imageCols_, regionSize_);
@@ -260,16 +1505,153 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
     image.pixels = data.rawData;
     image.rows = imageRows_;
     image.cols = imageCols_;
+    image = applyViewTransform(image);
+
+    std::vector<Image> bandImages;
+    bandImages.reserve(std::max<size_t>(1, getFrequencyBandCount()));
+    if (blurSigmas_.empty()) {
+        bandImages.push_back(image);
+    } else {
+        for (double sigma : blurSigmas_) {
+            bandImages.push_back(blurImage(image, sigma));
+        }
+    }
+    const size_t frequencyBandCount = bandImages.size();
+    const size_t auxiliaryChannels = getAuxiliaryChannelCount();
+    const size_t subfieldCount = getSubfieldCount();
+    const size_t orientationBlocks = getOrientationChannelBlocks();
+    const size_t orientationFeatureCount =
+        static_cast<size_t>(numOrientations_) * orientationBlocks;
+    std::vector<TopologyMaps> topologyMaps;
+    if (auxiliaryFeatureMode_ == "topology_maps") {
+        topologyMaps.reserve(frequencyBandCount);
+        for (const auto& bandImage : bandImages) {
+            topologyMaps.push_back(computeTopologyMaps(bandImage, endstopPixelThreshold_));
+        }
+    }
+    std::vector<ContourGraphMaps> contourGraphMaps;
+    if (auxiliaryFeatureMode_ == "contour_graph") {
+        contourGraphMaps.reserve(frequencyBandCount);
+        for (const auto& bandImage : bandImages) {
+            contourGraphMaps.push_back(computeContourGraphMaps(bandImage, endstopPixelThreshold_));
+        }
+    }
+    std::vector<ContourSequenceMaps> contourSequenceMaps;
+    if (auxiliaryFeatureMode_ == "contour_sequence") {
+        contourSequenceMaps.reserve(frequencyBandCount);
+        for (const auto& bandImage : bandImages) {
+            contourSequenceMaps.push_back(
+                computeContourSequenceMaps(bandImage, endstopPixelThreshold_, 8));
+        }
+    }
+    int analysisRegionSize = regionSize_;
+    if (subfieldCount > 0) {
+        analysisRegionSize = std::max(regionSize_, minimumRegionSize_ * subfieldGridSize_);
+        if (analysisRegionSize % subfieldGridSize_ != 0) {
+            analysisRegionSize += subfieldGridSize_ - (analysisRegionSize % subfieldGridSize_);
+        }
+    }
     
     // Extract features for each region
     for (int row = 0; row < gridSize_; ++row) {
         for (int col = 0; col < gridSize_; ++col) {
-            auto region = extractRegion(image, row, col);
-            auto edgeFeatures = extractEdgeFeatures(region, regionSize_);
-            
-            // Add to feature vector
-            for (double feature : edgeFeatures) {
-                result.features.push_back(feature);
+            std::vector<std::vector<double>> bandFeatures(
+                frequencyBandCount, std::vector<double>(orientationFeatureCount, 0.0));
+            std::vector<std::vector<double>> auxiliaryFeatures(
+                frequencyBandCount, std::vector<double>(auxiliaryChannels, 0.0));
+            for (size_t bandIdx = 0; bandIdx < frequencyBandCount; ++bandIdx) {
+                const auto pooledRegion = extractRegion(bandImages[bandIdx], row, col);
+                auto pooledResponses = extractEdgeFeatures(pooledRegion, regionSize_);
+                applyOrientationCompetition(pooledResponses);
+                size_t writeOffset = 0;
+
+                if (subfieldCount == 0 || subfieldIncludePooled_) {
+                    std::copy(pooledResponses.begin(), pooledResponses.end(),
+                              bandFeatures[bandIdx].begin());
+                    writeOffset += static_cast<size_t>(numOrientations_);
+                }
+
+                if (subfieldCount > 0) {
+                    const auto analysisRegion =
+                        extractRegion(bandImages[bandIdx], row, col, analysisRegionSize);
+                    const int subfieldSize = analysisRegionSize / subfieldGridSize_;
+                    for (int subRow = 0; subRow < subfieldGridSize_; ++subRow) {
+                        for (int subCol = 0; subCol < subfieldGridSize_; ++subCol) {
+                            std::vector<uint8_t> subRegion(
+                                static_cast<size_t>(subfieldSize * subfieldSize));
+                            for (int r = 0; r < subfieldSize; ++r) {
+                                for (int c = 0; c < subfieldSize; ++c) {
+                                    const int srcRow = subRow * subfieldSize + r;
+                                    const int srcCol = subCol * subfieldSize + c;
+                                    subRegion[static_cast<size_t>(r * subfieldSize + c)] =
+                                        analysisRegion[static_cast<size_t>(srcRow * analysisRegionSize + srcCol)];
+                                }
+                            }
+                            auto subResponses = extractEdgeFeatures(subRegion, subfieldSize);
+                            applyOrientationCompetition(subResponses);
+                            std::copy(subResponses.begin(), subResponses.end(),
+                                      bandFeatures[bandIdx].begin() +
+                                          static_cast<std::ptrdiff_t>(writeOffset));
+                            writeOffset += static_cast<size_t>(numOrientations_);
+                        }
+                    }
+                }
+                auto auxiliaryRegion = pooledRegion;
+                int auxiliaryRegionSize = regionSize_;
+                if (auxiliaryFeatureMode_ == "topology_maps") {
+                    auxiliaryFeatures[bandIdx] =
+                        poolTopologyFeatures(topologyMaps[bandIdx], gridSize_, row, col,
+                                             auxiliaryFeatureGain_);
+                } else if (auxiliaryFeatureMode_ == "contour_graph") {
+                    auxiliaryFeatures[bandIdx] =
+                        poolContourGraphFeatures(contourGraphMaps[bandIdx], gridSize_, row, col,
+                                                 auxiliaryFeatureGain_);
+                } else if (auxiliaryFeatureMode_ == "contour_sequence") {
+                    auxiliaryFeatures[bandIdx] =
+                        poolContourSequenceFeatures(contourSequenceMaps[bandIdx], gridSize_,
+                                                    row, col, auxiliaryFeatureGain_);
+                } else {
+                    if (auxiliaryAnalysisRegionSize_ > regionSize_) {
+                        auxiliaryRegion = extractRegion(
+                            bandImages[bandIdx], row, col, auxiliaryAnalysisRegionSize_);
+                        auxiliaryRegionSize = auxiliaryAnalysisRegionSize_;
+                    }
+                    auxiliaryFeatures[bandIdx] = computeAuxiliaryFeatures(
+                        pooledResponses, auxiliaryRegion, auxiliaryRegionSize);
+                }
+            }
+
+            for (size_t orientChannel = 0; orientChannel < orientationFeatureCount; ++orientChannel) {
+                std::vector<std::pair<double, size_t>> ranked;
+                ranked.reserve(frequencyBandCount);
+                for (size_t bandIdx = 0; bandIdx < frequencyBandCount; ++bandIdx) {
+                    ranked.push_back({bandFeatures[bandIdx][orientChannel], bandIdx});
+                }
+                std::sort(ranked.begin(), ranked.end(),
+                          [](const auto& a, const auto& b) { return a.first > b.first; });
+
+                std::vector<double> selected(frequencyBandCount, 0.0);
+                int kept = 0;
+                for (const auto& entry : ranked) {
+                    if (entry.first <= 0.0) {
+                        break;
+                    }
+                    selected[entry.second] = entry.first;
+                    kept++;
+                    if (kept >= maxFrequencyBandsPerFeature_) {
+                        break;
+                    }
+                }
+                for (double feature : selected) {
+                    result.features.push_back(
+                        std::clamp(feature * orientationFeatureGain_, 0.0, 1.0));
+                }
+            }
+
+            for (size_t auxIdx = 0; auxIdx < auxiliaryChannels; ++auxIdx) {
+                for (size_t bandIdx = 0; bandIdx < frequencyBandCount; ++bandIdx) {
+                    result.features.push_back(auxiliaryFeatures[bandIdx][auxIdx]);
+                }
             }
         }
     }
@@ -288,40 +1670,52 @@ SensoryAdapter::SpikePattern RetinaAdapter::encodeFeatures(const FeatureVector& 
 
     // Get neurons per feature from encoding strategy
     int neuronsPerFeature = encodingStrategy_->getNeuronsPerFeature();
+    const size_t frequencyBandCount = std::max<size_t>(1, getFrequencyBandCount());
+    const int channelsPerBand = static_cast<int>(getChannelsPerBand());
 
     // Encode features as spikes and insert into neurons
     size_t featureIdx = 0;
     for (int row = 0; row < gridSize_; ++row) {
         for (int col = 0; col < gridSize_; ++col) {
-            for (int orient = 0; orient < numOrientations_; ++orient) {
-                double featureValue = features.features[featureIdx++];
+            for (int channel = 0; channel < channelsPerBand; ++channel) {
+                for (size_t bandIdx = 0; bandIdx < frequencyBandCount; ++bandIdx) {
+                    const double featureValue = features.features[featureIdx++];
 
-                // Use encoding strategy to generate spike times
-                std::vector<double> spikeTimes = encodingStrategy_->encode(featureValue, orient);
+                    // Use encoding strategy to generate spike times
+                    std::vector<double> spikeTimes = encodingStrategy_->encode(
+                        featureValue,
+                        static_cast<int>((channel * static_cast<int>(frequencyBandCount)) +
+                                         static_cast<int>(bandIdx)));
 
-                // For rate/temporal encoding (1 neuron per feature), insert into single neuron
-                if (neuronsPerFeature == 1) {
-                    auto& neuron = neuronGrid_[row * gridSize_ + col][orient];
-                    int neuronIdx = row * gridSize_ * numOrientations_ +
-                                   col * numOrientations_ + orient;
+                    const size_t channelIdx =
+                        static_cast<size_t>(channel) * frequencyBandCount + bandIdx;
 
-                    for (double spikeTime : spikeTimes) {
-                        neuron->insertSpike(spikeTime);
-                        pattern.spikeTimes[neuronIdx].push_back(spikeTime);
-                    }
-                } else {
-                    // For population encoding (multiple neurons per feature)
-                    // Each spike goes to a different neuron in the population
-                    // Note: This requires neuron structure to support population encoding
-                    // For now, we'll distribute spikes across the single neuron
-                    // TODO: Extend neuron grid to support population encoding
-                    auto& neuron = neuronGrid_[row * gridSize_ + col][orient];
-                    int neuronIdx = row * gridSize_ * numOrientations_ +
-                                   col * numOrientations_ + orient;
+                    // For rate/temporal encoding (1 neuron per feature), insert into single neuron
+                    if (neuronsPerFeature == 1) {
+                        auto& neuron = neuronGrid_[row * gridSize_ + col][channelIdx];
+                        const int neuronIdx =
+                            ((row * gridSize_ + col) * channelsPerBand *
+                             static_cast<int>(frequencyBandCount)) +
+                            (channel * static_cast<int>(frequencyBandCount)) +
+                            static_cast<int>(bandIdx);
 
-                    for (double spikeTime : spikeTimes) {
-                        neuron->insertSpike(spikeTime);
-                        pattern.spikeTimes[neuronIdx].push_back(spikeTime);
+                        for (double spikeTime : spikeTimes) {
+                            neuron->insertSpike(spikeTime);
+                            pattern.spikeTimes[static_cast<size_t>(neuronIdx)].push_back(spikeTime);
+                        }
+                    } else {
+                        // Population encoding is still mapped to a single logical channel here.
+                        auto& neuron = neuronGrid_[row * gridSize_ + col][channelIdx];
+                        const int neuronIdx =
+                            ((row * gridSize_ + col) * channelsPerBand *
+                             static_cast<int>(frequencyBandCount)) +
+                            (channel * static_cast<int>(frequencyBandCount)) +
+                            static_cast<int>(bandIdx);
+
+                        for (double spikeTime : spikeTimes) {
+                            neuron->insertSpike(spikeTime);
+                            pattern.spikeTimes[static_cast<size_t>(neuronIdx)].push_back(spikeTime);
+                        }
                     }
                 }
             }
@@ -335,20 +1729,17 @@ std::vector<double> RetinaAdapter::getActivationPattern() const {
     std::vector<double> activations(neurons_.size(), 0.0);
 
     for (size_t i = 0; i < neurons_.size(); ++i) {
-        // PERFORMANCE OPTIMIZATION: During training, neurons accumulate patterns
-        // and getBestSimilarity() becomes very expensive (100 pattern comparisons per neuron).
-        // For 1536 neurons × 100 patterns = 153,600 comparisons per image!
-        //
-        // Instead, use a simple spike-based activation:
-        // - If neuron has spikes: activation = 1.0 (binary activation)
-        // - If no spikes: activation = 0.0
-        //
-        // This is appropriate for training where we just need to know which neurons
-        // are active, not their similarity to learned patterns.
-        //
-        // For inference/testing, you may want to use getBestSimilarity() instead.
+        const bool hasSpikes = !neurons_[i]->getSpikes().empty();
+        const bool hasMemory = neurons_[i]->getLearnedPatternCount() > 0;
+        const double similarity = hasMemory ? neurons_[i]->getBestSimilarity() : 0.0;
 
-        activations[i] = neurons_[i]->getSpikes().empty() ? 0.0 : 1.0;
+        if (activationMode_ == "similarity") {
+            activations[i] = similarity;
+        } else if (activationMode_ == "hybrid") {
+            activations[i] = hasMemory ? similarity : (hasSpikes ? 1.0 : 0.0);
+        } else {
+            activations[i] = hasSpikes ? 1.0 : 0.0;
+        }
     }
 
     return activations;
@@ -361,12 +1752,12 @@ void RetinaAdapter::clearNeuronStates() {
 }
 
 std::shared_ptr<Neuron> RetinaAdapter::getNeuronAt(int row, int col, int orientation) const {
-    if (row < 0 || row >= gridSize_ || col < 0 || col >= gridSize_ || 
+    if (row < 0 || row >= gridSize_ || col < 0 || col >= gridSize_ ||
         orientation < 0 || orientation >= numOrientations_) {
         return nullptr;
     }
-    
-    return neuronGrid_[row * gridSize_ + col][orientation];
+
+    return neuronGrid_[row * gridSize_ + col][static_cast<size_t>(orientation) * getFrequencyBandCount()];
 }
 
 std::vector<double> RetinaAdapter::processImage(const Image& image) {
@@ -380,7 +1771,7 @@ std::vector<double> RetinaAdapter::processImage(const Image& image) {
     // Set image dimensions
     imageRows_ = image.rows;
     imageCols_ = image.cols;
-    regionSize_ = imageRows_ / gridSize_;
+    regionSize_ = std::max(minimumRegionSize_, std::max(1, imageRows_ / gridSize_));
 
     if (callCount <= 6) SNNFW_INFO("processImage call #{}: About to call processData()", callCount);
     // Process and get activation pattern
@@ -393,4 +1784,3 @@ std::vector<double> RetinaAdapter::processImage(const Image& image) {
 
 } // namespace adapters
 } // namespace snnfw
-

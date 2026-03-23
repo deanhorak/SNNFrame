@@ -115,6 +115,18 @@ The framework includes a high-performance EMNIST letters classification experime
   --test-limit 1000
 ```
 
+#### Declarative Retina Experiments
+```bash
+# Unilateral Retina reference
+./scripts/run_emnist_retina_unilateral.sh
+
+# Bilateral Retina reference (corpus-callosum fusion)
+./scripts/run_emnist_retina_bilateral.sh
+```
+
+The unilateral Retina reference config is `configs/emnist_retina_experimental.sonata.json`.
+The bilateral Retina reference config is `configs/emnist_retina_bilateral_experimental.sonata.json`. It uses two transformed hemisphere views and corpus-callosum-style weighted fusion over the hemisphere classifications.
+
 **Performance**: The framework achieves approximately **90% accuracy** on EMNIST letters classification (26 classes) using:
 - Cosine similarity-based pattern matching
 - STDP frozen during testing to prevent weight drift

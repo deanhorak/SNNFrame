@@ -1,0 +1,108 @@
+{
+  "snnframe_version": "1.0",
+  "neuron_params": {
+    "default": {
+      "window_size_ms": 200.0,
+      "similarity_threshold": 0.7,
+      "max_reference_patterns": 100,
+      "similarity_metric": "cosine"
+    }
+  },
+  "input_layer": {
+    "name": "InputGrid",
+    "rows": 28,
+    "cols": 28
+  },
+  "output_layer": {
+    "name": "OutputLayer",
+    "num_classes": 26,
+    "neurons_per_class": 1
+  },
+  "brain": {
+    "name": "RetinaClassifier",
+    "hemispheres": [
+      {
+        "name": "Left",
+        "lobes": [
+          {
+            "name": "Classifier",
+            "regions": [
+              {
+                "name": "Retina",
+                "nuclei": [
+                  {
+                    "name": "Fusion",
+                    "columns": [
+                      {
+                        "name": "Placeholder",
+                        "layers": [
+                          {
+                            "name": "L4",
+                            "populations": [
+                              {
+                                "name": "cells",
+                                "count": 1,
+                                "neuron_params": "default"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "classification": {
+    "type": "majority",
+    "k": 7,
+    "distance_exponent": 1.0
+  },
+  "adapters": [
+    {
+      "name": "retina_g9",
+      "type": "retina",
+      "role": "sensory",
+      "temporal_window_ms": 200.0,
+      "int_params": {
+        "grid_size": 9,
+        "num_orientations": 8
+      },
+      "double_params": {
+        "edge_threshold": 0.22,
+        "neuron_window_size": 200.0,
+        "neuron_threshold": 0.7
+      },
+      "string_params": {
+        "edge_operator": "sobel",
+        "encoding_strategy": "rate",
+        "activation_mode": "binary"
+      }
+    },
+    {
+      "name": "retina_g10",
+      "type": "retina",
+      "role": "sensory",
+      "temporal_window_ms": 200.0,
+      "int_params": {
+        "grid_size": 10,
+        "num_orientations": 8
+      },
+      "double_params": {
+        "edge_threshold": 0.24,
+        "neuron_window_size": 200.0,
+        "neuron_threshold": 0.7
+      },
+      "string_params": {
+        "edge_operator": "sobel",
+        "encoding_strategy": "rate",
+        "activation_mode": "binary"
+      }
+    }
+  ]
+}

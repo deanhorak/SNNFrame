@@ -240,7 +240,8 @@ void NetworkConstructor::createConnectivity(const NetworkIR& ir, ConstructedNetw
             for (size_t colIdx = 0; colIdx < columnL4.size(); ++colIdx) {
                 // Create per-column tiled pattern
                 TiledReceptiveFieldPattern tiledPattern(
-                    proj.inputGridSize, proj.tilesPerSide, proj.tilesPerColumn,
+                    proj.inputGridSize, ir.inputLayer.rows, ir.inputLayer.cols,
+                    proj.tilesPerSide, proj.tilesPerColumn,
                     proj.targetGridSize, static_cast<int>(colIdx),
                     proj.weight, proj.delay);
 

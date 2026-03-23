@@ -190,6 +190,16 @@ struct AdapterConfigIR {
     std::map<std::string, std::string> stringParams;
 };
 
+/// Declarative classifier/readout configuration
+struct ClassificationConfigIR {
+    std::string type;  // majority, weighted_similarity, weighted_distance, hierarchical
+    int k = 5;
+    double distanceExponent = 1.0;
+    std::map<std::string, double> doubleParams;
+    std::map<std::string, int> intParams;
+    std::map<std::string, std::string> stringParams;
+};
+
 /// The complete intermediate representation for a network
 struct NetworkIR {
     std::string formatVersion = "1.0";
@@ -217,6 +227,9 @@ struct NetworkIR {
 
     /// External adapters
     std::vector<AdapterConfigIR> adapters;
+
+    /// Declarative classifier/readout
+    ClassificationConfigIR classification;
 
     /// Validate the IR, returning true if valid
     bool validate() const;

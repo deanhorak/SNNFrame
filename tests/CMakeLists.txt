@@ -184,6 +184,13 @@ if(GTest_FOUND)
         GTest::gtest_main
     )
 
+    add_executable(test_classification_strategies test_classification_strategies.cpp)
+    target_link_libraries(test_classification_strategies
+        snnfw
+        GTest::gtest
+        GTest::gtest_main
+    )
+
     # Note: test_main.cpp disabled until Main class is re-implemented
     # add_executable(test_main test_main.cpp)
     # target_link_libraries(test_main
@@ -217,6 +224,7 @@ if(GTest_FOUND)
     add_test(NAME ConnectivityTests COMMAND test_connectivity)
     add_test(NAME ModelImporterTests COMMAND test_model_importer)
     add_test(NAME DeclarativeLoaderTests COMMAND test_declarative_loader)
+    add_test(NAME ClassificationStrategyTests COMMAND test_classification_strategies)
     # add_test(NAME MainTests COMMAND test_main)
 
     # Many developers have Conda on their PATH, which can inject an older libstdc++
@@ -249,6 +257,7 @@ if(GTest_FOUND)
         ConnectivityTests
         ModelImporterTests
         DeclarativeLoaderTests
+        ClassificationStrategyTests
     )
 
     foreach(_test_name IN LISTS _SNNFW_ALL_TESTS)

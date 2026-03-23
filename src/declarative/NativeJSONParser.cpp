@@ -87,6 +87,11 @@ NetworkIR NativeJSONParser::parseJson(const nlohmann::json& root) {
         }
     }
 
+    // Parse classifier/readout config
+    if (root.contains("classification") && root["classification"].is_object()) {
+        ir.classification = parseClassification(root["classification"]);
+    }
+
     return ir;
 }
 
@@ -353,6 +358,54 @@ AdapterConfigIR NativeJSONParser::parseAdapter(const nlohmann::json& j) {
         }
     }
     return a;
+}
+
+ClassificationConfigIR NativeJSONParser::parseClassification(const nlohmann::json& j) {
+    ClassificationConfigIR c;
+    c.type = j.value("type", "");
+    c.k = j.value("k", 5);
+    c.distanceExponent = j.value("distance_exponent", 1.0);
+
+    if (j.contains("double_params") && j["double_params"].is_object()) {
+        for (auto& [key, val] : j["double_params"].items()) {
+            c.doubleParams[key] = val.get<double>();
+        }
+    }
+    if (j.contains("int_params") && j["int_params"].is_object()) {
+        for (auto& [key, val] : j["int_params"].items()) {
+            c.intParams[key] = val.get<int>();
+        }
+    }
+    if (j.contains("string_params") && j["string_params"].is_object()) {
+        for (auto& [key, val] : j["string_params"].items()) {
+            c.stringParams[key] = val.get<std::string>();
+        }
+    }
+
+    if (j.contains("group_definitions")) {
+        c.stringParams["group_definitions"] = j["group_definitions"].get<std::string>();
+    }
+    if (j.contains("coarse_strategy")) {
+        c.stringParams["coarse_strategy"] = j["coarse_strategy"].get<std::string>();
+    }
+    if (j.contains("fine_strategy")) {
+        c.stringParams["fine_strategy"] = j["fine_strategy"].get<std::string>();
+    }
+    if (j.contains("coarse_k")) {
+        c.intParams["coarse_k"] = j["coarse_k"].get<int>();
+    }
+    if (j.contains("fine_k")) {
+        c.intParams["fine_k"] = j["fine_k"].get<int>();
+    }
+    if (j.contains("fallback_to_flat")) {
+        if (j["fallback_to_flat"].is_boolean()) {
+            c.intParams["fallback_to_flat"] = j["fallback_to_flat"].get<bool>() ? 1 : 0;
+        } else {
+            c.intParams["fallback_to_flat"] = j["fallback_to_flat"].get<int>();
+        }
+    }
+
+    return c;
 }
 
 } // namespace declarative

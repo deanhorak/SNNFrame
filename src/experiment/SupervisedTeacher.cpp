@@ -85,6 +85,7 @@ int SupervisedTeacher::teach(
                 size_t idx = 0;
                 size_t spikes = 0;
                 double similarity = 0.0;
+                double activation = 0.0;
                 size_t patternCount = 0;
                 double score = 0.0;
             };
@@ -96,6 +97,8 @@ int SupervisedTeacher::teach(
                 candidate.idx = i;
                 candidate.spikes = l5Neurons[i]->getSpikes().size();
                 candidate.similarity = std::max(0.0, l5Neurons[i]->getBestSimilarity());
+                candidate.activation =
+                    std::max(0.0, l5Neurons[i]->getSimilarityActivation());
                 candidate.patternCount = l5Neurons[i]->getLearnedPatternCount();
                 ranked.push_back(candidate);
                 maxSpikes = std::max(maxSpikes, candidate.spikes);
@@ -111,25 +114,15 @@ int SupervisedTeacher::teach(
             std::sort(ranked.begin(), ranked.end(),
                       [](const RankedNeuron& a, const RankedNeuron& b) {
                           if (a.score != b.score) return a.score > b.score;
+                          if (a.activation != b.activation) return a.activation > b.activation;
                           if (a.spikes != b.spikes) return a.spikes > b.spikes;
                           if (a.similarity != b.similarity) return a.similarity > b.similarity;
                           return a.idx < b.idx;
                       });
 
-            size_t maxPatternCount = 0;
-            for (const auto& candidate : ranked) {
-                maxPatternCount = std::max(maxPatternCount, candidate.patternCount);
-            }
-            const size_t bootstrapPatternThreshold = static_cast<size_t>(
-                std::max(0, config_.l5WinnerGateBootstrapPatterns));
-            const bool enforceStrictGate =
-                (bootstrapPatternThreshold <= 0) || (maxPatternCount >= bootstrapPatternThreshold);
-            const double minSimilarity = enforceStrictGate
-                ? std::max(0.0, config_.l5WinnerMinSimilarity)
-                : 0.0;
-            const double minScoreMargin = enforceStrictGate
-                ? std::max(0.0, config_.l5WinnerMinScoreMargin)
-                : 0.0;
+            const bool enforceStrictGate = false;
+            const double minSimilarity = 0.0;
+            const double minScoreMargin = 0.0;
             const auto hasQualifiedTopTwo = [&]() {
                 int qualified = 0;
                 double first = 0.0;

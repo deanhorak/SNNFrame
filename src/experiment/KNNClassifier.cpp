@@ -1,7 +1,9 @@
 #include "snnfw/experiment/KNNClassifier.h"
+#include "snnfw/classification/ClassificationStrategy.h"
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <stdexcept>
 
 namespace snnfw {
 namespace experiment {
@@ -11,6 +13,19 @@ KNNClassifier::KNNClassifier(const ExperimentConfig& config)
     , numClasses_(config.numClasses)
     , totalL5Neurons_(static_cast<size_t>(config.numColumns) * config.layer5Neurons)
 {
+    voteMode_ = resolveVoteMode();
+    if (voteMode_ == VoteMode::Hierarchical) {
+        classification::ClassificationStrategy::Config clsConfig;
+        clsConfig.name = config_.classificationType;
+        clsConfig.k = std::max(1, config_.knnK);
+        clsConfig.numClasses = config_.numClasses;
+        clsConfig.distanceExponent = std::max(0.0, config_.knnSimilarityExponent);
+        clsConfig.intParams = config_.classificationIntParams;
+        clsConfig.doubleParams = config_.classificationDoubleParams;
+        clsConfig.stringParams = config_.classificationStringParams;
+        hierarchicalStrategy_ =
+            classification::ClassificationStrategyFactory::create(config_.classificationType, clsConfig);
+    }
     reset();
 }
 
@@ -22,6 +37,8 @@ void KNNClassifier::reset() {
     classPatternCounts_.assign(numClasses_, 0);
     neuronPatternPresence_.assign(totalL5Neurons_, 0);
     totalPatternsSeen_ = 0;
+    genericPatternCache_.clear();
+    genericPatternCacheDirty_ = true;
 }
 
 void KNNClassifier::resetForPass(bool keepHistory) {
@@ -40,6 +57,7 @@ void KNNClassifier::storePattern(int classLabel, const L5CountVector& counts,
     }
     classPatterns_[classLabel].push_back({counts, latencies});
     totalPatternsSeen_++;
+    genericPatternCacheDirty_ = true;
 
     // Update centroid
     for (size_t idx = 0; idx < counts.size() && idx < totalL5Neurons_; ++idx) {
@@ -56,6 +74,102 @@ void KNNClassifier::storePattern(int classLabel, const L5CountVector& counts,
         }
     }
     classPatternCounts_[classLabel]++;
+}
+
+KNNClassifier::VoteMode KNNClassifier::resolveVoteMode() const {
+    std::string type = config_.classificationType;
+    std::transform(type.begin(), type.end(), type.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (type == "hierarchical" || type == "hierarchical_knn") {
+        return VoteMode::Hierarchical;
+    }
+    if (type == "majority" || type == "majority_voting") {
+        return VoteMode::Majority;
+    }
+    if (type == "weighted_similarity") {
+        return VoteMode::WeightedSimilarity;
+    }
+    if (type == "weighted_distance") {
+        return VoteMode::WeightedDistance;
+    }
+    return VoteMode::Legacy;
+}
+
+double KNNClassifier::knnVoteWeight(double similarity) const {
+    const double clampedSim = std::max(0.0, similarity);
+    const double exponent = std::max(0.0, config_.knnSimilarityExponent);
+
+    switch (voteMode_) {
+        case VoteMode::Majority:
+            return 1.0;
+        case VoteMode::WeightedSimilarity:
+            return std::pow(clampedSim, exponent);
+        case VoteMode::WeightedDistance: {
+            constexpr double kEpsilon = 1e-6;
+            const double distance = std::max(0.0, 1.0 - clampedSim);
+            return 1.0 / (std::pow(distance, exponent) + kEpsilon);
+        }
+        case VoteMode::Legacy:
+            return config_.enableKnnSimilarityWeightedVote ? std::pow(clampedSim, exponent) : 1.0;
+        case VoteMode::Hierarchical:
+            return 1.0;
+    }
+    return 1.0;
+}
+
+std::vector<double> KNNClassifier::encodePatternForGenericReadout(const L5CountVector& counts,
+                                                                  const L5LatencyVector& latencies) const {
+    std::vector<double> encoded;
+    const bool useLatency = config_.enableTemporalLatencyReadout;
+    encoded.reserve(counts.size() * (useLatency ? 2 : 1));
+
+    const double latencyWeight = useLatency ? std::sqrt(std::clamp(config_.temporalLatencyWeight, 0.0, 1.0)) : 0.0;
+    const double countWeight = useLatency ? std::sqrt(std::max(0.0, 1.0 - std::clamp(config_.temporalLatencyWeight, 0.0, 1.0))) : 1.0;
+
+    for (size_t i = 0; i < counts.size(); ++i) {
+        const uint16_t latency = (!latencies.empty() && i < latencies.size()) ? latencies[i] : kNoLatency;
+        const double base = static_cast<double>(counts[i]) * temporalFeatureScale(latency) * idfWeight(i);
+        encoded.push_back(countWeight * base);
+    }
+
+    if (useLatency) {
+        for (size_t i = 0; i < counts.size(); ++i) {
+            const uint16_t latency = (!latencies.empty() && i < latencies.size()) ? latencies[i] : kNoLatency;
+            const double signal = (latency == kNoLatency) ? 0.0 : latencyToSignal(latency);
+            encoded.push_back(latencyWeight * signal * idfWeight(i));
+        }
+    }
+
+    return encoded;
+}
+
+const std::vector<classification::ClassificationStrategy::LabeledPattern>&
+KNNClassifier::buildGenericPatternCache() const {
+    if (!genericPatternCacheDirty_) {
+        return genericPatternCache_;
+    }
+
+    genericPatternCache_.clear();
+    size_t totalPatterns = 0;
+    for (const auto& patterns : classPatterns_) {
+        totalPatterns += patterns.size();
+    }
+    genericPatternCache_.reserve(totalPatterns);
+
+    for (int cls = 0; cls < numClasses_; ++cls) {
+        if (!config_.includeClasses.empty() &&
+            cls < static_cast<int>(config_.includeClasses.size()) &&
+            !config_.includeClasses[cls]) {
+            continue;
+        }
+        for (const auto& pattern : classPatterns_[cls]) {
+            genericPatternCache_.emplace_back(
+                encodePatternForGenericReadout(pattern.counts, pattern.latencies), cls);
+        }
+    }
+    genericPatternCacheDirty_ = false;
+    return genericPatternCache_;
 }
 
 double KNNClassifier::latencyToSignal(uint16_t latency) const {
@@ -205,6 +319,61 @@ std::pair<int, double> KNNClassifier::classifyKNN(const L5CountVector& testCount
         return {-1, 0.0};
     }
 
+    if (voteMode_ == VoteMode::Hierarchical && hierarchicalStrategy_) {
+        const auto& trainingPatterns = buildGenericPatternCache();
+        if (trainingPatterns.empty()) {
+            return {-1, 0.0};
+        }
+        const auto testPattern = encodePatternForGenericReadout(testCounts, testLatencies);
+        auto confidence = hierarchicalStrategy_->classifyWithConfidence(
+            testPattern,
+            trainingPatterns,
+            [](const std::vector<double>& a, const std::vector<double>& b) {
+                if (a.empty() || b.empty() || a.size() != b.size()) {
+                    return 0.0;
+                }
+                double dot = 0.0;
+                double normA = 0.0;
+                double normB = 0.0;
+                for (size_t i = 0; i < a.size(); ++i) {
+                    dot += a[i] * b[i];
+                    normA += a[i] * a[i];
+                    normB += b[i] * b[i];
+                }
+                if (normA <= 0.0 || normB <= 0.0) {
+                    return 0.0;
+                }
+                return dot / (std::sqrt(normA) * std::sqrt(normB));
+            });
+        if (confidence.empty()) {
+            return {-1, 0.0};
+        }
+        const int predicted = hierarchicalStrategy_->classify(
+            testPattern,
+            trainingPatterns,
+            [](const std::vector<double>& a, const std::vector<double>& b) {
+                if (a.empty() || b.empty() || a.size() != b.size()) {
+                    return 0.0;
+                }
+                double dot = 0.0;
+                double normA = 0.0;
+                double normB = 0.0;
+                for (size_t i = 0; i < a.size(); ++i) {
+                    dot += a[i] * b[i];
+                    normA += a[i] * a[i];
+                    normB += b[i] * b[i];
+                }
+                if (normA <= 0.0 || normB <= 0.0) {
+                    return 0.0;
+                }
+                return dot / (std::sqrt(normA) * std::sqrt(normB));
+            });
+        if (predicted < 0 || predicted >= static_cast<int>(confidence.size())) {
+            return {-1, 0.0};
+        }
+        return {predicted, confidence[static_cast<size_t>(predicted)]};
+    }
+
     const int K = config_.knnK;
     std::vector<std::pair<double, int>> allSimilarities;
 
@@ -239,15 +408,12 @@ std::pair<int, double> KNNClassifier::classifyKNN(const L5CountVector& testCount
     std::vector<double> classBestSimilarity(numClasses_, -1.0);
     double maxSim = 0.0;
     int numVotes = std::min(K, static_cast<int>(allSimilarities.size()));
-    const double exponent = std::max(0.0, config_.knnSimilarityExponent);
     for (int i = 0; i < numVotes; ++i) {
         const int cls = allSimilarities[i].second;
         const double sim = std::max(0.0, allSimilarities[i].first);
         votes[cls]++;
         classBestSimilarity[cls] = std::max(classBestSimilarity[cls], sim);
-        weightedVotes[cls] += config_.enableKnnSimilarityWeightedVote
-            ? std::pow(sim, exponent)
-            : 1.0;
+        weightedVotes[cls] += knnVoteWeight(sim);
         if (i == 0) maxSim = sim;
     }
     if (maxSim <= 1e-9) {

@@ -306,6 +306,35 @@ TEST_F(DeclarativeLoaderTest, Parser_ParseAdapters_NativeJson) {
     EXPECT_EQ(ir.adapters[1].stringParams.at("remote_host"), "127.0.0.1");
 }
 
+TEST_F(DeclarativeLoaderTest, Parser_ParseClassification_NativeJson) {
+    nlohmann::json root = {
+        {"brain", {{"name", "B"}, {"hemispheres", nlohmann::json::array()}}},
+        {"classification", {
+            {"type", "hierarchical"},
+            {"k", 7},
+            {"distance_exponent", 1.5},
+            {"group_definitions", "2,4;6,14,16"},
+            {"coarse_strategy", "majority"},
+            {"fine_strategy", "weighted_distance"},
+            {"coarse_k", 15},
+            {"fine_k", 9},
+            {"fallback_to_flat", true}
+        }}
+    };
+
+    NativeJSONParser parser;
+    auto ir = parser.parseJson(root);
+
+    EXPECT_EQ(ir.classification.type, "hierarchical");
+    EXPECT_EQ(ir.classification.k, 7);
+    EXPECT_DOUBLE_EQ(ir.classification.distanceExponent, 1.5);
+    EXPECT_EQ(ir.classification.stringParams.at("group_definitions"), "2,4;6,14,16");
+    EXPECT_EQ(ir.classification.stringParams.at("fine_strategy"), "weighted_distance");
+    EXPECT_EQ(ir.classification.intParams.at("coarse_k"), 15);
+    EXPECT_EQ(ir.classification.intParams.at("fine_k"), 9);
+    EXPECT_EQ(ir.classification.intParams.at("fallback_to_flat"), 1);
+}
+
 // ============================================================================
 // DeclarativeLoader tests
 // ============================================================================
@@ -752,6 +781,40 @@ TEST_F(DeclarativeLoaderTest, SONATAParser_ParseAdapters) {
     EXPECT_EQ(ir.adapters[0].role, "sensory");
     EXPECT_EQ(ir.adapters[1].type, "interneuron_tx");
     EXPECT_EQ(ir.adapters[1].bindTo, "output");
+}
+
+TEST_F(DeclarativeLoaderTest, SONATAParser_ParseClassification) {
+    nlohmann::json config = {
+        {"network_name", "WithClassification"},
+        {"snnframe", {
+            {"classification", {
+                {"type", "hierarchical_knn"},
+                {"k", 11},
+                {"distance_exponent", 2.0},
+                {"string_params", {
+                    {"group_definitions", "8,11,19"},
+                    {"coarse_strategy", "weighted_similarity"},
+                    {"fine_strategy", "majority"}
+                }},
+                {"int_params", {
+                    {"coarse_k", 13},
+                    {"fine_k", 5},
+                    {"fallback_to_flat", 1}
+                }}
+            }}
+        }}
+    };
+
+    SONATAParser parser;
+    auto ir = parser.parseCircuitConfig(config, ".");
+
+    EXPECT_EQ(ir.classification.type, "hierarchical_knn");
+    EXPECT_EQ(ir.classification.k, 11);
+    EXPECT_DOUBLE_EQ(ir.classification.distanceExponent, 2.0);
+    EXPECT_EQ(ir.classification.stringParams.at("group_definitions"), "8,11,19");
+    EXPECT_EQ(ir.classification.stringParams.at("coarse_strategy"), "weighted_similarity");
+    EXPECT_EQ(ir.classification.intParams.at("coarse_k"), 13);
+    EXPECT_EQ(ir.classification.intParams.at("fine_k"), 5);
 }
 
 

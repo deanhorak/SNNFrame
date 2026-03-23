@@ -304,7 +304,9 @@ class TiledReceptiveFieldPattern : public ConnectivityPattern {
 public:
     /**
      * @brief Constructor
-     * @param inputSize Input grid side length (e.g. 28 for EMNIST)
+     * @param partitionInputSize Input partition side length (e.g. 28 for EMNIST)
+     * @param inputRows Total input grid rows
+     * @param inputCols Total input grid cols
      * @param tilesPerSide Number of tiles along each axis (e.g. 4 for 4×4)
      * @param tilesPerColumn Number of tiles assigned per column
      * @param l4GridSize L4 grid side length (e.g. 7 for 7×7 = 49 neurons)
@@ -312,7 +314,8 @@ public:
      * @param weight Synaptic weight
      * @param delay Synaptic delay in milliseconds
      */
-    TiledReceptiveFieldPattern(int inputSize, int tilesPerSide, int tilesPerColumn,
+    TiledReceptiveFieldPattern(int partitionInputSize, int inputRows, int inputCols,
+                               int tilesPerSide, int tilesPerColumn,
                                int l4GridSize, int columnIndex,
                                double weight = 0.1, double delay = 1.5);
 
@@ -327,7 +330,11 @@ public:
     const std::vector<int>& getTileIndices() const { return tileIndices_; }
 
 private:
-    int inputSize_;
+    int partitionInputSize_;
+    int inputRows_;
+    int inputCols_;
+    int partitionCount_;
+    bool partitionsHorizontal_;
     int tilesPerSide_;
     int tilesPerColumn_;
     int l4GridSize_;
@@ -339,9 +346,9 @@ private:
     std::vector<int> inputMaskActiveIdx_; // input pixel indices in receptive field
 
     void computeTileSelection();
+    int mapPartitionIndex(int partition, int localRow, int localCol) const;
 };
 
 } // namespace snnfw
 
 #endif // SNNFW_CONNECTIVITY_PATTERN_H
-

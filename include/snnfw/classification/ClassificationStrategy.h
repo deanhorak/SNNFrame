@@ -54,6 +54,7 @@ public:
         double distanceExponent;                    ///< Exponent for distance weighting (0 = uniform)
         std::map<std::string, double> doubleParams; ///< Additional double parameters
         std::map<std::string, int> intParams;       ///< Additional integer parameters
+        std::map<std::string, std::string> stringParams; ///< Additional string parameters
         
         // Helper methods
         double getDoubleParam(const std::string& key, double defaultValue = 0.0) const {
@@ -64,6 +65,12 @@ public:
         int getIntParam(const std::string& key, int defaultValue = 0) const {
             auto it = intParams.find(key);
             return (it != intParams.end()) ? it->second : defaultValue;
+        }
+
+        std::string getStringParam(const std::string& key,
+                                   const std::string& defaultValue = "") const {
+            auto it = stringParams.find(key);
+            return (it != stringParams.end()) ? it->second : defaultValue;
         }
     };
 
@@ -231,4 +238,3 @@ public:
 } // namespace snnfw
 
 #endif // SNNFW_CLASSIFICATION_STRATEGY_H
-

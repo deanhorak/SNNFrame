@@ -13,6 +13,11 @@ add_executable(emnist_sonata_training emnist_sonata_training.cpp)
 target_link_libraries(emnist_sonata_training PRIVATE snnfw)
 target_include_directories(emnist_sonata_training PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# EMNIST Retina + direct classification experiment
+add_executable(emnist_retina_letters emnist_retina_letters.cpp)
+target_link_libraries(emnist_retina_letters PRIVATE snnfw)
+target_include_directories(emnist_retina_letters PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # Interneuron TCP adapter demo
 add_executable(interneuron_adapter_demo interneuron_adapter_demo.cpp)
 target_link_libraries(interneuron_adapter_demo PRIVATE snnfw)

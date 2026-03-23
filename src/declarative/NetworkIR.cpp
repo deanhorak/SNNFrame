@@ -1,4 +1,6 @@
 #include "snnfw/declarative/NetworkIR.h"
+#include <algorithm>
+#include <cctype>
 
 namespace snnfw {
 namespace declarative {
@@ -135,7 +137,9 @@ std::vector<std::string> NetworkIR::getValidationErrors() const {
             errors.push_back("Adapter '" + adapter.name + "' has empty type");
             continue;
         }
-        if (adapter.type != "interneuron_rx" && adapter.type != "interneuron_tx") {
+        if (adapter.type != "interneuron_rx" &&
+            adapter.type != "interneuron_tx" &&
+            adapter.type != "retina") {
             errors.push_back("Adapter '" + adapter.name + "' has unsupported type '" +
                              adapter.type + "'");
         }
@@ -143,9 +147,42 @@ std::vector<std::string> NetworkIR::getValidationErrors() const {
             errors.push_back("Adapter '" + adapter.name + "' has invalid role '" +
                              adapter.role + "'");
         }
-        if (!adapter.bindTo.empty() && adapter.bindTo != "input" && adapter.bindTo != "output") {
+        if (!adapter.bindTo.empty() &&
+            adapter.bindTo != "input" &&
+            adapter.bindTo != "l4" &&
+            adapter.bindTo != "output") {
             errors.push_back("Adapter '" + adapter.name + "' has invalid bind_to '" +
                              adapter.bindTo + "'");
+        }
+    }
+
+    if (!classification.type.empty()) {
+        auto normalizedType = classification.type;
+        std::transform(normalizedType.begin(), normalizedType.end(), normalizedType.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        if (normalizedType != "majority" &&
+            normalizedType != "majority_voting" &&
+            normalizedType != "weighted_distance" &&
+            normalizedType != "weighted_similarity" &&
+            normalizedType != "hierarchical" &&
+            normalizedType != "hierarchical_knn") {
+            errors.push_back("Classification has unsupported type '" + classification.type + "'");
+        }
+        if (classification.k <= 0) {
+            errors.push_back("Classification k must be positive");
+        }
+        if (classification.distanceExponent <= 0.0) {
+            errors.push_back("Classification distance_exponent must be positive");
+        }
+
+        const auto coarseK = classification.intParams.find("coarse_k");
+        if (coarseK != classification.intParams.end() && coarseK->second <= 0) {
+            errors.push_back("Classification coarse_k must be positive");
+        }
+        const auto fineK = classification.intParams.find("fine_k");
+        if (fineK != classification.intParams.end() && fineK->second <= 0) {
+            errors.push_back("Classification fine_k must be positive");
         }
     }
 

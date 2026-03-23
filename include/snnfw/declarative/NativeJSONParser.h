@@ -45,6 +45,7 @@ private:
     SaccadeConfigIR parseSaccades(const nlohmann::json& j);
     SimulationConfigIR parseSimulation(const nlohmann::json& j);
     AdapterConfigIR parseAdapter(const nlohmann::json& j);
+    ClassificationConfigIR parseClassification(const nlohmann::json& j);
 };
 
 } // namespace declarative

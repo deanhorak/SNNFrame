@@ -68,8 +68,25 @@
                       "column_template": {
                         "template_name": "CorticalMicroCircuit",
                         "naming_pattern": "Orient_{orientation}_Freq_{frequency}",
-                        "orientations": [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165],
-                        "frequencies": [0.8, 1.6, 3.2],
+                        "orientations": [
+                          0,
+                          15,
+                          30,
+                          45,
+                          60,
+                          75,
+                          90,
+                          105,
+                          120,
+                          135,
+                          150,
+                          165
+                        ],
+                        "frequencies": [
+                          0.8,
+                          1.6,
+                          3.2
+                        ],
                         "layers": [
                           {
                             "name": "L1",
@@ -231,13 +248,37 @@
       "kernel_size": 7
     },
     "saccades": {
-      "enabled": false,
+      "enabled": true,
       "num_fixations": 4,
       "regions": [
-        { "name": "top",    "row_start": 0,  "row_end": 13, "col_start": 0, "col_end": 27 },
-        { "name": "bottom", "row_start": 14, "row_end": 27, "col_start": 0, "col_end": 27 },
-        { "name": "center", "row_start": 7,  "row_end": 20, "col_start": 7, "col_end": 20 },
-        { "name": "full",   "row_start": 0,  "row_end": 27, "col_start": 0, "col_end": 27 }
+        {
+          "name": "top",
+          "row_start": 0,
+          "row_end": 13,
+          "col_start": 0,
+          "col_end": 27
+        },
+        {
+          "name": "bottom",
+          "row_start": 14,
+          "row_end": 27,
+          "col_start": 0,
+          "col_end": 27
+        },
+        {
+          "name": "center",
+          "row_start": 7,
+          "row_end": 20,
+          "col_start": 7,
+          "col_end": 20
+        },
+        {
+          "name": "full",
+          "row_start": 0,
+          "row_end": 27,
+          "col_start": 0,
+          "col_end": 27
+        }
       ]
     },
     "simulation": {
@@ -263,12 +304,12 @@
         "l5_keep": 8,
         "enable_similarity_competition": true,
         "l4_similarity_weight": 0.25,
-        "l5_similarity_weight": 0.60,
+        "l5_similarity_weight": 0.6,
         "enable_l5_inhibition": true,
         "enable_l5_inter_column_inhibition": true,
         "l5_inter_column_inhibit": 0.02,
-        "l5_inter_column_min_overlap": 0.30,
-        "l5_inter_column_winner_scale": 0.50,
+        "l5_inter_column_min_overlap": 0.3,
+        "l5_inter_column_winner_scale": 0.5,
         "l5_inter_column_max_inhibit": 0.35,
         "l5_inter_column_max_orientation_delta_deg": 90.0,
         "l5_inter_column_max_frequency_octave_delta": 2.0,
@@ -276,6 +317,39 @@
         "mask_min_active": 6
       },
       "inter_image_gap_ms": 550.0
-    }
+    },
+    "adapters": [
+      {
+        "name": "retina_l4",
+        "type": "retina",
+        "role": "sensory",
+        "bind_to": "input",
+        "temporal_window_ms": 15.0,
+        "double_params": {
+          "edge_threshold": 0.15,
+          "frequency_blur_base_sigma": 0.6,
+          "neuron_window_size": 200.0,
+          "neuron_threshold": 0.7,
+          "timing_jitter": 0.0,
+          "min_spike_interval": 5.0,
+          "input_second_weight": 0.55,
+          "input_third_weight": 0.2,
+          "input_blend": 0.7,
+          "input_region_floor": 0.25
+        },
+        "int_params": {
+          "grid_size": 7,
+          "max_frequency_bands_per_feature": 1,
+          "num_orientations": 12,
+          "neuron_max_patterns": 100,
+          "kernel_size": 5,
+          "precision_mode": 0
+        },
+        "string_params": {
+          "edge_operator": "sobel",
+          "encoding_strategy": "temporal"
+        }
+      }
+    ]
   }
 }

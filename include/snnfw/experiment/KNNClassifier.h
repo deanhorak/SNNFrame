@@ -2,10 +2,12 @@
 #define SNNFW_EXPERIMENT_KNN_CLASSIFIER_H
 
 #include "snnfw/experiment/ExperimentConfig.h"
+#include "snnfw/classification/ClassificationStrategy.h"
 #include <vector>
 #include <cstdint>
 #include <utility>
 #include <limits>
+#include <memory>
 
 namespace snnfw {
 namespace experiment {
@@ -56,6 +58,14 @@ public:
     size_t getPatternCount(int classLabel) const;
 
 private:
+    enum class VoteMode {
+        Legacy,
+        Majority,
+        WeightedSimilarity,
+        WeightedDistance,
+        Hierarchical
+    };
+
     struct StoredPattern {
         L5CountVector counts;
         L5LatencyVector latencies;
@@ -75,8 +85,18 @@ private:
     std::vector<int> classPatternCounts_;
     std::vector<uint32_t> neuronPatternPresence_;
     uint32_t totalPatternsSeen_ = 0;
+    VoteMode voteMode_ = VoteMode::Legacy;
+    std::unique_ptr<classification::ClassificationStrategy> hierarchicalStrategy_;
+    mutable bool genericPatternCacheDirty_ = true;
+    mutable std::vector<classification::ClassificationStrategy::LabeledPattern> genericPatternCache_;
 
     static constexpr uint16_t kNoLatency = std::numeric_limits<uint16_t>::max();
+    VoteMode resolveVoteMode() const;
+    double knnVoteWeight(double similarity) const;
+    std::vector<double> encodePatternForGenericReadout(const L5CountVector& counts,
+                                                       const L5LatencyVector& latencies) const;
+    const std::vector<classification::ClassificationStrategy::LabeledPattern>&
+    buildGenericPatternCache() const;
     double idfWeight(size_t idx) const;
     double weightedCosineSimilarity(const L5CountVector& a, const L5CountVector& b,
                                     const L5LatencyVector* latA = nullptr,

@@ -65,7 +65,9 @@ int main(int argc, char* argv[]) {
     config.l5InhibitLoser = 1.2;
     config.l5InhibitThreshold = 0.5;
     config.l5MinSpikes = 1;
-    config.l5WinnerMinSimilarity = 0.0;
+    config.enableL5InferenceSimilarityGate = false;
+    config.l5InferenceSimilarityBias = 0.0;
+    config.l5WinnerMinSimilarity = 0.03;
     config.l5WinnerMinScoreMargin = 0.0;
     config.l5WinnerGateBootstrapPatterns = 24;
     config.enableL5InterColumnInhibition = true;
@@ -156,6 +158,32 @@ int main(int argc, char* argv[]) {
             config.seed = std::atoi(argv[++i]);
         } else if (arg == "--pixel-threshold" && i + 1 < argc) {
             config.pixelThreshold = std::atof(argv[++i]);
+        } else if (arg == "--visual-frontend") {
+            config.enableVisualFrontend = true;
+        } else if (arg == "--no-visual-frontend") {
+            config.enableVisualFrontend = false;
+        } else if (arg == "--visual-frontend-gain" && i + 1 < argc) {
+            config.enableVisualFrontend = true;
+            config.visualFrontendGain = std::atof(argv[++i]);
+        } else if (arg == "--visual-oncenter-weight" && i + 1 < argc) {
+            config.enableVisualFrontend = true;
+            config.visualOnCenterWeight = std::atof(argv[++i]);
+        } else if (arg == "--visual-edge-weight" && i + 1 < argc) {
+            config.enableVisualFrontend = true;
+            config.visualEdgeWeight = std::atof(argv[++i]);
+        } else if (arg == "--visual-feature-channels") {
+            config.enableVisualFeatureChannels = true;
+        } else if (arg == "--no-visual-feature-channels") {
+            config.enableVisualFeatureChannels = false;
+        } else if (arg == "--visual-feature-threshold" && i + 1 < argc) {
+            config.enableVisualFeatureChannels = true;
+            config.visualFeatureThreshold = std::atof(argv[++i]);
+        } else if (arg == "--saccades") {
+            config.enableSaccades = true;
+            config.hasSaccadeRuntimeOverride = true;
+        } else if (arg == "--no-saccades") {
+            config.enableSaccades = false;
+            config.hasSaccadeRuntimeOverride = true;
         } else if (arg == "--no-output-vote") {
             config.enableOutputVote = false;
         } else if (arg == "--output-vote") {
@@ -231,6 +259,12 @@ int main(int argc, char* argv[]) {
             config.enablePairDisambiguation = false;
         } else if (arg == "--pair-disamb-ti-margin" && i + 1 < argc) {
             config.pairDisambMarginTI = std::atof(argv[++i]);
+        } else if (arg == "--l5-inference-similarity-gate") {
+            config.enableL5InferenceSimilarityGate = true;
+        } else if (arg == "--no-l5-inference-similarity-gate") {
+            config.enableL5InferenceSimilarityGate = false;
+        } else if (arg == "--l5-inference-similarity-bias" && i + 1 < argc) {
+            config.l5InferenceSimilarityBias = std::atof(argv[++i]);
         } else if (arg == "--pair-disamb-gq-margin" && i + 1 < argc) {
             config.pairDisambMarginGQ = std::atof(argv[++i]);
         } else if (arg == "--pair-disamb-il-margin" && i + 1 < argc) {
@@ -361,6 +395,9 @@ int main(int argc, char* argv[]) {
                       << "  --readout-idf-weighting    Enable sparse-feature weighting in readout similarity\n"
                       << "  --no-readout-idf-weighting Disable sparse-feature weighting in readout similarity\n"
                       << "  --readout-idf-power <v>    IDF weighting exponent (default: 1.0)\n"
+                      << "  --visual-feature-channels  Add sparse ON/OFF/edge channel spikes on top of raw pixels\n"
+                      << "  --no-visual-feature-channels Disable explicit visual feature channels\n"
+                      << "  --visual-feature-threshold <v> Activation threshold for extra visual feature spikes\n"
                       << "  --l5-divisive-norm         Enable per-column L5 divisive normalization\n"
                       << "  --no-l5-divisive-norm      Disable per-column L5 divisive normalization\n"
                       << "  --l5-divisive-target <n>   Target summed L5 activity per active column\n"

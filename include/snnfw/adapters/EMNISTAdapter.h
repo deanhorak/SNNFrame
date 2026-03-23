@@ -44,11 +44,32 @@ public:
     void clearNeuronStates() override;
 
 private:
+    std::vector<double> preprocessActivations(const std::vector<uint8_t>& pixels) const;
+    double computeFeatureSpikeTime(double strength, int orientationBin) const;
+    size_t mapPixelToOutputIndex(int partition, size_t pixelIndex) const;
+    bool usePartitionedFeatureInputs() const;
+    bool isLocalMaximum(const std::vector<double>& map, int row, int col) const;
+    bool isHorizontalEdgeBin(int orientationBin) const;
+
     double pixelThreshold_ = 0.4;
     double inputLatencyMs_ = 15.0;
     int imageRows_ = 28;
     int imageCols_ = 28;
+    int outputRows_ = 28;
+    int outputCols_ = 28;
+    int outputPartitions_ = 1;
+    bool partitionsHorizontal_ = true;
     size_t featureDimension_ = 28 * 28;
+    bool enableVisualFrontend_ = false;
+    double visualFrontendGain_ = 0.45;
+    double visualOnCenterWeight_ = 0.60;
+    double visualEdgeWeight_ = 0.40;
+    bool enableVisualFeatureChannels_ = false;
+    double visualFeatureThreshold_ = 0.58;
+    double visualOnPartitionThreshold_ = 0.18;
+    double visualOffPartitionThreshold_ = 0.22;
+    double visualEdgePartitionThreshold_ = 0.55;
+    int visualOrientationBins_ = 4;
 
     std::vector<std::shared_ptr<Neuron>> neurons_;
     std::vector<double> lastActivationPattern_;

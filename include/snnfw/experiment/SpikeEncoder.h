@@ -58,6 +58,37 @@ public:
     void setLastEndTime(double t) { lastEndTime_ = t; }
 
 private:
+    struct FixationWindow {
+        EMNISTLoader::Image image;
+        double offsetMs = 0.0;
+        double durationMs = 0.0;
+    };
+
+    std::vector<FixationWindow> buildFixationWindows(const EMNISTLoader::Image& image) const;
+    int injectInputPattern(const adapters::SensoryAdapter::SpikePattern& encodedPattern,
+                           double baseTime,
+                           double offsetMs,
+                           double durationMs,
+                           std::vector<std::shared_ptr<Neuron>>& inputNeurons);
+    int injectRawInputWindow(const EMNISTLoader::Image& image,
+                             double baseTime,
+                             double offsetMs,
+                             double durationMs,
+                             std::vector<std::shared_ptr<Neuron>>& inputNeurons);
+    int injectRetinaIntoL4(const adapters::SensoryAdapter::SpikePattern& encodedPattern,
+                           double baseTime,
+                           double offsetMs,
+                           double durationMs,
+                           std::vector<declarative::ConstructedNetwork::ColumnGroup>& columns);
+    int injectRetinaIntoInput(const EMNISTLoader::Image& image,
+                              const adapters::SensoryAdapter::SpikePattern& encodedPattern,
+                              double baseTime,
+                              double offsetMs,
+                              double durationMs,
+                              std::vector<std::shared_ptr<Neuron>>& inputNeurons);
+    void populateMaskInputActivity(const EMNISTLoader::Image& image,
+                                   const std::vector<std::shared_ptr<Neuron>>& inputNeurons);
+
     const ExperimentConfig& config_;
     std::shared_ptr<SpikeProcessor> spikeProcessor_;
     std::shared_ptr<NetworkPropagator> propagator_;

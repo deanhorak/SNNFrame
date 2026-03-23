@@ -8,6 +8,7 @@
 #include <vector>
 #include <memory>
 #include <cmath>
+#include <string>
 
 namespace snnfw {
 namespace adapters {
@@ -159,7 +160,7 @@ public:
      * @brief Get feature dimension
      */
     size_t getFeatureDimension() const override {
-        return gridSize_ * gridSize_ * numOrientations_;
+        return gridSize_ * gridSize_ * getChannelsPerBand() * getFrequencyBandCount();
     }
 
     /**
@@ -184,17 +185,57 @@ public:
     std::vector<double> processImage(const Image& image);
 
 private:
+    size_t getFrequencyBandCount() const {
+        return frequencyBands_.empty() ? 1 : frequencyBands_.size();
+    }
+    size_t getAuxiliaryChannelCount() const;
+    size_t getSubfieldCount() const;
+    size_t getOrientationChannelBlocks() const {
+        const size_t subfields = getSubfieldCount();
+        return subfields == 0 ? 1u : (subfieldIncludePooled_ ? 1u + subfields : subfields);
+    }
+    size_t getChannelsPerBand() const {
+        return static_cast<size_t>(numOrientations_) * getOrientationChannelBlocks() +
+               getAuxiliaryChannelCount();
+    }
+
     // Configuration parameters
     int gridSize_;              ///< Grid size (e.g., 7 for 7×7)
     int regionSize_;            ///< Region size in pixels
     int numOrientations_;       ///< Number of edge orientations
     double edgeThreshold_;      ///< Minimum edge strength
     double temporalWindow_;     ///< Spike pattern duration (ms)
+    std::string edgeOperatorType_; ///< Configured edge operator name
+    std::string activationMode_;   ///< Activation readout mode: binary, similarity, hybrid
+    std::string auxiliaryFeatureMode_; ///< Optional derived feature channels per region/band
+    int subfieldGridSize_;          ///< Optional spatial subdivision within each region
+    bool subfieldIncludePooled_;    ///< Keep pooled region response alongside subfields
+    double orientationFeatureGain_; ///< Gain applied to orientation/subfield channels
 
     // Neuron parameters
     double neuronWindowSize_;   ///< Neuron temporal window (ms)
     double neuronThreshold_;    ///< Neuron similarity threshold
     int neuronMaxPatterns_;     ///< Max patterns per neuron
+    int minimumRegionSize_;     ///< Minimum patch size needed by the edge operator
+    int maxFrequencyBandsPerFeature_; ///< Max active frequency bands per region/orientation
+    double frequencyBlurBaseSigma_;   ///< Base blur sigma for low-frequency channels
+    double orientationLateralInhibition_; ///< Suppress diffuse orientation responses per region
+    double orientationResponseGamma_;     ///< Sharpen surviving orientation responses
+    double auxiliaryFeatureGain_;         ///< Gain applied to auxiliary features
+    int auxiliaryAnalysisRegionSize_;     ///< Optional higher-resolution patch for auxiliary features
+    double cornerMinDeltaDeg_;            ///< Minimum orientation separation for corner responses
+    double cornerMaxDeltaDeg_;            ///< Maximum orientation separation for corner responses
+    double curveMinDeltaDeg_;             ///< Minimum orientation separation for curve responses
+    double curveMaxDeltaDeg_;             ///< Maximum orientation separation for curve responses
+    double endstopPixelThreshold_;        ///< Pixel threshold for end-stop support estimation
+    double endstopAxisFraction_;          ///< Fraction of the patch assigned to line ends
+    double rotationDeg_;                  ///< Optional per-adapter view rotation
+    double scaleX_;                       ///< Optional per-adapter horizontal scale
+    double scaleY_;                       ///< Optional per-adapter vertical scale
+    double shiftXPx_;                     ///< Optional per-adapter horizontal shift
+    double shiftYPx_;                     ///< Optional per-adapter vertical shift
+    bool mirrorX_;                        ///< Optional horizontal mirror
+    bool mirrorY_;                        ///< Optional vertical mirror
 
     // Pluggable strategies
     std::unique_ptr<features::EdgeOperator> edgeOperator_;      ///< Edge detection strategy
@@ -208,6 +249,8 @@ private:
     // Image dimensions (set during first processData call)
     int imageRows_;
     int imageCols_;
+    std::vector<double> frequencyBands_; ///< Spatial frequencies from the connected column set
+    std::vector<double> blurSigmas_;     ///< Derived blur sigma per frequency band
 
     /**
      * @brief Extract a region from the image
@@ -217,6 +260,8 @@ private:
      * @return Vector of pixel values in the region
      */
     std::vector<uint8_t> extractRegion(const Image& image, int regionRow, int regionCol) const;
+    std::vector<uint8_t> extractRegion(const Image& image, int regionRow, int regionCol,
+                                       int targetSize) const;
 
     /**
      * @brief Extract edge features for a region
@@ -226,6 +271,15 @@ private:
      */
     std::vector<double> extractEdgeFeatures(const std::vector<uint8_t>& region, 
                                             int regionSize) const;
+
+    std::vector<double> parseFrequencyBands(const std::string& csv) const;
+    void configureFrequencyBands();
+    Image blurImage(const Image& image, double sigma) const;
+    Image applyViewTransform(const Image& image) const;
+    void applyOrientationCompetition(std::vector<double>& responses) const;
+    std::vector<double> computeAuxiliaryFeatures(const std::vector<double>& orientationResponses,
+                                                 const std::vector<uint8_t>& region,
+                                                 int regionSize) const;
 
     /**
      * @brief Convert feature values to spike times
@@ -244,4 +298,3 @@ private:
 } // namespace snnfw
 
 #endif // SNNFW_RETINA_ADAPTER_H
-

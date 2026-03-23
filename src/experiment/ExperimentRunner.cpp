@@ -1,13 +1,55 @@
 #include "snnfw/experiment/ExperimentRunner.h"
 #include "snnfw/adapters/AdapterFactory.h"
+#include "snnfw/adapters/RetinaAdapter.h"
 #include "snnfw/adapters/InterneuronAdapters.h"
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <iomanip>
 #include <chrono>
+#include <sstream>
 #include <stdexcept>
 
 namespace snnfw {
 namespace experiment {
+
+namespace {
+
+void ensureCoreSensoryAdaptersRegistered() {
+    auto& factory = adapters::AdapterFactory::getInstance();
+    if (!factory.hasSensoryAdapter("retina")) {
+        factory.registerSensoryAdapter(
+            "retina",
+            [](const adapters::BaseAdapter::Config& cfg) {
+                return std::make_shared<adapters::RetinaAdapter>(cfg);
+            });
+    }
+}
+
+std::string joinColumnFrequencies(
+    const std::vector<declarative::ConstructedNetwork::ColumnGroup>& columns) {
+    std::vector<double> frequencies;
+    frequencies.reserve(columns.size());
+    for (const auto& col : columns) {
+        frequencies.push_back(col.spatialFrequency);
+    }
+    std::sort(frequencies.begin(), frequencies.end());
+    frequencies.erase(
+        std::unique(frequencies.begin(), frequencies.end(),
+                    [](double a, double b) { return std::abs(a - b) < 1e-6; }),
+        frequencies.end());
+
+    std::ostringstream ss;
+    for (size_t i = 0; i < frequencies.size(); ++i) {
+        if (i > 0) {
+            ss << ",";
+        }
+        ss << frequencies[i];
+    }
+    return ss.str();
+}
+
+} // namespace
 
 ExperimentRunner::ExperimentRunner(const ExperimentConfig& config)
     : config_(config)
@@ -96,6 +138,11 @@ void ExperimentRunner::buildNetwork() {
               << network_->outputPopulations.size() << " output classes" << std::endl;
     std::cout << "  Total neurons: " << network_->allNeuronIds.size() << std::endl;
     std::cout << "  Total synapses: " << network_->allSynapses.size() << std::endl;
+    if (!config_.classificationType.empty()) {
+        std::cout << "  Readout classifier: " << config_.classificationType
+                  << " (k=" << config_.knnK << ", exponent=" << config_.knnSimilarityExponent
+                  << ")" << std::endl;
+    }
 
     // Start the spike processor
     network_->spikeProcessor->start();
@@ -104,8 +151,25 @@ void ExperimentRunner::buildNetwork() {
 
 void ExperimentRunner::syncConfigFromIR(const declarative::NetworkIR& ir) {
     // Sync encoder/input parameters from the parsed IR
+    config_.inputRows = ir.inputLayer.rows;
+    config_.inputCols = ir.inputLayer.cols;
     config_.pixelThreshold = ir.inputLayer.pixelThreshold;
     config_.inputLatencyMs = ir.inputLayer.latencyMs;
+    if (!config_.hasSaccadeRuntimeOverride) {
+        config_.enableSaccades = ir.saccades.enabled;
+    }
+    config_.saccadeNumFixations = std::max(1, ir.saccades.numFixations);
+    config_.saccadeRegions.clear();
+    config_.saccadeRegions.reserve(ir.saccades.regions.size());
+    for (const auto& region : ir.saccades.regions) {
+        ExperimentConfig::FixationRegion fix;
+        fix.name = region.name;
+        fix.rowStart = region.rowStart;
+        fix.rowEnd = region.rowEnd;
+        fix.colStart = region.colStart;
+        fix.colEnd = region.colEnd;
+        config_.saccadeRegions.push_back(std::move(fix));
+    }
 
     // Sync architecture parameters from the parsed IR
     config_.numClasses = ir.outputLayer.numClasses;
@@ -160,6 +224,24 @@ void ExperimentRunner::syncConfigFromIR(const declarative::NetworkIR& ir) {
     config_.stdpEligibilityLtdPenalty = ir.simulation.stdpEligibilityLtdPenalty;
     config_.numThreads = ir.simulation.spikeProcessorThreads;
 
+    if (!ir.classification.type.empty()) {
+        config_.classificationType = ir.classification.type;
+        config_.knnK = ir.classification.k;
+        config_.knnSimilarityExponent = ir.classification.distanceExponent;
+        config_.classificationIntParams = ir.classification.intParams;
+        config_.classificationDoubleParams = ir.classification.doubleParams;
+        config_.classificationStringParams = ir.classification.stringParams;
+
+        std::string normalizedType = ir.classification.type;
+        std::transform(normalizedType.begin(), normalizedType.end(), normalizedType.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (normalizedType == "majority" || normalizedType == "majority_voting") {
+            config_.enableKnnSimilarityWeightedVote = false;
+        } else if (normalizedType == "weighted_similarity") {
+            config_.enableKnnSimilarityWeightedVote = true;
+        }
+    }
+
     // Determine layer sizes from column template or first column
     for (auto& hemi : ir.brain.hemispheres) {
         for (auto& lobe : hemi.lobes) {
@@ -200,6 +282,7 @@ void ExperimentRunner::instantiateAdapters(const declarative::NetworkIR& ir) {
     }
 
     adapters::ensureInterneuronAdaptersRegistered();
+    ensureCoreSensoryAdaptersRegistered();
     auto& factory = adapters::AdapterFactory::getInstance();
     for (const auto& cfgIR : ir.adapters) {
         adapters::BaseAdapter::Config cfg;
@@ -209,6 +292,9 @@ void ExperimentRunner::instantiateAdapters(const declarative::NetworkIR& ir) {
         cfg.doubleParams = cfgIR.doubleParams;
         cfg.intParams = cfgIR.intParams;
         cfg.stringParams = cfgIR.stringParams;
+        if (cfgIR.type == "retina" && cfgIR.bindTo == "l4") {
+            cfg.stringParams["frequency_values"] = joinColumnFrequencies(network_->columns);
+        }
 
         std::string role = cfgIR.role;
         if (role.empty()) {

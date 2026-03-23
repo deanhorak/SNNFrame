@@ -145,13 +145,25 @@ public:
      * @brief Get the number of learned patterns
      * @return Number of reference patterns stored
      */
-    size_t getLearnedPatternCount() const { return referencePatterns.size(); }
+    size_t getLearnedPatternCount() const {
+        return prototypePatterns_.size() + exemplarPatterns_.size();
+    }
+
+    /**
+     * @brief Get the number of prototype memories
+     */
+    size_t getPrototypePatternCount() const { return prototypePatterns_.size(); }
+
+    /**
+     * @brief Get the number of exemplar memories
+     */
+    size_t getExemplarPatternCount() const { return exemplarPatterns_.size(); }
 
     /**
      * @brief Get all learned patterns (as BinaryPattern)
      * @return Const reference to vector of learned BinaryPatterns
      */
-    const std::vector<BinaryPattern>& getLearnedPatterns() const { return referencePatterns; }
+    const std::vector<BinaryPattern>& getLearnedPatterns() const;
 
     /**
      * @brief Get all spikes from the rolling window (thread-safe copy)
@@ -212,7 +224,7 @@ public:
      * @brief Get all reference patterns learned by this neuron (as BinaryPattern)
      * @return Const reference to vector of reference BinaryPatterns
      */
-    const std::vector<BinaryPattern>& getReferencePatterns() const { return referencePatterns; }
+    const std::vector<BinaryPattern>& getReferencePatterns() const { return getLearnedPatterns(); }
 
     /**
      * @brief Get all dendrite IDs for this neuron
@@ -279,6 +291,12 @@ public:
      * @brief Reset inhibition to zero
      */
     void resetInhibition() { inhibition_ = 0.0; }
+
+    /**
+     * @brief Get similarity-driven activation before inhibition is applied
+     * @return Similarity activation in [0, 1]
+     */
+    double getSimilarityActivation() const;
 
     /**
      * @brief Get activation level (best similarity minus inhibition)
@@ -359,7 +377,11 @@ private:
     std::vector<double> spikes;                          ///< Rolling spike window (temporary, converted to BinaryPattern)
     mutable std::mutex spikesMutex_;                     ///< Mutex to protect spikes vector from concurrent access
     double maxSpikeTime_;                                ///< Maximum spike time in the buffer (for efficient cleanup)
-    std::vector<BinaryPattern> referencePatterns;        ///< Learned reference patterns (200 bytes each, FIXED SIZE)
+    std::vector<BinaryPattern> prototypePatterns_;       ///< Consolidated memories for strong repeated motifs
+    std::vector<uint16_t> prototypeSupports_;            ///< Reinforcement counts for prototype memories
+    std::vector<BinaryPattern> exemplarPatterns_;        ///< Specific memories for variant exemplars
+    std::vector<uint16_t> exemplarSupports_;             ///< Reinforcement counts for exemplar memories
+    mutable std::vector<BinaryPattern> combinedPatternsCache_; ///< Scratch cache for read-only accessors
     double windowSize;                                   ///< Size of rolling window in ms
     double threshold;                                    ///< Similarity threshold for firing
     size_t maxPatterns;                                  ///< Maximum number of reference patterns
@@ -415,6 +437,11 @@ private:
      * @return Similarity score (0.0 to 1.0)
      */
     double computeSimilarity(const BinaryPattern& a, const BinaryPattern& b) const;
+
+    double findBestSimilarity(
+        const BinaryPattern& currentPattern,
+        const std::vector<BinaryPattern>& patterns,
+        int* bestIndex = nullptr) const;
 
     /**
      * @brief Check if current pattern is similar to any reference pattern

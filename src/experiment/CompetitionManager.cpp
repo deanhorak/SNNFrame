@@ -298,27 +298,71 @@ std::vector<bool> CompetitionManager::runL5Competition(
             double score = 0.0;
             size_t spikes = 0;
             double similarity = 0.0;
+            double activation = 0.0;
             size_t patternCount = 0;
+            bool passesInferenceGate = true;
             size_t idx = 0;
         };
 
         std::vector<RankedNeuron> ranked;
         ranked.reserve(l5Neurons.size());
         size_t maxSpikes = 0;
+        size_t eligibleForStrictGate = 0;
+        size_t maxPatternCount = 0;
         for (size_t i = 0; i < l5Neurons.size(); ++i) {
             RankedNeuron candidate;
             candidate.idx = i;
             candidate.spikes = l5Neurons[i]->getSpikes().size();
             candidate.similarity = std::max(0.0, l5Neurons[i]->getBestSimilarity());
+            candidate.activation = std::max(0.0, l5Neurons[i]->getActivation());
             candidate.patternCount = l5Neurons[i]->getLearnedPatternCount();
             ranked.push_back(candidate);
             maxSpikes = std::max(maxSpikes, candidate.spikes);
+            maxPatternCount = std::max(maxPatternCount, candidate.patternCount);
         }
+        const size_t bootstrapPatternThreshold = static_cast<size_t>(
+            std::max(0, config_.l5WinnerGateBootstrapPatterns));
+        const bool gateReady =
+            !trainingPhase &&
+            config_.enableL5InferenceSimilarityGate &&
+            ((bootstrapPatternThreshold == 0) || (maxPatternCount >= bootstrapPatternThreshold));
+        const double minSimilarity = gateReady
+            ? std::max(0.0, config_.l5WinnerMinSimilarity)
+            : 0.0;
+        const double minScoreMargin = gateReady
+            ? std::max(0.0, config_.l5WinnerMinScoreMargin)
+            : 0.0;
         for (auto& candidate : ranked) {
-            candidate.score = config_.enableSimilarityCompetition
+            candidate.passesInferenceGate =
+                !gateReady ||
+                candidate.patternCount == 0 ||
+                candidate.similarity >= minSimilarity;
+            if (candidate.spikes >= static_cast<size_t>(config_.l5MinSpikes) &&
+                candidate.passesInferenceGate) {
+                ++eligibleForStrictGate;
+            }
+        }
+        const bool enforceStrictGate = gateReady &&
+            eligibleForStrictGate >= static_cast<size_t>(std::max(1, l5Keep));
+        for (auto& candidate : ranked) {
+            const double baseScore = config_.enableSimilarityCompetition
                 ? computeHybridCompetitionScore(
                     candidate.spikes, maxSpikes, candidate.similarity, config_.l5SimilarityWeight)
                 : static_cast<double>(candidate.spikes);
+            if (candidate.patternCount > 0) {
+                candidate.score = baseScore;
+                if (!trainingPhase && config_.l5InferenceSimilarityBias > 0.0) {
+                    candidate.score += config_.l5InferenceSimilarityBias * candidate.activation;
+                }
+                if (gateReady && !candidate.passesInferenceGate) {
+                    const double similarityScale = (minSimilarity > 0.0)
+                        ? std::clamp(candidate.similarity / minSimilarity, 0.15, 1.0)
+                        : 1.0;
+                    candidate.score *= similarityScale;
+                }
+            } else {
+                candidate.score = baseScore;
+            }
             if (candidate.spikes > 0) {
                 callPoolSpikeSum += static_cast<double>(candidate.spikes);
                 callPoolSimSum += candidate.similarity;
@@ -327,16 +371,17 @@ std::vector<bool> CompetitionManager::runL5Competition(
             }
         }
         std::sort(ranked.begin(), ranked.end(),
-                  [](const RankedNeuron& a, const RankedNeuron& b) {
+                      [](const RankedNeuron& a, const RankedNeuron& b) {
                       if (a.score != b.score) return a.score > b.score;
+                      if (a.activation != b.activation) return a.activation > b.activation;
+                      if (a.passesInferenceGate != b.passesInferenceGate) {
+                          return a.passesInferenceGate > b.passesInferenceGate;
+                      }
                       if (a.spikes != b.spikes) return a.spikes > b.spikes;
                       if (a.similarity != b.similarity) return a.similarity > b.similarity;
                       return a.idx < b.idx;
                   });
 
-        const bool enforceStrictGate = false;
-        const double minSimilarity = 0.0;
-        const double minScoreMargin = 0.0;
         const auto hasQualifiedTopTwo = [&]() {
             int qualified = 0;
             double first = 0.0;
@@ -364,6 +409,7 @@ std::vector<bool> CompetitionManager::runL5Competition(
         std::vector<bool> l5WinnerLocal(l5Neurons.size(), false);
         double winnerDrive = 0.0;
         for (size_t i = 0; i < ranked.size() && winners < l5Keep && columnPassesMarginGate; ++i) {
+            if (enforceStrictGate && !ranked[i].passesInferenceGate) continue;
             if (ranked[i].spikes < static_cast<size_t>(config_.l5MinSpikes)) break;
             const bool hasPatterns = ranked[i].patternCount > 0;
             if (enforceStrictGate && hasPatterns && ranked[i].similarity < minSimilarity) continue;

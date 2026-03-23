@@ -1,0 +1,32 @@
+{
+  "network_name": "EMNISTRetinaFlat",
+  "snnframe": {
+    "classification": {
+      "type": "majority",
+      "k": 5,
+      "distance_exponent": 1.0
+    },
+    "adapters": [
+      {
+        "name": "retina_g10",
+        "type": "retina",
+        "role": "sensory",
+        "temporal_window_ms": 200.0,
+        "int_params": {
+          "grid_size": 10,
+          "num_orientations": 8
+        },
+        "double_params": {
+          "edge_threshold": 0.24,
+          "neuron_window_size": 200.0,
+          "neuron_threshold": 0.7
+        },
+        "string_params": {
+          "edge_operator": "sobel",
+          "encoding_strategy": "rate",
+          "activation_mode": "binary"
+        }
+      }
+    ]
+  }
+}
