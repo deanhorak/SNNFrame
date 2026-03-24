@@ -10,7 +10,7 @@
         "stage1_strategy": "majority",
         "fusion_strategy": "corpus_callosum",
         "fusion_feature_mode": "interaction",
-        "fusion_path": "Left Hemisphere/Occipital Lobe/Retina Region/Association Nucleus/Corpus Callosum/Fusion"
+        "fusion_path": "Interhemispheric Bridge/Association Lobe/Corpus Callosum Region/Corpus Callosum Nucleus/Fusion Column/Fusion"
       },
       "int_params": {
         "stage1_k": 7,
@@ -118,6 +118,53 @@
                               "name": "DogG9",
                               "populations": [
                                 { "name": "Branch", "count": 1 }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "name": "Association Nucleus",
+                      "columns": [
+                        {
+                          "name": "Corpus Callosum",
+                          "layers": [
+                            {
+                              "name": "Relay",
+                              "populations": [
+                                { "name": "Decision", "count": 1 }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Interhemispheric Bridge",
+          "lobes": [
+            {
+              "name": "Association Lobe",
+              "regions": [
+                {
+                  "name": "Corpus Callosum Region",
+                  "nuclei": [
+                    {
+                      "name": "Corpus Callosum Nucleus",
+                      "columns": [
+                        {
+                          "name": "Fusion Column",
+                          "layers": [
+                            {
+                              "name": "Fusion",
+                              "populations": [
+                                { "name": "Decision", "count": 1 }
                               ]
                             }
                           ]
