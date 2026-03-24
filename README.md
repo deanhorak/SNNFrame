@@ -136,6 +136,8 @@ Continuous-learning reference config:
 
 The bilateral configs use two transformed hemisphere views and corpus-callosum-style weighted fusion over the hemisphere classifications. The continuous config adds reward-driven online adaptation with delayed replay and context-gated plasticity.
 
+Retina declarative configs can now also declare a real `brain` hierarchy. In that mode, each Retina adapter binds to a declared layer path with `string_params.attach_path`, and the bilateral fusion layer is declared with `classification.string_params.fusion_path` instead of relying only on free-form hemisphere tags.
+
 Reference full-run benchmarks on EMNIST letters (`3200/class`, `5200` test, `seed 42`):
 
 Static inference benchmarks:
@@ -154,6 +156,52 @@ Benchmark summary:
 | Unilateral Retina | `configs/emnist_retina_experimental.sonata.json` | Static accuracy | `86.17%` |
 | Bilateral Retina | `configs/emnist_retina_bilateral_experimental.sonata.json` | Static accuracy | `87.29%` |
 | Bilateral Retina Continuous | `configs/emnist_retina_bilateral_continuous.sonata.json` | Initial / post-correction accuracy | `87.56% -> 88.44%` |
+
+Minimal hierarchy-driven Retina pattern:
+```json
+{
+  "snnframe": {
+    "classification": {
+      "string_params": {
+        "fusion_mode": "bilateral",
+        "fusion_path": "Left Hemisphere/Occipital Lobe/Retina Region/Association Nucleus/Corpus Callosum/Fusion"
+      }
+    },
+    "brain": {
+      "name": "Retina Bilateral Brain",
+      "hemispheres": [
+        {
+          "name": "Left Hemisphere",
+          "lobes": [{
+            "name": "Occipital Lobe",
+            "regions": [{
+              "name": "Retina Region",
+              "nuclei": [{
+                "name": "Stage1 Nucleus",
+                "columns": [{
+                  "name": "Multiscale Branches",
+                  "layers": [
+                    { "name": "SobelG9", "populations": [{ "name": "Branch", "count": 1 }] }
+                  ]
+                }]
+              }]
+            }]
+          }]
+        }
+      ]
+    },
+    "adapters": [
+      {
+        "name": "left_retina_g9",
+        "type": "retina",
+        "string_params": {
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9"
+        }
+      }
+    ]
+  }
+}
+```
 
 Reference commands:
 ```bash

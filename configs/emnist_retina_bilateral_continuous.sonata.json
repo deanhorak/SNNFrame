@@ -9,7 +9,8 @@
         "fusion_mode": "bilateral",
         "stage1_strategy": "majority",
         "fusion_strategy": "corpus_callosum",
-        "fusion_feature_mode": "interaction"
+        "fusion_feature_mode": "interaction",
+        "fusion_path": "Left Hemisphere/Occipital Lobe/Retina Region/Association Nucleus/Corpus Callosum/Fusion"
       },
       "int_params": {
         "stage1_k": 7,
@@ -33,6 +34,113 @@
         "online_context_disagreement_gain": 0.75
       }
     },
+    "brain": {
+      "name": "Retina Bilateral Brain",
+      "hemispheres": [
+        {
+          "name": "Left Hemisphere",
+          "lobes": [
+            {
+              "name": "Occipital Lobe",
+              "regions": [
+                {
+                  "name": "Retina Region",
+                  "nuclei": [
+                    {
+                      "name": "Stage1 Nucleus",
+                      "columns": [
+                        {
+                          "name": "Multiscale Branches",
+                          "layers": [
+                            {
+                              "name": "SobelG9",
+                              "populations": [
+                                { "name": "Branch", "count": 1 }
+                              ]
+                            },
+                            {
+                              "name": "SobelG10",
+                              "populations": [
+                                { "name": "Branch", "count": 1 }
+                              ]
+                            },
+                            {
+                              "name": "DogG9",
+                              "populations": [
+                                { "name": "Branch", "count": 1 }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "name": "Association Nucleus",
+                      "columns": [
+                        {
+                          "name": "Corpus Callosum",
+                          "layers": [
+                            {
+                              "name": "Fusion",
+                              "populations": [
+                                { "name": "Decision", "count": 1 }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Right Hemisphere",
+          "lobes": [
+            {
+              "name": "Occipital Lobe",
+              "regions": [
+                {
+                  "name": "Retina Region",
+                  "nuclei": [
+                    {
+                      "name": "Stage1 Nucleus",
+                      "columns": [
+                        {
+                          "name": "Multiscale Branches",
+                          "layers": [
+                            {
+                              "name": "SobelG9",
+                              "populations": [
+                                { "name": "Branch", "count": 1 }
+                              ]
+                            },
+                            {
+                              "name": "SobelG10",
+                              "populations": [
+                                { "name": "Branch", "count": 1 }
+                              ]
+                            },
+                            {
+                              "name": "DogG9",
+                              "populations": [
+                                { "name": "Branch", "count": 1 }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
     "adapters": [
       {
         "name": "left_retina_g9",
@@ -54,7 +162,8 @@
           "edge_operator": "sobel",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
-          "hemisphere": "left"
+          "hemisphere": "left",
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9"
         }
       },
       {
@@ -77,7 +186,8 @@
           "edge_operator": "sobel",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
-          "hemisphere": "left"
+          "hemisphere": "left",
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10"
         }
       },
       {
@@ -103,7 +213,8 @@
           "edge_operator": "dog",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
-          "hemisphere": "left"
+          "hemisphere": "left",
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/DogG9"
         }
       },
       {
@@ -126,7 +237,8 @@
           "edge_operator": "sobel",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
-          "hemisphere": "right"
+          "hemisphere": "right",
+          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9"
         }
       },
       {
@@ -149,7 +261,8 @@
           "edge_operator": "sobel",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
-          "hemisphere": "right"
+          "hemisphere": "right",
+          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10"
         }
       },
       {
@@ -175,7 +288,8 @@
           "edge_operator": "dog",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
-          "hemisphere": "right"
+          "hemisphere": "right",
+          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/DogG9"
         }
       }
     ]

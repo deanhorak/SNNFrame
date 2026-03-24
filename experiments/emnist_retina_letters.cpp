@@ -19,6 +19,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -30,6 +31,8 @@ using snnfw::adapters::RetinaAdapter;
 using snnfw::classification::ClassificationStrategy;
 using snnfw::declarative::AdapterConfigIR;
 using snnfw::declarative::ClassificationConfigIR;
+using snnfw::declarative::ColumnIR;
+using snnfw::declarative::ColumnTemplateIR;
 using snnfw::declarative::NativeJSONParser;
 using snnfw::declarative::NetworkIR;
 using snnfw::declarative::SONATAParser;
@@ -86,6 +89,9 @@ struct Config {
     double onlineReplayUncertaintyThreshold = 0.35;
     double onlineContextUncertaintyGain = 0.75;
     double onlineContextDisagreementGain = 0.50;
+    bool hierarchicalRetinaLayout = false;
+    std::vector<std::string> declaredHemisphereOrder;
+    std::string fusionPath;
 };
 
 struct HemisphereRuntime {
@@ -147,6 +153,16 @@ struct ReplayItem {
     int remainingReplays = 0;
     double priority = 0.0;
     size_t sequence = 0;
+};
+
+struct RetinaLayerBinding {
+    std::string hemisphere;
+    std::string lobe;
+    std::string region;
+    std::string nucleus;
+    std::string column;
+    std::string layer;
+    std::string path;
 };
 
 std::vector<double> buildFusionPattern(std::vector<HemisphereRuntime>& hemispheres,
@@ -292,6 +308,113 @@ std::string toLower(std::string value) {
     return value;
 }
 
+std::string trim(std::string value) {
+    const auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+    value.erase(value.begin(),
+                std::find_if(value.begin(), value.end(),
+                             [&](unsigned char c) { return !isSpace(c); }));
+    value.erase(std::find_if(value.rbegin(), value.rend(),
+                             [&](unsigned char c) { return !isSpace(c); }).base(),
+                value.end());
+    return value;
+}
+
+std::string normalizeHierarchyPath(const std::string& path) {
+    std::stringstream ss(path);
+    std::string token;
+    std::vector<std::string> parts;
+    while (std::getline(ss, token, '/')) {
+        token = trim(token);
+        if (!token.empty()) {
+            parts.push_back(token);
+        }
+    }
+
+    std::ostringstream oss;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) {
+            oss << "/";
+        }
+        oss << parts[i];
+    }
+    return oss.str();
+}
+
+std::vector<ColumnIR> expandColumnTemplateForPaths(const ColumnTemplateIR& tmpl) {
+    std::vector<ColumnIR> result;
+    for (double orientation : tmpl.orientations) {
+        for (double frequency : tmpl.frequencies) {
+            ColumnIR column;
+            std::string name = tmpl.namingPattern;
+
+            auto pos = name.find("{orientation}");
+            if (pos != std::string::npos) {
+                std::ostringstream oss;
+                if (orientation == static_cast<int>(orientation)) {
+                    oss << static_cast<int>(orientation);
+                } else {
+                    oss << orientation;
+                }
+                name.replace(pos, 13, oss.str());
+            }
+
+            pos = name.find("{frequency}");
+            if (pos != std::string::npos) {
+                std::ostringstream oss;
+                if (frequency == static_cast<int>(frequency)) {
+                    oss << static_cast<int>(frequency);
+                } else {
+                    oss << frequency;
+                }
+                name.replace(pos, 11, oss.str());
+            }
+
+            column.name = name;
+            column.properties["orientation"] = orientation;
+            column.properties["spatial_frequency"] = frequency;
+            column.layers = tmpl.layers;
+            result.push_back(std::move(column));
+        }
+    }
+    return result;
+}
+
+std::unordered_map<std::string, RetinaLayerBinding> buildRetinaLayerIndex(const NetworkIR& ir) {
+    std::unordered_map<std::string, RetinaLayerBinding> index;
+
+    for (const auto& hemisphere : ir.brain.hemispheres) {
+        for (const auto& lobe : hemisphere.lobes) {
+            for (const auto& region : lobe.regions) {
+                for (const auto& nucleus : region.nuclei) {
+                    std::vector<ColumnIR> columns = nucleus.columns;
+                    if (nucleus.columnTemplate.has_value()) {
+                        auto expanded = expandColumnTemplateForPaths(nucleus.columnTemplate.value());
+                        columns.insert(columns.end(), expanded.begin(), expanded.end());
+                    }
+
+                    for (const auto& column : columns) {
+                        for (const auto& layer : column.layers) {
+                            RetinaLayerBinding binding;
+                            binding.hemisphere = hemisphere.name;
+                            binding.lobe = lobe.name;
+                            binding.region = region.name;
+                            binding.nucleus = nucleus.name;
+                            binding.column = column.name;
+                            binding.layer = layer.name;
+                            binding.path = normalizeHierarchyPath(
+                                hemisphere.name + "/" + lobe.name + "/" + region.name + "/" +
+                                nucleus.name + "/" + column.name + "/" + layer.name);
+                            index[binding.path] = binding;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return index;
+}
+
 BaseAdapter::Config makeDefaultRetinaConfig(const Config& config, int gridSize, size_t index) {
     BaseAdapter::Config retinaConfig;
     retinaConfig.name = "emnist_retina_" + std::to_string(index);
@@ -360,6 +483,10 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     const auto fusionFeatureModeIt = irConfig.stringParams.find("fusion_feature_mode");
     if (fusionFeatureModeIt != irConfig.stringParams.end()) {
         config.fusionFeatureMode = fusionFeatureModeIt->second;
+    }
+    const auto fusionPathIt = irConfig.stringParams.find("fusion_path");
+    if (fusionPathIt != irConfig.stringParams.end()) {
+        config.fusionPath = normalizeHierarchyPath(fusionPathIt->second);
     }
     const auto stage1KIt = irConfig.intParams.find("stage1_k");
     if (stage1KIt != irConfig.intParams.end()) {
@@ -512,13 +639,60 @@ void loadDeclarativeConfig(Config& config, const std::string& configPath) {
         applyClassificationConfig(ir.classification, config);
     }
 
+    const auto layerIndex = buildRetinaLayerIndex(ir);
+    const bool wantsHierarchicalLayout =
+        !config.fusionPath.empty() ||
+        std::any_of(ir.adapters.begin(), ir.adapters.end(), [](const AdapterConfigIR& adapter) {
+            auto it = adapter.stringParams.find("attach_path");
+            return it != adapter.stringParams.end() && !trim(it->second).empty();
+        });
+
+    if (wantsHierarchicalLayout) {
+        if (layerIndex.empty()) {
+            throw std::runtime_error(
+                "Hierarchical Retina declarative layout requested, but the config does not "
+                "define any brain layer paths");
+        }
+        config.hierarchicalRetinaLayout = true;
+        config.declaredHemisphereOrder.clear();
+        for (const auto& hemisphere : ir.brain.hemispheres) {
+            config.declaredHemisphereOrder.push_back(hemisphere.name);
+        }
+        if (!config.fusionPath.empty() &&
+            config.fusionPath != "OutputLayer" &&
+            layerIndex.find(config.fusionPath) == layerIndex.end()) {
+            throw std::runtime_error(
+                "fusion_path '" + config.fusionPath + "' does not resolve to a declared brain layer");
+        }
+    }
+
     std::vector<BaseAdapter::Config> retinaConfigs;
     retinaConfigs.reserve(ir.adapters.size());
     for (const auto& adapter : ir.adapters) {
         if (adapter.type != "retina") {
             continue;
         }
-        retinaConfigs.push_back(makeRetinaAdapterConfig(adapter, config, retinaConfigs.size()));
+        auto retinaConfig = makeRetinaAdapterConfig(adapter, config, retinaConfigs.size());
+        if (wantsHierarchicalLayout) {
+            const std::string attachPath =
+                normalizeHierarchyPath(retinaConfig.getStringParam("attach_path", ""));
+            if (attachPath.empty()) {
+                throw std::runtime_error(
+                    "Retina adapter '" + retinaConfig.name +
+                    "' is missing string_params.attach_path while hierarchical Retina layout "
+                    "is enabled");
+            }
+            const auto bindingIt = layerIndex.find(attachPath);
+            if (bindingIt == layerIndex.end()) {
+                throw std::runtime_error(
+                    "Retina adapter '" + retinaConfig.name +
+                    "' attach_path '" + attachPath + "' does not resolve to a declared brain layer");
+            }
+            retinaConfig.stringParams["attach_path"] = attachPath;
+            retinaConfig.stringParams["hemisphere"] = bindingIt->second.hemisphere;
+            retinaConfig.stringParams["layer_name"] = bindingIt->second.layer;
+        }
+        retinaConfigs.push_back(std::move(retinaConfig));
     }
 
     if (!retinaConfigs.empty()) {
@@ -561,8 +735,14 @@ std::vector<double> extractPattern(std::vector<std::unique_ptr<RetinaAdapter>>& 
                                    bool learnPatterns);
 
 std::vector<std::pair<std::string, std::vector<BaseAdapter::Config>>>
-groupRetinaConfigsByHemisphere(const std::vector<BaseAdapter::Config>& retinaConfigs) {
+groupRetinaConfigsByHemisphere(const std::vector<BaseAdapter::Config>& retinaConfigs,
+                              const Config& config) {
     std::vector<std::pair<std::string, std::vector<BaseAdapter::Config>>> groups;
+    if (config.hierarchicalRetinaLayout) {
+        for (const auto& hemisphereName : config.declaredHemisphereOrder) {
+            groups.push_back({hemisphereName, {}});
+        }
+    }
     for (const auto& retinaConfig : retinaConfigs) {
         const std::string hemisphere =
             retinaConfig.getStringParam("hemisphere", "default");
@@ -573,6 +753,18 @@ groupRetinaConfigsByHemisphere(const std::vector<BaseAdapter::Config>& retinaCon
         } else {
             it->second.push_back(retinaConfig);
         }
+    }
+    if (config.hierarchicalRetinaLayout) {
+        for (auto& group : groups) {
+            std::sort(group.second.begin(), group.second.end(),
+                      [](const BaseAdapter::Config& lhs, const BaseAdapter::Config& rhs) {
+                          return lhs.getStringParam("attach_path", lhs.name) <
+                                 rhs.getStringParam("attach_path", rhs.name);
+                      });
+        }
+        groups.erase(std::remove_if(groups.begin(), groups.end(),
+                                    [](const auto& group) { return group.second.empty(); }),
+                     groups.end());
     }
     return groups;
 }
@@ -2188,6 +2380,8 @@ int main(int argc, char* argv[]) {
                       << retinaConfig.getStringParam("encoding_strategy", config.encodingStrategy)
                       << ", activation_mode="
                       << retinaConfig.getStringParam("activation_mode", config.activationMode)
+                      << ", attach_path="
+                      << retinaConfig.getStringParam("attach_path", "")
                       << std::endl;
         }
         std::cout << "  Classifier=" << config.classifier
@@ -2215,6 +2409,7 @@ int main(int argc, char* argv[]) {
                       << ", replay_uncertainty=" << config.onlineReplayUncertaintyThreshold
                       << ", context_uncertainty_gain=" << config.onlineContextUncertaintyGain
                       << ", context_disagreement_gain=" << config.onlineContextDisagreementGain
+                      << ", fusion_path=" << (config.fusionPath.empty() ? "<none>" : config.fusionPath)
                       << std::endl;
         }
         if (config.classifier == "hierarchical") {
@@ -2331,16 +2526,19 @@ int main(int argc, char* argv[]) {
                 printFocusedFamilyReport(focusedEval.confusion, config.focusGroups);
             }
         } else {
-            const auto groupedConfigs = groupRetinaConfigsByHemisphere(retinaConfigs);
+            const auto groupedConfigs = groupRetinaConfigsByHemisphere(retinaConfigs, config);
             if (groupedConfigs.size() < 2) {
                 throw std::runtime_error(
-                    "bilateral fusion requires at least two adapter groups with string_params.hemisphere");
+                    "bilateral fusion requires at least two hemisphere groups");
             }
 
             std::vector<HemisphereRuntime> hemispheres;
             hemispheres.reserve(groupedConfigs.size());
             std::cout << "  Bilateral fusion enabled: " << groupedConfigs.size()
                       << " hemisphere groups" << std::endl;
+            if (config.hierarchicalRetinaLayout) {
+                std::cout << "  Hierarchical Retina layout: enabled" << std::endl;
+            }
             for (const auto& [name, configsForHemisphere] : groupedConfigs) {
                 HemisphereRuntime hemisphere;
                 hemisphere.name = name;
@@ -2348,6 +2546,13 @@ int main(int argc, char* argv[]) {
                 hemispheres.push_back(std::move(hemisphere));
                 std::cout << "    * " << name << ": " << configsForHemisphere.size()
                           << " retina branches" << std::endl;
+                if (config.hierarchicalRetinaLayout) {
+                    for (const auto& retinaConfig : configsForHemisphere) {
+                        std::cout << "      - " << retinaConfig.name
+                                  << " -> " << retinaConfig.getStringParam("attach_path", "<unbound>")
+                                  << std::endl;
+                    }
+                }
             }
 
             const int stage1K = config.stage1K > 0 ? config.stage1K : config.knnK;

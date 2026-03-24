@@ -343,7 +343,77 @@ SNNFrame treats SONATA edges as `explicit` connectivity, approximated at the pro
 
 ### SNNFrame Extensions
 
-The `"snnframe"` section in `circuit_config.json` provides SNNFrame-specific configuration that is not part of the standard SONATA spec. It supports `neuron_params`, `input_layer`, `output_layer`, and `gabor` subsections.
+The `"snnframe"` section in `circuit_config.json` provides SNNFrame-specific configuration that is not part of the standard SONATA spec. It supports:
+
+- `neuron_params`
+- `input_layer`
+- `output_layer`
+- `brain`
+- `projections`
+- `gabor`
+- `saccades`
+- `simulation`
+- `adapters`
+- `classification`
+
+#### Hierarchy-driven Retina configs
+
+The Retina experiment can now consume a declarative `brain` hierarchy directly. In this mode:
+
+- each Retina adapter binds to a declared hierarchy layer through `string_params.attach_path`
+- bilateral fusion can bind to a declared hierarchy layer through `classification.string_params.fusion_path`
+- hemisphere grouping is resolved from the declared `brain.hemispheres` structure rather than only from free-form adapter tags
+
+Example:
+
+```json
+{
+  "snnframe": {
+    "classification": {
+      "type": "weighted_distance",
+      "k": 7,
+      "string_params": {
+        "fusion_mode": "bilateral",
+        "fusion_path": "Left Hemisphere/Occipital Lobe/Retina Region/Association Nucleus/Corpus Callosum/Fusion"
+      }
+    },
+    "brain": {
+      "name": "Retina Bilateral Brain",
+      "hemispheres": [
+        {
+          "name": "Left Hemisphere",
+          "lobes": [{
+            "name": "Occipital Lobe",
+            "regions": [{
+              "name": "Retina Region",
+              "nuclei": [{
+                "name": "Stage1 Nucleus",
+                "columns": [{
+                  "name": "Multiscale Branches",
+                  "layers": [
+                    { "name": "SobelG9", "populations": [{ "name": "Branch", "count": 1 }] }
+                  ]
+                }]
+              }]
+            }]
+          }]
+        }
+      ]
+    },
+    "adapters": [
+      {
+        "name": "left_retina_g9",
+        "type": "retina",
+        "string_params": {
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9"
+        }
+      }
+    ]
+  }
+}
+```
+
+The Retina experiment uses the hierarchy as declarative runtime structure and binding metadata. It does not instantiate full cortical neurons for those layers unless you are using the separate `NetworkConstructor` cortical path.
 
 ### Complete Example
 
