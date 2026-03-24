@@ -162,6 +162,20 @@ Reference commands:
 ./scripts/run_emnist_retina_bilateral_continuous.sh
 ```
 
+Continuous benchmark command:
+```bash
+./scripts/run_emnist_retina_bilateral_continuous.sh
+```
+
+Expected continuous benchmark output summary:
+```text
+Accuracy: 88.44%
+Correct: 4599/5200
+Initial accuracy: 87.56%
+Post-correction accuracy: 88.44%
+Correction events: 647, corrected: 46 (7.11%), replays: 1871
+```
+
 Expected logs:
 - `build/emnist_retina_unilateral_experimental.log`
 - `build/emnist_retina_bilateral_experimental.log`
