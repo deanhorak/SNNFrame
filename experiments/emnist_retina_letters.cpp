@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <numeric>
 #include <sstream>
@@ -76,6 +77,15 @@ struct Config {
     double corpusMarginGain = 0.50;
     double corpusCentroidGain = 0.0;
     double corpusNeighborGain = 0.0;
+    int onlineCorrectionRepeats = 0;
+    int onlineExemplarBudgetPerClass = 16;
+    double onlineCentroidLr = 0.25;
+    double onlinePositiveRewardGain = 0.35;
+    double onlineNegativeRewardGain = 1.0;
+    int onlineReplayQueueCapacity = 256;
+    double onlineReplayUncertaintyThreshold = 0.35;
+    double onlineContextUncertaintyGain = 0.75;
+    double onlineContextDisagreementGain = 0.50;
 };
 
 struct HemisphereRuntime {
@@ -88,7 +98,60 @@ struct HemisphereRuntime {
     std::array<double, 26> classWeights{};
     std::array<double, 26> predictionWeights{};
     std::array<std::vector<double>, 26> classCentroids{};
+    std::array<std::vector<size_t>, 26> onlinePatternIndices{};
 };
+
+struct FusionRuntime {
+    std::vector<ClassificationStrategy::LabeledPattern> trainingPatterns;
+    std::array<std::vector<size_t>, 26> onlinePatternIndices{};
+};
+
+struct LabelTrace {
+    int label = -1;
+    double score = 0.0;
+};
+
+struct HemisphereDecisionTrace {
+    std::vector<double> pattern;
+    std::vector<double> confidence;
+    std::vector<LabelTrace> topHypotheses;
+    int predicted = -1;
+    double margin = 0.0;
+};
+
+struct BilateralDecisionTrace {
+    std::vector<HemisphereDecisionTrace> hemisphereTraces;
+    std::vector<double> combinedConfidence;
+    std::vector<double> fusionPattern;
+    std::vector<LabelTrace> topHypotheses;
+    int predicted = -1;
+};
+
+struct DecisionContext {
+    double uncertainty = 0.0;
+    double disagreement = 0.0;
+    double plasticity = 1.0;
+    double replayPriority = 0.0;
+};
+
+struct OnlineSampleRecord {
+    size_t imageIndex = 0;
+    int truth = -1;
+    int initialPredicted = -1;
+    int finalPredicted = -1;
+    bool correctionSucceeded = false;
+};
+
+struct ReplayItem {
+    size_t recordIndex = 0;
+    int remainingReplays = 0;
+    double priority = 0.0;
+    size_t sequence = 0;
+};
+
+std::vector<double> buildFusionPattern(std::vector<HemisphereRuntime>& hemispheres,
+                                       const EMNISTLoader::Image& image,
+                                       const Config& config);
 
 double cosineSimilarity(const std::vector<double>& a, const std::vector<double>& b) {
     if (a.size() != b.size() || a.empty()) {
@@ -334,6 +397,45 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     if (corpusNeighborGainIt != irConfig.doubleParams.end()) {
         config.corpusNeighborGain = corpusNeighborGainIt->second;
     }
+    const auto onlineRepeatsIt = irConfig.intParams.find("online_correction_repeats");
+    if (onlineRepeatsIt != irConfig.intParams.end()) {
+        config.onlineCorrectionRepeats = onlineRepeatsIt->second;
+    }
+    const auto onlineBudgetIt = irConfig.intParams.find("online_exemplar_budget_per_class");
+    if (onlineBudgetIt != irConfig.intParams.end()) {
+        config.onlineExemplarBudgetPerClass = onlineBudgetIt->second;
+    }
+    const auto onlineCentroidLrIt = irConfig.doubleParams.find("online_centroid_lr");
+    if (onlineCentroidLrIt != irConfig.doubleParams.end()) {
+        config.onlineCentroidLr = onlineCentroidLrIt->second;
+    }
+    const auto onlinePositiveGainIt = irConfig.doubleParams.find("online_positive_reward_gain");
+    if (onlinePositiveGainIt != irConfig.doubleParams.end()) {
+        config.onlinePositiveRewardGain = onlinePositiveGainIt->second;
+    }
+    const auto onlineNegativeGainIt = irConfig.doubleParams.find("online_negative_reward_gain");
+    if (onlineNegativeGainIt != irConfig.doubleParams.end()) {
+        config.onlineNegativeRewardGain = onlineNegativeGainIt->second;
+    }
+    const auto onlineReplayCapacityIt = irConfig.intParams.find("online_replay_queue_capacity");
+    if (onlineReplayCapacityIt != irConfig.intParams.end()) {
+        config.onlineReplayQueueCapacity = onlineReplayCapacityIt->second;
+    }
+    const auto onlineReplayThresholdIt =
+        irConfig.doubleParams.find("online_replay_uncertainty_threshold");
+    if (onlineReplayThresholdIt != irConfig.doubleParams.end()) {
+        config.onlineReplayUncertaintyThreshold = onlineReplayThresholdIt->second;
+    }
+    const auto onlineContextUncertaintyGainIt =
+        irConfig.doubleParams.find("online_context_uncertainty_gain");
+    if (onlineContextUncertaintyGainIt != irConfig.doubleParams.end()) {
+        config.onlineContextUncertaintyGain = onlineContextUncertaintyGainIt->second;
+    }
+    const auto onlineContextDisagreementGainIt =
+        irConfig.doubleParams.find("online_context_disagreement_gain");
+    if (onlineContextDisagreementGainIt != irConfig.doubleParams.end()) {
+        config.onlineContextDisagreementGain = onlineContextDisagreementGainIt->second;
+    }
 }
 
 BaseAdapter::Config makeRetinaAdapterConfig(const AdapterConfigIR& adapter,
@@ -516,9 +618,14 @@ struct TrainingSplit {
 };
 
 struct EvaluationResult {
+    std::array<std::array<int, 26>, 26> initialConfusion{};
     std::array<std::array<int, 26>, 26> confusion{};
     int tested = 0;
     int correct = 0;
+    int initialCorrect = 0;
+    int correctionEvents = 0;
+    int correctionSuccesses = 0;
+    int correctionReplays = 0;
     double seconds = 0.0;
 };
 
@@ -584,21 +691,223 @@ std::vector<ClassificationStrategy::LabeledPattern> buildSupportPatterns(
     return supportPatterns;
 }
 
-std::vector<double> buildFusionPattern(std::vector<HemisphereRuntime>& hemispheres,
-                                       const EMNISTLoader::Image& image,
-                                       const Config& config) {
-    std::vector<std::vector<double>> confidences;
-    confidences.reserve(hemispheres.size());
+bool useOnlineCorrection(const Config& config) {
+    return config.onlineCorrectionRepeats > 0;
+}
 
-    for (auto& hemisphere : hemispheres) {
-        const auto pattern = extractPattern(hemisphere.retinas, image, config.useFeatures, false);
-        auto confidence = hemisphere.classifier->classifyWithConfidence(
-            pattern, hemisphere.trainingPatterns, cosineSimilarity);
+int onlineTraceTopK(const Config& config) {
+    return std::max(1, std::min(3, config.knnK > 0 ? config.knnK : 3));
+}
+
+DecisionContext buildDecisionContext(const BilateralDecisionTrace& decision, const Config& config) {
+    DecisionContext context;
+    if (!decision.topHypotheses.empty()) {
+        const double best = decision.topHypotheses.front().score;
+        const double second =
+            decision.topHypotheses.size() > 1 ? decision.topHypotheses[1].score : 0.0;
+        const double normalizedMargin =
+            best > 1e-6 ? std::clamp((best - second) / best, 0.0, 1.0) : 0.0;
+        context.uncertainty = 1.0 - normalizedMargin;
+    }
+
+    int validVotes = 0;
+    int disagreements = 0;
+    for (const auto& hemisphereTrace : decision.hemisphereTraces) {
+        if (hemisphereTrace.predicted < 0) {
+            continue;
+        }
+        ++validVotes;
+        if (decision.predicted >= 0 && hemisphereTrace.predicted != decision.predicted) {
+            ++disagreements;
+        }
+    }
+    context.disagreement = validVotes > 0
+        ? static_cast<double>(disagreements) / static_cast<double>(validVotes)
+        : 0.0;
+
+    context.plasticity = 1.0 +
+        config.onlineContextUncertaintyGain * context.uncertainty +
+        config.onlineContextDisagreementGain * context.disagreement;
+    context.plasticity = std::clamp(context.plasticity, 0.5, 3.0);
+    context.replayPriority = context.plasticity + context.uncertainty + 0.5 * context.disagreement;
+    return context;
+}
+
+void enqueueReplayItem(std::vector<ReplayItem>& replayQueue,
+                       ReplayItem item,
+                       const Config& config) {
+    if (item.remainingReplays <= 0 || config.onlineReplayQueueCapacity <= 0) {
+        return;
+    }
+
+    replayQueue.push_back(item);
+    if (static_cast<int>(replayQueue.size()) <= config.onlineReplayQueueCapacity) {
+        return;
+    }
+
+    const auto worstIt = std::min_element(
+        replayQueue.begin(), replayQueue.end(),
+        [](const ReplayItem& lhs, const ReplayItem& rhs) {
+            if (lhs.priority != rhs.priority) {
+                return lhs.priority < rhs.priority;
+            }
+            return lhs.sequence > rhs.sequence;
+        });
+    if (worstIt != replayQueue.end()) {
+        replayQueue.erase(worstIt);
+    }
+}
+
+bool popReplayItem(std::vector<ReplayItem>& replayQueue, ReplayItem& item) {
+    if (replayQueue.empty()) {
+        return false;
+    }
+
+    const auto bestIt = std::max_element(
+        replayQueue.begin(), replayQueue.end(),
+        [](const ReplayItem& lhs, const ReplayItem& rhs) {
+            if (lhs.priority != rhs.priority) {
+                return lhs.priority < rhs.priority;
+            }
+            return lhs.sequence > rhs.sequence;
+        });
+    item = *bestIt;
+    replayQueue.erase(bestIt);
+    return true;
+}
+
+void finalizeEvaluationFromRecords(EvaluationResult& result,
+                                   const std::vector<OnlineSampleRecord>& records,
+                                   double seconds) {
+    result.initialConfusion = {};
+    result.confusion = {};
+    result.tested = 0;
+    result.correct = 0;
+    result.initialCorrect = 0;
+
+    for (const auto& record : records) {
+        if (record.truth < 0 || record.truth >= 26 ||
+            record.initialPredicted < 0 || record.initialPredicted >= 26 ||
+            record.finalPredicted < 0 || record.finalPredicted >= 26) {
+            continue;
+        }
+        result.initialConfusion[static_cast<size_t>(record.truth)]
+                               [static_cast<size_t>(record.initialPredicted)]++;
+        result.confusion[static_cast<size_t>(record.truth)]
+                        [static_cast<size_t>(record.finalPredicted)]++;
+        result.initialCorrect += (record.initialPredicted == record.truth) ? 1 : 0;
+        result.correct += (record.finalPredicted == record.truth) ? 1 : 0;
+        result.tested++;
+    }
+    result.seconds = seconds;
+}
+
+void updateCentroid(std::vector<double>& centroid,
+                    const std::vector<double>& pattern,
+                    double learningRate) {
+    if (pattern.empty()) {
+        return;
+    }
+    if (centroid.empty()) {
+        centroid = pattern;
+        normalizeL2(centroid);
+        return;
+    }
+
+    const size_t dim = std::min(centroid.size(), pattern.size());
+    const double keep = std::clamp(1.0 - learningRate, 0.0, 1.0);
+    const double learn = std::clamp(learningRate, 0.0, 1.0);
+    for (size_t i = 0; i < dim; ++i) {
+        centroid[i] = keep * centroid[i] + learn * pattern[i];
+    }
+    normalizeL2(centroid);
+}
+
+void insertOrReplaceOnlinePattern(
+    std::vector<ClassificationStrategy::LabeledPattern>& patterns,
+    std::vector<size_t>* sourceIndices,
+    std::array<std::vector<size_t>, 26>& onlineIndices,
+    const std::vector<double>& pattern,
+    int label,
+    int budgetPerClass) {
+    if (label < 0 || label >= 26 || pattern.empty() || budgetPerClass <= 0) {
+        return;
+    }
+
+    auto& labelOnlineIndices = onlineIndices[static_cast<size_t>(label)];
+    if (static_cast<int>(labelOnlineIndices.size()) < budgetPerClass) {
+        patterns.emplace_back(pattern, label);
+        labelOnlineIndices.push_back(patterns.size() - 1);
+        if (sourceIndices != nullptr) {
+            sourceIndices->push_back(std::numeric_limits<size_t>::max());
+        }
+        return;
+    }
+
+    double worstSimilarity = std::numeric_limits<double>::infinity();
+    size_t replaceIndex = labelOnlineIndices.front();
+    for (size_t candidateIndex : labelOnlineIndices) {
+        if (candidateIndex >= patterns.size()) {
+            continue;
+        }
+        const double similarity = cosineSimilarity(pattern, patterns[candidateIndex].pattern);
+        if (similarity < worstSimilarity) {
+            worstSimilarity = similarity;
+            replaceIndex = candidateIndex;
+        }
+    }
+    if (replaceIndex < patterns.size()) {
+        patterns[replaceIndex].pattern = pattern;
+        patterns[replaceIndex].label = label;
+    }
+}
+
+std::vector<LabelTrace> collectTopHypotheses(const std::vector<double>& confidence, int k) {
+    std::vector<LabelTrace> traces;
+    traces.reserve(confidence.size());
+    for (size_t i = 0; i < confidence.size(); ++i) {
+        traces.push_back({static_cast<int>(i), confidence[i]});
+    }
+    std::partial_sort(
+        traces.begin(),
+        traces.begin() + std::min<int>(k, static_cast<int>(traces.size())),
+        traces.end(),
+        [](const LabelTrace& lhs, const LabelTrace& rhs) { return lhs.score > rhs.score; });
+    if (static_cast<int>(traces.size()) > k) {
+        traces.resize(static_cast<size_t>(k));
+    }
+    return traces;
+}
+
+HemisphereDecisionTrace inferHemisphereDecision(HemisphereRuntime& hemisphere,
+                                                const EMNISTLoader::Image& image,
+                                                const Config& config) {
+    HemisphereDecisionTrace trace;
+    trace.pattern = extractPattern(hemisphere.retinas, image, config.useFeatures, false);
+    trace.confidence = hemisphere.classifier->classifyWithConfidence(
+        trace.pattern, hemisphere.trainingPatterns, cosineSimilarity);
+    normalizeSum(trace.confidence);
+    trace.topHypotheses = collectTopHypotheses(trace.confidence, onlineTraceTopK(config));
+    if (!trace.topHypotheses.empty()) {
+        trace.predicted = trace.topHypotheses.front().label;
+        const double best = trace.topHypotheses.front().score;
+        const double second = trace.topHypotheses.size() > 1 ? trace.topHypotheses[1].score : 0.0;
+        trace.margin = std::max(0.0, best - second);
+    }
+    return trace;
+}
+
+std::vector<double> buildFusionPatternFromTraces(const std::vector<HemisphereDecisionTrace>& traces,
+                                                 const Config& config) {
+    std::vector<double> fusionPattern;
+    std::vector<std::vector<double>> confidences;
+    confidences.reserve(traces.size());
+    for (const auto& trace : traces) {
+        std::vector<double> confidence = trace.confidence;
         normalizeL2(confidence);
         confidences.push_back(std::move(confidence));
     }
 
-    std::vector<double> fusionPattern;
     for (const auto& confidence : confidences) {
         fusionPattern.insert(fusionPattern.end(), confidence.begin(), confidence.end());
     }
@@ -622,6 +931,17 @@ std::vector<double> buildFusionPattern(std::vector<HemisphereRuntime>& hemispher
 
     normalizeL2(fusionPattern);
     return fusionPattern;
+}
+
+std::vector<double> buildFusionPattern(std::vector<HemisphereRuntime>& hemispheres,
+                                       const EMNISTLoader::Image& image,
+                                       const Config& config) {
+    std::vector<HemisphereDecisionTrace> traces;
+    traces.reserve(hemispheres.size());
+    for (auto& hemisphere : hemispheres) {
+        traces.push_back(inferHemisphereDecision(hemisphere, image, config));
+    }
+    return buildFusionPatternFromTraces(traces, config);
 }
 
 bool useCorpusCallosumFusion(const Config& config) {
@@ -804,62 +1124,191 @@ void calibrateCorpusCallosumWeights(std::vector<HemisphereRuntime>& hemispheres,
     }
 }
 
-std::vector<double> buildCorpusCallosumConfidence(std::vector<HemisphereRuntime>& hemispheres,
-                                                  const EMNISTLoader::Image& image,
-                                                  const Config& config) {
-    std::vector<double> combined(26, 0.0);
+const LabelTrace* findLabelTrace(const std::vector<LabelTrace>& traces, int label) {
+    for (const auto& trace : traces) {
+        if (trace.label == label) {
+            return &trace;
+        }
+    }
+    return nullptr;
+}
+
+void scaleClamped(double& value, double factor, double minValue, double maxValue) {
+    value = std::clamp(value * factor, minValue, maxValue);
+}
+
+BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime>& hemispheres,
+                                                   const EMNISTLoader::Image& image,
+                                                   const Config& config) {
+    BilateralDecisionTrace trace;
+    trace.hemisphereTraces.reserve(hemispheres.size());
+    trace.combinedConfidence.assign(26, 0.0);
+
     for (auto& hemisphere : hemispheres) {
-        const auto pattern =
-            extractPattern(hemisphere.retinas, image, config.useFeatures, false);
-        auto confidence = hemisphere.classifier->classifyWithConfidence(
-            pattern, hemisphere.trainingPatterns, cosineSimilarity);
-        normalizeSum(confidence);
+        trace.hemisphereTraces.push_back(inferHemisphereDecision(hemisphere, image, config));
+    }
+
+    for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+        auto& hemisphere = hemispheres[hemisphereIndex];
+        const auto& hemisphereTrace = trace.hemisphereTraces[hemisphereIndex];
         std::vector<double> centroidEvidence;
         if (config.corpusCentroidGain > 0.0) {
-            centroidEvidence = computeCentroidEvidence(hemisphere, pattern);
+            centroidEvidence = computeCentroidEvidence(hemisphere, hemisphereTrace.pattern);
         }
         std::vector<double> neighborSignature;
         if (config.corpusNeighborGain > 0.0) {
             const int neighborK = config.stage1K > 0 ? config.stage1K : config.knnK;
-            neighborSignature = computeNeighborSignature(hemisphere, pattern, neighborK);
+            neighborSignature = computeNeighborSignature(hemisphere, hemisphereTrace.pattern, neighborK);
         }
-        const auto bestIt = std::max_element(confidence.begin(), confidence.end());
-        const size_t bestLabel = static_cast<size_t>(std::distance(confidence.begin(), bestIt));
-        const double bestConfidence = (bestIt != confidence.end()) ? *bestIt : 0.0;
-        double secondBestConfidence = 0.0;
-        for (size_t label = 0; label < confidence.size(); ++label) {
-            if (label != bestLabel) {
-                secondBestConfidence = std::max(secondBestConfidence, confidence[label]);
-            }
-        }
-        const double margin = std::max(0.0, bestConfidence - secondBestConfidence);
-        for (size_t label = 0; label < combined.size() && label < confidence.size(); ++label) {
-            combined[label] += hemisphere.overallWeight *
-                               hemisphere.classWeights[label] *
-                               confidence[label];
+
+        for (size_t label = 0;
+             label < trace.combinedConfidence.size() && label < hemisphereTrace.confidence.size();
+             ++label) {
+            trace.combinedConfidence[label] += hemisphere.overallWeight *
+                                               hemisphere.classWeights[label] *
+                                               hemisphereTrace.confidence[label];
             if (!centroidEvidence.empty()) {
-                combined[label] += config.corpusCentroidGain *
-                                   hemisphere.overallWeight *
-                                   hemisphere.classWeights[label] *
-                                   centroidEvidence[label];
+                trace.combinedConfidence[label] += config.corpusCentroidGain *
+                                                   hemisphere.overallWeight *
+                                                   hemisphere.classWeights[label] *
+                                                   centroidEvidence[label];
             }
             if (!neighborSignature.empty()) {
-                combined[label] += config.corpusNeighborGain *
-                                   hemisphere.overallWeight *
-                                   hemisphere.classWeights[label] *
-                                   neighborSignature[label];
+                trace.combinedConfidence[label] += config.corpusNeighborGain *
+                                                   hemisphere.overallWeight *
+                                                   hemisphere.classWeights[label] *
+                                                   neighborSignature[label];
             }
         }
-        if (bestLabel < combined.size()) {
-            combined[bestLabel] += config.corpusVoteGain *
-                                   hemisphere.overallWeight *
-                                   hemisphere.predictionWeights[bestLabel] *
-                                   bestConfidence *
-                                   (1.0 + config.corpusMarginGain * margin);
+
+        if (hemisphereTrace.predicted >= 0 &&
+            static_cast<size_t>(hemisphereTrace.predicted) < trace.combinedConfidence.size()) {
+            trace.combinedConfidence[static_cast<size_t>(hemisphereTrace.predicted)] +=
+                config.corpusVoteGain *
+                hemisphere.overallWeight *
+                hemisphere.predictionWeights[static_cast<size_t>(hemisphereTrace.predicted)] *
+                (hemisphereTrace.topHypotheses.empty() ? 0.0 : hemisphereTrace.topHypotheses.front().score) *
+                (1.0 + config.corpusMarginGain * hemisphereTrace.margin);
         }
     }
-    normalizeSum(combined);
-    return combined;
+
+    normalizeSum(trace.combinedConfidence);
+    trace.topHypotheses = collectTopHypotheses(trace.combinedConfidence, onlineTraceTopK(config));
+    if (!trace.topHypotheses.empty()) {
+        trace.predicted = trace.topHypotheses.front().label;
+    }
+    return trace;
+}
+
+std::vector<double> buildCorpusCallosumConfidence(std::vector<HemisphereRuntime>& hemispheres,
+                                                  const EMNISTLoader::Image& image,
+                                                  const Config& config) {
+    return inferCorpusCallosumDecision(hemispheres, image, config).combinedConfidence;
+}
+
+BilateralDecisionTrace inferFusionDecision(std::vector<HemisphereRuntime>& hemispheres,
+                                           const EMNISTLoader::Image& image,
+                                           const Config& config,
+                                           const ClassificationStrategy& fusionClassifier,
+                                           const FusionRuntime& fusionRuntime) {
+    BilateralDecisionTrace trace;
+    trace.hemisphereTraces.reserve(hemispheres.size());
+    for (auto& hemisphere : hemispheres) {
+        trace.hemisphereTraces.push_back(inferHemisphereDecision(hemisphere, image, config));
+    }
+    trace.fusionPattern = buildFusionPatternFromTraces(trace.hemisphereTraces, config);
+    trace.combinedConfidence = fusionClassifier.classifyWithConfidence(
+        trace.fusionPattern, fusionRuntime.trainingPatterns, cosineSimilarity);
+    normalizeSum(trace.combinedConfidence);
+    trace.topHypotheses = collectTopHypotheses(trace.combinedConfidence, onlineTraceTopK(config));
+    if (!trace.topHypotheses.empty()) {
+        trace.predicted = trace.topHypotheses.front().label;
+    }
+    return trace;
+}
+
+void applyRewardToHemisphere(HemisphereRuntime& hemisphere,
+                             const HemisphereDecisionTrace& trace,
+                             int rewardedLabel,
+                             double reward,
+                             const Config& config) {
+    if (rewardedLabel < 0 || rewardedLabel >= 26 || trace.topHypotheses.empty()) {
+        return;
+    }
+
+    const double rewardMagnitude = std::clamp(std::abs(reward), 0.0, 3.0);
+    const LabelTrace* rewardedTrace = findLabelTrace(trace.topHypotheses, rewardedLabel);
+
+    if (reward > 0.0) {
+        if (rewardedTrace == nullptr) {
+            return;
+        }
+        const double rewardGain =
+            std::clamp(config.onlinePositiveRewardGain * rewardMagnitude, 0.05, 2.5);
+        const double baseLr =
+            std::clamp(config.onlineCentroidLr * 0.35 * rewardGain, 0.02, 0.20);
+        const double support = std::max(0.05, rewardedTrace->score);
+        scaleClamped(hemisphere.classWeights[static_cast<size_t>(rewardedLabel)],
+                     1.0 + baseLr * support,
+                     0.5, 1.5);
+        scaleClamped(hemisphere.overallWeight,
+                     1.0 + baseLr * support * 0.4,
+                     0.75, 1.25);
+        if (trace.predicted == rewardedLabel) {
+            scaleClamped(hemisphere.predictionWeights[static_cast<size_t>(rewardedLabel)],
+                         1.0 + baseLr * support * (1.0 + trace.margin),
+                         0.5, 1.5);
+        }
+        updateCentroid(hemisphere.classCentroids[static_cast<size_t>(rewardedLabel)],
+                       trace.pattern,
+                       std::clamp(config.onlineCentroidLr * support * rewardGain, 0.05, 0.45));
+        insertOrReplaceOnlinePattern(hemisphere.trainingPatterns,
+                                     &hemisphere.trainingSourceIndices,
+                                     hemisphere.onlinePatternIndices,
+                                     trace.pattern,
+                                     rewardedLabel,
+                                     config.onlineExemplarBudgetPerClass);
+        return;
+    }
+
+    const LabelTrace* penalizedTrace = findLabelTrace(trace.topHypotheses, rewardedLabel);
+    if (penalizedTrace == nullptr) {
+        return;
+    }
+    const double rewardGain =
+        std::clamp(config.onlineNegativeRewardGain * rewardMagnitude, 0.05, 2.5);
+    const double baseLr =
+        std::clamp(config.onlineCentroidLr * 0.35 * rewardGain, 0.02, 0.20);
+    const double support = std::max(0.05, penalizedTrace->score);
+    const double penalty = std::clamp(baseLr * support * (1.0 + trace.margin), 0.02, 0.20);
+    scaleClamped(hemisphere.classWeights[static_cast<size_t>(rewardedLabel)],
+                 1.0 - penalty,
+                 0.5, 1.5);
+    scaleClamped(hemisphere.overallWeight,
+                 1.0 - penalty * 0.35,
+                 0.75, 1.25);
+    if (trace.predicted == rewardedLabel) {
+        scaleClamped(hemisphere.predictionWeights[static_cast<size_t>(rewardedLabel)],
+                     1.0 - penalty * 1.15,
+                     0.5, 1.5);
+    }
+}
+
+void applyRewardToFusion(FusionRuntime& fusionRuntime,
+                         const std::vector<double>& fusionPattern,
+                         int rewardedLabel,
+                         double reward,
+                         const Config& config) {
+    if (reward <= 0.0 ||
+        reward * config.onlinePositiveRewardGain < 0.05) {
+        return;
+    }
+    insertOrReplaceOnlinePattern(fusionRuntime.trainingPatterns,
+                                 nullptr,
+                                 fusionRuntime.onlinePatternIndices,
+                                 fusionPattern,
+                                 rewardedLabel,
+                                 config.onlineExemplarBudgetPerClass);
 }
 
 EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& hemispheres,
@@ -871,6 +1320,74 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
     const auto start = std::chrono::high_resolution_clock::now();
     const int maxTests = static_cast<int>(indices.size());
     const int progressStep = maxTests >= 1000 ? 200 : (maxTests >= 200 ? 50 : 25);
+    std::vector<OnlineSampleRecord> records;
+    records.reserve(indices.size());
+    std::vector<ReplayItem> replayQueue;
+    replayQueue.reserve(static_cast<size_t>(std::max(16, config.onlineReplayQueueCapacity)));
+    size_t replaySequence = 0;
+
+    auto processReplayItem = [&](ReplayItem item) {
+        if (item.recordIndex >= records.size()) {
+            return;
+        }
+        auto& record = records[item.recordIndex];
+        const auto& replayImage = loader.getImage(record.imageIndex);
+        auto replayDecision = inferCorpusCallosumDecision(hemispheres, replayImage, config);
+        if (replayDecision.predicted < 0 || replayDecision.predicted >= 26) {
+            return;
+        }
+
+        record.finalPredicted = replayDecision.predicted;
+        result.correctionReplays++;
+        const auto replayContext = buildDecisionContext(replayDecision, config);
+
+        if (record.finalPredicted == record.truth) {
+            if (!record.correctionSucceeded) {
+                result.correctionSuccesses++;
+                record.correctionSucceeded = true;
+            }
+            for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+                applyRewardToHemisphere(hemispheres[hemisphereIndex],
+                                        replayDecision.hemisphereTraces[hemisphereIndex],
+                                        replayDecision.predicted,
+                                        replayContext.plasticity,
+                                        config);
+            }
+            return;
+        }
+
+        for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+            applyRewardToHemisphere(hemispheres[hemisphereIndex],
+                                    replayDecision.hemisphereTraces[hemisphereIndex],
+                                    replayDecision.predicted,
+                                    -replayContext.plasticity,
+                                    config);
+        }
+        if (item.remainingReplays > 1) {
+            enqueueReplayItem(replayQueue,
+                              ReplayItem{item.recordIndex,
+                                         item.remainingReplays - 1,
+                                         replayContext.replayPriority,
+                                         replaySequence++},
+                              config);
+        }
+    };
+
+    auto processReplayBudget = [&](int budget) {
+        ReplayItem item;
+        while (budget-- > 0 && popReplayItem(replayQueue, item)) {
+            processReplayItem(item);
+        }
+    };
+
+    auto currentAccuracy = [&]() {
+        const int currentCorrect = static_cast<int>(std::count_if(
+            records.begin(), records.end(), [](const OnlineSampleRecord& record) {
+                return record.truth >= 0 && record.truth == record.finalPredicted;
+            }));
+        return 100.0 * static_cast<double>(currentCorrect) /
+               static_cast<double>(std::max<size_t>(1, records.size()));
+    };
 
     for (size_t index : indices) {
         const auto& image = loader.getImage(index);
@@ -879,25 +1396,60 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
             continue;
         }
 
-        const auto combined = buildCorpusCallosumConfidence(hemispheres, image, config);
-        const int predicted = static_cast<int>(
-            std::distance(combined.begin(),
-                          std::max_element(combined.begin(), combined.end())));
-        result.confusion[static_cast<size_t>(truth)][static_cast<size_t>(predicted)]++;
-        result.correct += (predicted == truth) ? 1 : 0;
-        result.tested++;
+        auto decision = inferCorpusCallosumDecision(hemispheres, image, config);
+        const int initialPredicted = decision.predicted;
+        if (initialPredicted < 0 || initialPredicted >= 26) {
+            continue;
+        }
+        records.push_back({index, truth, initialPredicted, initialPredicted, false});
+        auto& record = records.back();
+        const auto context = buildDecisionContext(decision, config);
 
-        if (result.tested % progressStep == 0) {
-            const double acc =
-                100.0 * static_cast<double>(result.correct) /
-                static_cast<double>(std::max(1, result.tested));
-            std::cout << "  " << label << ": " << result.tested << "/" << maxTests
+        if (useOnlineCorrection(config)) {
+            if (initialPredicted == truth) {
+                for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+                    applyRewardToHemisphere(hemispheres[hemisphereIndex],
+                                            decision.hemisphereTraces[hemisphereIndex],
+                                            decision.predicted,
+                                            std::max(0.25, 0.5 * context.plasticity),
+                                            config);
+                }
+            } else {
+                result.correctionEvents++;
+                for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+                    applyRewardToHemisphere(hemispheres[hemisphereIndex],
+                                            decision.hemisphereTraces[hemisphereIndex],
+                                            decision.predicted,
+                                            -context.plasticity,
+                                            config);
+                }
+                enqueueReplayItem(replayQueue,
+                                  ReplayItem{records.size() - 1,
+                                             config.onlineCorrectionRepeats,
+                                             context.replayPriority +
+                                                 (context.uncertainty >=
+                                                          config.onlineReplayUncertaintyThreshold
+                                                      ? 0.5
+                                                      : 0.0),
+                                             replaySequence++},
+                                  config);
+            }
+        }
+
+        processReplayBudget(1);
+
+        if (static_cast<int>(records.size()) % progressStep == 0) {
+            const double acc = currentAccuracy();
+            std::cout << "  " << label << ": " << records.size() << "/" << maxTests
                       << " (" << std::fixed << std::setprecision(2) << acc << "%)" << std::endl;
         }
     }
 
+    processReplayBudget(std::numeric_limits<int>::max());
+
     const auto end = std::chrono::high_resolution_clock::now();
-    result.seconds = std::chrono::duration<double>(end - start).count();
+    finalizeEvaluationFromRecords(
+        result, records, std::chrono::duration<double>(end - start).count());
     return result;
 }
 
@@ -1091,13 +1643,86 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                                            const std::vector<size_t>& indices,
                                            const Config& config,
                                            const ClassificationStrategy& fusionClassifier,
-                                           const std::vector<ClassificationStrategy::LabeledPattern>&
-                                               fusionTrainingPatterns,
+                                           FusionRuntime& fusionRuntime,
                                            const std::string& label) {
     EvaluationResult result;
     const auto start = std::chrono::high_resolution_clock::now();
     const int maxTests = static_cast<int>(indices.size());
     const int progressStep = maxTests >= 1000 ? 200 : (maxTests >= 200 ? 50 : 25);
+    std::vector<OnlineSampleRecord> records;
+    records.reserve(indices.size());
+    std::vector<ReplayItem> replayQueue;
+    replayQueue.reserve(static_cast<size_t>(std::max(16, config.onlineReplayQueueCapacity)));
+    size_t replaySequence = 0;
+
+    auto processReplayItem = [&](ReplayItem item) {
+        if (item.recordIndex >= records.size()) {
+            return;
+        }
+        auto& record = records[item.recordIndex];
+        const auto& replayImage = loader.getImage(record.imageIndex);
+        auto replayDecision = inferFusionDecision(
+            hemispheres, replayImage, config, fusionClassifier, fusionRuntime);
+        if (replayDecision.predicted < 0 || replayDecision.predicted >= 26) {
+            return;
+        }
+
+        record.finalPredicted = replayDecision.predicted;
+        result.correctionReplays++;
+        const auto replayContext = buildDecisionContext(replayDecision, config);
+
+        if (record.finalPredicted == record.truth) {
+            if (!record.correctionSucceeded) {
+                result.correctionSuccesses++;
+                record.correctionSucceeded = true;
+            }
+            for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+                applyRewardToHemisphere(hemispheres[hemisphereIndex],
+                                        replayDecision.hemisphereTraces[hemisphereIndex],
+                                        replayDecision.predicted,
+                                        replayContext.plasticity,
+                                        config);
+            }
+            applyRewardToFusion(fusionRuntime,
+                                replayDecision.fusionPattern,
+                                replayDecision.predicted,
+                                replayContext.plasticity,
+                                config);
+            return;
+        }
+
+        for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+            applyRewardToHemisphere(hemispheres[hemisphereIndex],
+                                    replayDecision.hemisphereTraces[hemisphereIndex],
+                                    replayDecision.predicted,
+                                    -replayContext.plasticity,
+                                    config);
+        }
+        if (item.remainingReplays > 1) {
+            enqueueReplayItem(replayQueue,
+                              ReplayItem{item.recordIndex,
+                                         item.remainingReplays - 1,
+                                         replayContext.replayPriority,
+                                         replaySequence++},
+                              config);
+        }
+    };
+
+    auto processReplayBudget = [&](int budget) {
+        ReplayItem item;
+        while (budget-- > 0 && popReplayItem(replayQueue, item)) {
+            processReplayItem(item);
+        }
+    };
+
+    auto currentAccuracy = [&]() {
+        const int currentCorrect = static_cast<int>(std::count_if(
+            records.begin(), records.end(), [](const OnlineSampleRecord& record) {
+                return record.truth >= 0 && record.truth == record.finalPredicted;
+            }));
+        return 100.0 * static_cast<double>(currentCorrect) /
+               static_cast<double>(std::max<size_t>(1, records.size()));
+    };
 
     for (size_t index : indices) {
         const auto& image = loader.getImage(index);
@@ -1106,24 +1731,64 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
             continue;
         }
 
-        const auto fusionPattern = buildFusionPattern(hemispheres, image, config);
-        const int predicted = fusionClassifier.classify(
-            fusionPattern, fusionTrainingPatterns, cosineSimilarity);
-        result.confusion[static_cast<size_t>(truth)][static_cast<size_t>(predicted)]++;
-        result.correct += (predicted == truth) ? 1 : 0;
-        result.tested++;
+        auto decision = inferFusionDecision(hemispheres, image, config, fusionClassifier, fusionRuntime);
+        const int initialPredicted = decision.predicted;
+        if (initialPredicted < 0 || initialPredicted >= 26) {
+            continue;
+        }
+        records.push_back({index, truth, initialPredicted, initialPredicted, false});
+        const auto context = buildDecisionContext(decision, config);
 
-        if (result.tested % progressStep == 0) {
-            const double acc =
-                100.0 * static_cast<double>(result.correct) /
-                static_cast<double>(std::max(1, result.tested));
-            std::cout << "  " << label << ": " << result.tested << "/" << maxTests
+        if (useOnlineCorrection(config)) {
+            if (initialPredicted == truth) {
+                for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+                    applyRewardToHemisphere(hemispheres[hemisphereIndex],
+                                            decision.hemisphereTraces[hemisphereIndex],
+                                            decision.predicted,
+                                            std::max(0.25, 0.5 * context.plasticity),
+                                            config);
+                }
+                applyRewardToFusion(fusionRuntime,
+                                    decision.fusionPattern,
+                                    decision.predicted,
+                                    std::max(0.25, 0.5 * context.plasticity),
+                                    config);
+            } else {
+                result.correctionEvents++;
+                for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+                    applyRewardToHemisphere(hemispheres[hemisphereIndex],
+                                            decision.hemisphereTraces[hemisphereIndex],
+                                            decision.predicted,
+                                            -context.plasticity,
+                                            config);
+                }
+                enqueueReplayItem(replayQueue,
+                                  ReplayItem{records.size() - 1,
+                                             config.onlineCorrectionRepeats,
+                                             context.replayPriority +
+                                                 (context.uncertainty >=
+                                                          config.onlineReplayUncertaintyThreshold
+                                                      ? 0.5
+                                                      : 0.0),
+                                             replaySequence++},
+                                  config);
+            }
+        }
+
+        processReplayBudget(1);
+
+        if (static_cast<int>(records.size()) % progressStep == 0) {
+            const double acc = currentAccuracy();
+            std::cout << "  " << label << ": " << records.size() << "/" << maxTests
                       << " (" << std::fixed << std::setprecision(2) << acc << "%)" << std::endl;
         }
     }
 
+    processReplayBudget(std::numeric_limits<int>::max());
+
     const auto end = std::chrono::high_resolution_clock::now();
-    result.seconds = std::chrono::duration<double>(end - start).count();
+    finalizeEvaluationFromRecords(
+        result, records, std::chrono::duration<double>(end - start).count());
     return result;
 }
 
@@ -1266,6 +1931,31 @@ void printFocusedFamilyReport(const std::array<std::array<int, 26>, 26>& confusi
     }
 }
 
+void printOnlineCorrectionSummary(const EvaluationResult& result) {
+    if (result.tested <= 0 || result.correctionEvents <= 0) {
+        return;
+    }
+
+    const double initialAccuracy =
+        100.0 * static_cast<double>(result.initialCorrect) /
+        static_cast<double>(std::max(1, result.tested));
+    const double finalAccuracy =
+        100.0 * static_cast<double>(result.correct) /
+        static_cast<double>(std::max(1, result.tested));
+    const double correctionHitRate =
+        100.0 * static_cast<double>(result.correctionSuccesses) /
+        static_cast<double>(std::max(1, result.correctionEvents));
+
+    std::cout << "  Initial accuracy: " << std::fixed << std::setprecision(2)
+              << initialAccuracy << "%" << std::endl;
+    std::cout << "  Post-correction accuracy: " << std::fixed << std::setprecision(2)
+              << finalAccuracy << "%" << std::endl;
+    std::cout << "  Correction events: " << result.correctionEvents
+              << ", corrected: " << result.correctionSuccesses
+              << " (" << std::fixed << std::setprecision(2) << correctionHitRate << "%)"
+              << ", replays: " << result.correctionReplays << std::endl;
+}
+
 Config parseArgs(int argc, char* argv[]) {
     Config config;
 
@@ -1377,6 +2067,24 @@ Config parseArgs(int argc, char* argv[]) {
             config.knnK = std::atoi(argv[++i]);
         } else if (arg == "--classifier-exponent" && i + 1 < argc) {
             config.classifierExponent = std::atof(argv[++i]);
+        } else if (arg == "--online-correction-repeats" && i + 1 < argc) {
+            config.onlineCorrectionRepeats = std::atoi(argv[++i]);
+        } else if (arg == "--online-exemplar-budget-per-class" && i + 1 < argc) {
+            config.onlineExemplarBudgetPerClass = std::atoi(argv[++i]);
+        } else if (arg == "--online-centroid-lr" && i + 1 < argc) {
+            config.onlineCentroidLr = std::atof(argv[++i]);
+        } else if (arg == "--online-positive-reward-gain" && i + 1 < argc) {
+            config.onlinePositiveRewardGain = std::atof(argv[++i]);
+        } else if (arg == "--online-negative-reward-gain" && i + 1 < argc) {
+            config.onlineNegativeRewardGain = std::atof(argv[++i]);
+        } else if (arg == "--online-replay-queue-capacity" && i + 1 < argc) {
+            config.onlineReplayQueueCapacity = std::atoi(argv[++i]);
+        } else if (arg == "--online-replay-uncertainty-threshold" && i + 1 < argc) {
+            config.onlineReplayUncertaintyThreshold = std::atof(argv[++i]);
+        } else if (arg == "--online-context-uncertainty-gain" && i + 1 < argc) {
+            config.onlineContextUncertaintyGain = std::atof(argv[++i]);
+        } else if (arg == "--online-context-disagreement-gain" && i + 1 < argc) {
+            config.onlineContextDisagreementGain = std::atof(argv[++i]);
         } else if (arg == "--use-features") {
             config.useFeatures = true;
         } else if (arg == "--use-activations") {
@@ -1412,6 +2120,15 @@ Config parseArgs(int argc, char* argv[]) {
                 << "  --hierarchical-fine-k <n>\n"
                 << "  --knn-k <n>\n"
                 << "  --classifier-exponent <v>\n"
+                << "  --online-correction-repeats <n>\n"
+                << "  --online-exemplar-budget-per-class <n>\n"
+                << "  --online-centroid-lr <v>\n"
+                << "  --online-positive-reward-gain <v>\n"
+                << "  --online-negative-reward-gain <v>\n"
+                << "  --online-replay-queue-capacity <n>\n"
+                << "  --online-replay-uncertainty-threshold <v>\n"
+                << "  --online-context-uncertainty-gain <v>\n"
+                << "  --online-context-disagreement-gain <v>\n"
                 << "  --focus-groups <A,B;C,D;...>\n"
                 << "  --focus-limit-per-label <n>\n"
                 << "  --focus-only\n"
@@ -1489,6 +2206,15 @@ int main(int argc, char* argv[]) {
                       << ", corpus_margin_gain=" << config.corpusMarginGain
                       << ", corpus_centroid_gain=" << config.corpusCentroidGain
                       << ", corpus_neighbor_gain=" << config.corpusNeighborGain
+                      << ", online_repeats=" << config.onlineCorrectionRepeats
+                      << ", online_budget/class=" << config.onlineExemplarBudgetPerClass
+                      << ", online_centroid_lr=" << config.onlineCentroidLr
+                      << ", online_pos_gain=" << config.onlinePositiveRewardGain
+                      << ", online_neg_gain=" << config.onlineNegativeRewardGain
+                      << ", replay_capacity=" << config.onlineReplayQueueCapacity
+                      << ", replay_uncertainty=" << config.onlineReplayUncertaintyThreshold
+                      << ", context_uncertainty_gain=" << config.onlineContextUncertaintyGain
+                      << ", context_disagreement_gain=" << config.onlineContextDisagreementGain
                       << std::endl;
         }
         if (config.classifier == "hierarchical") {
@@ -1660,7 +2386,7 @@ int main(int argc, char* argv[]) {
             }
 
             std::unique_ptr<ClassificationStrategy> fusionClassifier;
-            std::vector<ClassificationStrategy::LabeledPattern> fusionTrainingPatterns;
+            FusionRuntime fusionRuntime;
             if (useCorpusCallosumFusion(config)) {
                 calibrateCorpusCallosumWeights(hemispheres, trainLoader, split.fusionIndices, config);
                 std::cout << "  Corpus-callosum calibration samples: "
@@ -1680,27 +2406,27 @@ int main(int argc, char* argv[]) {
             } else {
                 fusionClassifier = makeClassifierStrategy(
                     config.fusionClassifier, fusionK, config.fusionExponent, config);
-                fusionTrainingPatterns.reserve(split.fusionIndices.size());
+                fusionRuntime.trainingPatterns.reserve(split.fusionIndices.size());
                 for (size_t i : split.fusionIndices) {
                     const auto& image = trainLoader.getImage(i);
                     const int label = static_cast<int>(image.label) - 1;
                     if (label < 0 || label >= 26) {
                         continue;
                     }
-                    fusionTrainingPatterns.emplace_back(
+                    fusionRuntime.trainingPatterns.emplace_back(
                         buildFusionPattern(hemispheres, image, config), label);
-                    if (static_cast<int>(fusionTrainingPatterns.size()) % 500 == 0) {
-                        std::cout << "  Fusion patterns: " << fusionTrainingPatterns.size()
+                    if (static_cast<int>(fusionRuntime.trainingPatterns.size()) % 500 == 0) {
+                        std::cout << "  Fusion patterns: " << fusionRuntime.trainingPatterns.size()
                                   << std::endl;
                     }
                 }
 
-                if (fusionTrainingPatterns.empty()) {
+                if (fusionRuntime.trainingPatterns.empty()) {
                     throw std::runtime_error(
                         "bilateral fusion produced no fusion training patterns; increase examples-per-class or reduce fusion_holdout_per_class");
                 }
 
-                std::cout << "  Stored fusion patterns: " << fusionTrainingPatterns.size()
+                std::cout << "  Stored fusion patterns: " << fusionRuntime.trainingPatterns.size()
                           << " (mode=" << config.fusionFeatureMode << ")" << std::endl;
             }
             const auto end = std::chrono::high_resolution_clock::now();
@@ -1713,7 +2439,7 @@ int main(int argc, char* argv[]) {
                           hemispheres, testLoader, selectedTestIndices, config, "Testing")
                     : evaluateBilateralPatterns(
                           hemispheres, testLoader, selectedTestIndices, config, *fusionClassifier,
-                          fusionTrainingPatterns, "Testing");
+                          fusionRuntime, "Testing");
                 const double accuracy =
                     100.0 * static_cast<double>(eval.correct) /
                     static_cast<double>(std::max(1, eval.tested));
@@ -1724,6 +2450,7 @@ int main(int argc, char* argv[]) {
                 std::cout << "  Correct: " << eval.correct << "/" << eval.tested << std::endl;
                 std::cout << "  Elapsed: " << std::fixed << std::setprecision(2)
                           << (trainingSeconds + eval.seconds) << "s" << std::endl;
+                printOnlineCorrectionSummary(eval);
 
                 printPerClassAccuracy(eval.confusion);
                 printTopConfusions(eval.confusion);
@@ -1735,7 +2462,7 @@ int main(int argc, char* argv[]) {
                           hemispheres, testLoader, focusedTestIndices, config, "Focus")
                     : evaluateBilateralPatterns(
                           hemispheres, testLoader, focusedTestIndices, config, *fusionClassifier,
-                          fusionTrainingPatterns, "Focus");
+                          fusionRuntime, "Focus");
                 const double focusedAccuracy =
                     100.0 * static_cast<double>(focusedEval.correct) /
                     static_cast<double>(std::max(1, focusedEval.tested));
@@ -1747,6 +2474,7 @@ int main(int argc, char* argv[]) {
                           << std::endl;
                 std::cout << "  Elapsed: " << std::fixed << std::setprecision(2)
                           << focusedEval.seconds << "s" << std::endl;
+                printOnlineCorrectionSummary(focusedEval);
 
                 printPerClassAccuracy(focusedEval.confusion);
                 printTopConfusions(focusedEval.confusion);

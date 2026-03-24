@@ -117,29 +117,55 @@ The framework includes a high-performance EMNIST letters classification experime
 
 #### Declarative Retina Experiments
 ```bash
-# Unilateral Retina reference
+# Unilateral Retina static reference
 ./scripts/run_emnist_retina_unilateral.sh
 
-# Bilateral Retina reference (corpus-callosum fusion)
+# Bilateral Retina static reference (corpus-callosum fusion)
 ./scripts/run_emnist_retina_bilateral.sh
+
+# Bilateral Retina continuous-learning reference
+./scripts/run_emnist_retina_bilateral_continuous.sh
 ```
 
-The unilateral Retina reference config is `configs/emnist_retina_experimental.sonata.json`.
-The bilateral Retina reference config is `configs/emnist_retina_bilateral_experimental.sonata.json`. It uses two transformed hemisphere views and corpus-callosum-style weighted fusion over the hemisphere classifications.
+Static reference configs:
+- `configs/emnist_retina_experimental.sonata.json`
+- `configs/emnist_retina_bilateral_experimental.sonata.json`
+
+Continuous-learning reference config:
+- `configs/emnist_retina_bilateral_continuous.sonata.json`
+
+The bilateral configs use two transformed hemisphere views and corpus-callosum-style weighted fusion over the hemisphere classifications. The continuous config adds reward-driven online adaptation with delayed replay and context-gated plasticity.
 
 Reference full-run benchmarks on EMNIST letters (`3200/class`, `5200` test, `seed 42`):
+
+Static inference benchmarks:
 - Unilateral Retina: `86.17%`
 - Bilateral Retina: `87.29%`
+
+Continuous-learning benchmark:
+- Bilateral Retina continuous: initial `87.56%`, post-correction `88.44%`
+
+Static and continuous results are separate benchmark categories. The continuous result includes online reward-driven adaptation during evaluation and is not directly comparable to the static held-out metric.
+
+Benchmark summary:
+
+| Mode | Config | Metric | Result |
+| --- | --- | --- | --- |
+| Unilateral Retina | `configs/emnist_retina_experimental.sonata.json` | Static accuracy | `86.17%` |
+| Bilateral Retina | `configs/emnist_retina_bilateral_experimental.sonata.json` | Static accuracy | `87.29%` |
+| Bilateral Retina Continuous | `configs/emnist_retina_bilateral_continuous.sonata.json` | Initial / post-correction accuracy | `87.56% -> 88.44%` |
 
 Reference commands:
 ```bash
 ./scripts/run_emnist_retina_unilateral.sh
 ./scripts/run_emnist_retina_bilateral.sh
+./scripts/run_emnist_retina_bilateral_continuous.sh
 ```
 
 Expected logs:
 - `build/emnist_retina_unilateral_experimental.log`
 - `build/emnist_retina_bilateral_experimental.log`
+- `build/emnist_retina_bilateral_continuous.log`
 
 **Performance**: The framework achieves approximately **90% accuracy** on EMNIST letters classification (26 classes) using:
 - Cosine similarity-based pattern matching
