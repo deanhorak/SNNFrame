@@ -33,8 +33,8 @@ These are separate benchmark categories. The continuous benchmark includes onlin
 - Static bilateral Retina:
   - `87.29%`
 - Continuous bilateral Retina:
-  - initial `87.56%`
-  - post-correction `88.44%`
+  - initial `87.67%`
+  - post-correction `88.77%`
 
 ## Continuous benchmark details
 - Dataset: EMNIST Letters
@@ -42,12 +42,13 @@ These are separate benchmark categories. The continuous benchmark includes onlin
 - Test: `5200`
 - Seed: `42`
 - Result held across replicate:
-  - `4599/5200`
-  - initial `87.56%`
-  - post-correction `88.44%`
-  - correction events `647`
-  - corrected `46`
-  - replays `1871`
+  - `4616/5200`
+  - initial `87.67%`
+  - post-correction `88.77%`
+  - correction events `641`
+  - corrected `57`
+  - replays `1847`
+  - replay timing `avg_delay_steps=4.00`, `avg_eligibility=0.40`
 
 ## Main implementation points
 - Reward signal is scalar inside the learner
@@ -56,6 +57,8 @@ These are separate benchmark categories. The continuous benchmark includes onlin
   - positive reward gain
   - negative reward gain
   - replay queue capacity
+  - replay delay and pause scheduling
+  - eligibility-trace decay
   - uncertainty threshold
   - context uncertainty gain
   - context disagreement gain

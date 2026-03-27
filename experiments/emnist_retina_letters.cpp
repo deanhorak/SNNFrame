@@ -86,7 +86,11 @@ struct Config {
     double onlinePositiveRewardGain = 0.35;
     double onlineNegativeRewardGain = 1.0;
     int onlineReplayQueueCapacity = 256;
+    int onlineReplayDelaySteps = 0;
+    int onlineReplayPauseInterval = 1;
+    int onlineReplayBatchSize = 1;
     double onlineReplayUncertaintyThreshold = 0.35;
+    double onlineEligibilityTraceDecay = 1.0;
     double onlineContextUncertaintyGain = 0.75;
     double onlineContextDisagreementGain = 0.50;
     bool hierarchicalRetinaLayout = false;
@@ -152,6 +156,9 @@ struct ReplayItem {
     size_t recordIndex = 0;
     int remainingReplays = 0;
     double priority = 0.0;
+    double eligibilityScale = 1.0;
+    size_t traceAgeSteps = 0;
+    size_t readyStep = 0;
     size_t sequence = 0;
 };
 
@@ -548,10 +555,27 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     if (onlineReplayCapacityIt != irConfig.intParams.end()) {
         config.onlineReplayQueueCapacity = onlineReplayCapacityIt->second;
     }
+    const auto onlineReplayDelayIt = irConfig.intParams.find("online_replay_delay_steps");
+    if (onlineReplayDelayIt != irConfig.intParams.end()) {
+        config.onlineReplayDelaySteps = onlineReplayDelayIt->second;
+    }
+    const auto onlineReplayPauseIt = irConfig.intParams.find("online_replay_pause_interval");
+    if (onlineReplayPauseIt != irConfig.intParams.end()) {
+        config.onlineReplayPauseInterval = onlineReplayPauseIt->second;
+    }
+    const auto onlineReplayBatchIt = irConfig.intParams.find("online_replay_batch_size");
+    if (onlineReplayBatchIt != irConfig.intParams.end()) {
+        config.onlineReplayBatchSize = onlineReplayBatchIt->second;
+    }
     const auto onlineReplayThresholdIt =
         irConfig.doubleParams.find("online_replay_uncertainty_threshold");
     if (onlineReplayThresholdIt != irConfig.doubleParams.end()) {
         config.onlineReplayUncertaintyThreshold = onlineReplayThresholdIt->second;
+    }
+    const auto onlineEligibilityDecayIt =
+        irConfig.doubleParams.find("online_eligibility_trace_decay");
+    if (onlineEligibilityDecayIt != irConfig.doubleParams.end()) {
+        config.onlineEligibilityTraceDecay = onlineEligibilityDecayIt->second;
     }
     const auto onlineContextUncertaintyGainIt =
         irConfig.doubleParams.find("online_context_uncertainty_gain");
@@ -818,6 +842,9 @@ struct EvaluationResult {
     int correctionEvents = 0;
     int correctionSuccesses = 0;
     int correctionReplays = 0;
+    int replayDelaySamples = 0;
+    double replayDelaySteps = 0.0;
+    double replayEligibilityScaleSum = 0.0;
     double seconds = 0.0;
 };
 
@@ -891,6 +918,25 @@ int onlineTraceTopK(const Config& config) {
     return std::max(1, std::min(3, config.knnK > 0 ? config.knnK : 3));
 }
 
+int onlineReplayDelaySteps(const Config& config) {
+    return std::max(0, config.onlineReplayDelaySteps);
+}
+
+int onlineReplayPauseInterval(const Config& config) {
+    return std::max(1, config.onlineReplayPauseInterval);
+}
+
+int onlineReplayBatchSize(const Config& config) {
+    return std::max(1, config.onlineReplayBatchSize);
+}
+
+double decayEligibilityTrace(double currentScale, size_t delaySteps, const Config& config) {
+    const double decay = std::clamp(config.onlineEligibilityTraceDecay, 0.10, 1.0);
+    const double delayed =
+        currentScale * std::pow(decay, static_cast<double>(std::max<size_t>(1, delaySteps)));
+    return std::clamp(delayed, 0.05, 1.0);
+}
+
 DecisionContext buildDecisionContext(const BilateralDecisionTrace& decision, const Config& config) {
     DecisionContext context;
     if (!decision.topHypotheses.empty()) {
@@ -950,22 +996,58 @@ void enqueueReplayItem(std::vector<ReplayItem>& replayQueue,
     }
 }
 
-bool popReplayItem(std::vector<ReplayItem>& replayQueue, ReplayItem& item) {
+bool popReplayItem(std::vector<ReplayItem>& replayQueue,
+                   ReplayItem& item,
+                   size_t currentStep,
+                   bool flushAll = false) {
     if (replayQueue.empty()) {
         return false;
     }
 
-    const auto bestIt = std::max_element(
-        replayQueue.begin(), replayQueue.end(),
-        [](const ReplayItem& lhs, const ReplayItem& rhs) {
-            if (lhs.priority != rhs.priority) {
-                return lhs.priority < rhs.priority;
-            }
-            return lhs.sequence > rhs.sequence;
-        });
+    auto bestIt = replayQueue.end();
+    for (auto it = replayQueue.begin(); it != replayQueue.end(); ++it) {
+        if (!flushAll && it->readyStep > currentStep) {
+            continue;
+        }
+        if (bestIt == replayQueue.end()) {
+            bestIt = it;
+            continue;
+        }
+        if (it->priority > bestIt->priority ||
+            (it->priority == bestIt->priority && it->sequence < bestIt->sequence)) {
+            bestIt = it;
+        }
+    }
+    if (bestIt == replayQueue.end()) {
+        return false;
+    }
     item = *bestIt;
     replayQueue.erase(bestIt);
     return true;
+}
+
+void recordReplayTiming(EvaluationResult& result, const ReplayItem& item, size_t currentStep) {
+    result.replayDelaySamples++;
+    result.replayDelaySteps += static_cast<double>(item.traceAgeSteps);
+    result.replayEligibilityScaleSum += item.eligibilityScale;
+}
+
+ReplayItem makeReplayItem(size_t recordIndex,
+                          int remainingReplays,
+                          double priority,
+                          size_t currentStep,
+                          double eligibilityScale,
+                          const Config& config,
+                          size_t sequence) {
+    const size_t delaySteps = static_cast<size_t>(onlineReplayDelaySteps(config));
+    return ReplayItem{recordIndex,
+                      remainingReplays,
+                      priority,
+                      delaySteps > 0 ? decayEligibilityTrace(eligibilityScale, delaySteps, config)
+                                     : std::clamp(eligibilityScale, 0.05, 1.0),
+                      delaySteps,
+                      currentStep + delaySteps,
+                      sequence};
 }
 
 void finalizeEvaluationFromRecords(EvaluationResult& result,
@@ -1518,7 +1600,7 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
     replayQueue.reserve(static_cast<size_t>(std::max(16, config.onlineReplayQueueCapacity)));
     size_t replaySequence = 0;
 
-    auto processReplayItem = [&](ReplayItem item) {
+    auto processReplayItem = [&](ReplayItem item, size_t currentStep) {
         if (item.recordIndex >= records.size()) {
             return;
         }
@@ -1531,7 +1613,10 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
 
         record.finalPredicted = replayDecision.predicted;
         result.correctionReplays++;
+        recordReplayTiming(result, item, currentStep);
         const auto replayContext = buildDecisionContext(replayDecision, config);
+        const double effectiveReward =
+            std::max(0.05, replayContext.plasticity * item.eligibilityScale);
 
         if (record.finalPredicted == record.truth) {
             if (!record.correctionSucceeded) {
@@ -1542,7 +1627,7 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
                 applyRewardToHemisphere(hemispheres[hemisphereIndex],
                                         replayDecision.hemisphereTraces[hemisphereIndex],
                                         replayDecision.predicted,
-                                        replayContext.plasticity,
+                                        effectiveReward,
                                         config);
             }
             return;
@@ -1552,23 +1637,32 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
             applyRewardToHemisphere(hemispheres[hemisphereIndex],
                                     replayDecision.hemisphereTraces[hemisphereIndex],
                                     replayDecision.predicted,
-                                    -replayContext.plasticity,
+                                    -effectiveReward,
                                     config);
         }
         if (item.remainingReplays > 1) {
             enqueueReplayItem(replayQueue,
-                              ReplayItem{item.recordIndex,
-                                         item.remainingReplays - 1,
-                                         replayContext.replayPriority,
-                                         replaySequence++},
+                              makeReplayItem(item.recordIndex,
+                                             item.remainingReplays - 1,
+                                             replayContext.replayPriority,
+                                             currentStep,
+                                             item.eligibilityScale,
+                                             config,
+                                             replaySequence++),
                               config);
         }
     };
 
-    auto processReplayBudget = [&](int budget) {
+    auto processReplayBudget = [&](size_t currentStep, int budget, bool flushAll = false) {
+        if (!flushAll &&
+            (currentStep == 0 || (currentStep % static_cast<size_t>(onlineReplayPauseInterval(config))) != 0)) {
+            return;
+        }
+        const int batchBudget = flushAll ? budget : std::min(budget, onlineReplayBatchSize(config));
         ReplayItem item;
-        while (budget-- > 0 && popReplayItem(replayQueue, item)) {
-            processReplayItem(item);
+        int remaining = batchBudget;
+        while (remaining-- > 0 && popReplayItem(replayQueue, item, currentStep, flushAll)) {
+            processReplayItem(item, currentStep);
         }
     };
 
@@ -1616,19 +1710,22 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
                                             config);
                 }
                 enqueueReplayItem(replayQueue,
-                                  ReplayItem{records.size() - 1,
-                                             config.onlineCorrectionRepeats,
-                                             context.replayPriority +
-                                                 (context.uncertainty >=
-                                                          config.onlineReplayUncertaintyThreshold
-                                                      ? 0.5
-                                                      : 0.0),
-                                             replaySequence++},
+                                  makeReplayItem(records.size() - 1,
+                                                 config.onlineCorrectionRepeats,
+                                                 context.replayPriority +
+                                                     (context.uncertainty >=
+                                                              config.onlineReplayUncertaintyThreshold
+                                                          ? 0.5
+                                                          : 0.0),
+                                                 records.size(),
+                                                 1.0,
+                                                 config,
+                                                 replaySequence++),
                                   config);
             }
         }
 
-        processReplayBudget(1);
+        processReplayBudget(records.size(), std::numeric_limits<int>::max());
 
         if (static_cast<int>(records.size()) % progressStep == 0) {
             const double acc = currentAccuracy();
@@ -1637,7 +1734,9 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
         }
     }
 
-    processReplayBudget(std::numeric_limits<int>::max());
+    processReplayBudget(records.size() + static_cast<size_t>(onlineReplayDelaySteps(config)),
+                        std::numeric_limits<int>::max(),
+                        true);
 
     const auto end = std::chrono::high_resolution_clock::now();
     finalizeEvaluationFromRecords(
@@ -1847,7 +1946,7 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
     replayQueue.reserve(static_cast<size_t>(std::max(16, config.onlineReplayQueueCapacity)));
     size_t replaySequence = 0;
 
-    auto processReplayItem = [&](ReplayItem item) {
+    auto processReplayItem = [&](ReplayItem item, size_t currentStep) {
         if (item.recordIndex >= records.size()) {
             return;
         }
@@ -1861,7 +1960,10 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
 
         record.finalPredicted = replayDecision.predicted;
         result.correctionReplays++;
+        recordReplayTiming(result, item, currentStep);
         const auto replayContext = buildDecisionContext(replayDecision, config);
+        const double effectiveReward =
+            std::max(0.05, replayContext.plasticity * item.eligibilityScale);
 
         if (record.finalPredicted == record.truth) {
             if (!record.correctionSucceeded) {
@@ -1872,13 +1974,13 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                 applyRewardToHemisphere(hemispheres[hemisphereIndex],
                                         replayDecision.hemisphereTraces[hemisphereIndex],
                                         replayDecision.predicted,
-                                        replayContext.plasticity,
+                                        effectiveReward,
                                         config);
             }
             applyRewardToFusion(fusionRuntime,
                                 replayDecision.fusionPattern,
                                 replayDecision.predicted,
-                                replayContext.plasticity,
+                                effectiveReward,
                                 config);
             return;
         }
@@ -1887,23 +1989,32 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
             applyRewardToHemisphere(hemispheres[hemisphereIndex],
                                     replayDecision.hemisphereTraces[hemisphereIndex],
                                     replayDecision.predicted,
-                                    -replayContext.plasticity,
+                                    -effectiveReward,
                                     config);
         }
         if (item.remainingReplays > 1) {
             enqueueReplayItem(replayQueue,
-                              ReplayItem{item.recordIndex,
-                                         item.remainingReplays - 1,
-                                         replayContext.replayPriority,
-                                         replaySequence++},
+                              makeReplayItem(item.recordIndex,
+                                             item.remainingReplays - 1,
+                                             replayContext.replayPriority,
+                                             currentStep,
+                                             item.eligibilityScale,
+                                             config,
+                                             replaySequence++),
                               config);
         }
     };
 
-    auto processReplayBudget = [&](int budget) {
+    auto processReplayBudget = [&](size_t currentStep, int budget, bool flushAll = false) {
+        if (!flushAll &&
+            (currentStep == 0 || (currentStep % static_cast<size_t>(onlineReplayPauseInterval(config))) != 0)) {
+            return;
+        }
+        const int batchBudget = flushAll ? budget : std::min(budget, onlineReplayBatchSize(config));
         ReplayItem item;
-        while (budget-- > 0 && popReplayItem(replayQueue, item)) {
-            processReplayItem(item);
+        int remaining = batchBudget;
+        while (remaining-- > 0 && popReplayItem(replayQueue, item, currentStep, flushAll)) {
+            processReplayItem(item, currentStep);
         }
     };
 
@@ -1955,19 +2066,22 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                                             config);
                 }
                 enqueueReplayItem(replayQueue,
-                                  ReplayItem{records.size() - 1,
-                                             config.onlineCorrectionRepeats,
-                                             context.replayPriority +
-                                                 (context.uncertainty >=
-                                                          config.onlineReplayUncertaintyThreshold
-                                                      ? 0.5
-                                                      : 0.0),
-                                             replaySequence++},
+                                  makeReplayItem(records.size() - 1,
+                                                 config.onlineCorrectionRepeats,
+                                                 context.replayPriority +
+                                                     (context.uncertainty >=
+                                                              config.onlineReplayUncertaintyThreshold
+                                                          ? 0.5
+                                                          : 0.0),
+                                                 records.size(),
+                                                 1.0,
+                                                 config,
+                                                 replaySequence++),
                                   config);
             }
         }
 
-        processReplayBudget(1);
+        processReplayBudget(records.size(), std::numeric_limits<int>::max());
 
         if (static_cast<int>(records.size()) % progressStep == 0) {
             const double acc = currentAccuracy();
@@ -1976,7 +2090,9 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
         }
     }
 
-    processReplayBudget(std::numeric_limits<int>::max());
+    processReplayBudget(records.size() + static_cast<size_t>(onlineReplayDelaySteps(config)),
+                        std::numeric_limits<int>::max(),
+                        true);
 
     const auto end = std::chrono::high_resolution_clock::now();
     finalizeEvaluationFromRecords(
@@ -2146,6 +2262,15 @@ void printOnlineCorrectionSummary(const EvaluationResult& result) {
               << ", corrected: " << result.correctionSuccesses
               << " (" << std::fixed << std::setprecision(2) << correctionHitRate << "%)"
               << ", replays: " << result.correctionReplays << std::endl;
+    if (result.replayDelaySamples > 0) {
+        std::cout << "  Replay timing: avg_delay_steps=" << std::fixed << std::setprecision(2)
+                  << (result.replayDelaySteps /
+                      static_cast<double>(std::max(1, result.replayDelaySamples)))
+                  << ", avg_eligibility="
+                  << (result.replayEligibilityScaleSum /
+                      static_cast<double>(std::max(1, result.replayDelaySamples)))
+                  << std::endl;
+    }
 }
 
 Config parseArgs(int argc, char* argv[]) {
@@ -2271,8 +2396,16 @@ Config parseArgs(int argc, char* argv[]) {
             config.onlineNegativeRewardGain = std::atof(argv[++i]);
         } else if (arg == "--online-replay-queue-capacity" && i + 1 < argc) {
             config.onlineReplayQueueCapacity = std::atoi(argv[++i]);
+        } else if (arg == "--online-replay-delay-steps" && i + 1 < argc) {
+            config.onlineReplayDelaySteps = std::atoi(argv[++i]);
+        } else if (arg == "--online-replay-pause-interval" && i + 1 < argc) {
+            config.onlineReplayPauseInterval = std::atoi(argv[++i]);
+        } else if (arg == "--online-replay-batch-size" && i + 1 < argc) {
+            config.onlineReplayBatchSize = std::atoi(argv[++i]);
         } else if (arg == "--online-replay-uncertainty-threshold" && i + 1 < argc) {
             config.onlineReplayUncertaintyThreshold = std::atof(argv[++i]);
+        } else if (arg == "--online-eligibility-trace-decay" && i + 1 < argc) {
+            config.onlineEligibilityTraceDecay = std::atof(argv[++i]);
         } else if (arg == "--online-context-uncertainty-gain" && i + 1 < argc) {
             config.onlineContextUncertaintyGain = std::atof(argv[++i]);
         } else if (arg == "--online-context-disagreement-gain" && i + 1 < argc) {
@@ -2318,7 +2451,11 @@ Config parseArgs(int argc, char* argv[]) {
                 << "  --online-positive-reward-gain <v>\n"
                 << "  --online-negative-reward-gain <v>\n"
                 << "  --online-replay-queue-capacity <n>\n"
+                << "  --online-replay-delay-steps <n>\n"
+                << "  --online-replay-pause-interval <n>\n"
+                << "  --online-replay-batch-size <n>\n"
                 << "  --online-replay-uncertainty-threshold <v>\n"
+                << "  --online-eligibility-trace-decay <v>\n"
                 << "  --online-context-uncertainty-gain <v>\n"
                 << "  --online-context-disagreement-gain <v>\n"
                 << "  --focus-groups <A,B;C,D;...>\n"
@@ -2406,7 +2543,11 @@ int main(int argc, char* argv[]) {
                       << ", online_pos_gain=" << config.onlinePositiveRewardGain
                       << ", online_neg_gain=" << config.onlineNegativeRewardGain
                       << ", replay_capacity=" << config.onlineReplayQueueCapacity
+                      << ", replay_delay_steps=" << config.onlineReplayDelaySteps
+                      << ", replay_pause_interval=" << config.onlineReplayPauseInterval
+                      << ", replay_batch_size=" << config.onlineReplayBatchSize
                       << ", replay_uncertainty=" << config.onlineReplayUncertaintyThreshold
+                      << ", eligibility_decay=" << config.onlineEligibilityTraceDecay
                       << ", context_uncertainty_gain=" << config.onlineContextUncertaintyGain
                       << ", context_disagreement_gain=" << config.onlineContextDisagreementGain
                       << ", fusion_path=" << (config.fusionPath.empty() ? "<none>" : config.fusionPath)
