@@ -25,6 +25,7 @@ Complete guide to all SNNFrame documentation and resources.
 2. **[ARCHITECTURE.md](ARCHITECTURE.md)** - Architecture and design
 3. **[STDP_GUIDE.md](STDP_GUIDE.md)** - STDP learning guide
 4. **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common issues and solutions
+5. **[RabbitHoles.md](RabbitHoles.md)** - Abandoned or unproductive experiment paths and why they failed
 
 ---
 
@@ -331,4 +332,3 @@ auto snapshot = monitor.getActivitySnapshot();
 ---
 
 **For detailed information, start with [DEVELOPER_MANUAL.md](DEVELOPER_MANUAL.md)**
-
