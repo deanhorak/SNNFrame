@@ -40,6 +40,56 @@ uint32_t makeProjectionSeed(uint32_t baseSeed, const ProjectionIR& proj, size_t 
     return seed;
 }
 
+std::string joinHierarchyPath(std::initializer_list<std::string> parts) {
+    std::ostringstream oss;
+    bool first = true;
+    for (const auto& part : parts) {
+        if (part.empty()) {
+            continue;
+        }
+        if (!first) {
+            oss << "/";
+        }
+        oss << part;
+        first = false;
+    }
+    return oss.str();
+}
+
+std::vector<std::string> splitPath(const std::string& path) {
+    std::vector<std::string> parts;
+    std::istringstream iss(path);
+    std::string part;
+    while (std::getline(iss, part, '/')) {
+        if (!part.empty()) {
+            parts.push_back(part);
+        }
+    }
+    return parts;
+}
+
+bool pathMatchesPattern(const std::string& pattern, const std::string& candidate) {
+    const auto patternParts = splitPath(pattern);
+    const auto candidateParts = splitPath(candidate);
+    if (patternParts.empty() || candidateParts.empty()) {
+        return false;
+    }
+    if (patternParts.size() > candidateParts.size()) {
+        return false;
+    }
+
+    const size_t offset = candidateParts.size() - patternParts.size();
+    for (size_t i = 0; i < patternParts.size(); ++i) {
+        if (patternParts[i] == "*") {
+            continue;
+        }
+        if (patternParts[i] != candidateParts[i + offset]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 NetworkConstructor::NetworkConstructor(NeuralObjectFactory& factory, Datastore& datastore)
@@ -178,6 +228,8 @@ void NetworkConstructor::createNeurons(const NetworkIR& ir, ConstructedNetwork& 
                     for (const auto& colIR : allColumns) {
                         ConstructedNetwork::ColumnGroup cg;
                         cg.name = colIR.name;
+                        cg.path = joinHierarchyPath(
+                            {hemiIR.name, lobeIR.name, regionIR.name, nucleusIR.name, colIR.name});
 
                         // Extract orientation/frequency from properties
                         if (colIR.properties.count("orientation")) {
@@ -189,20 +241,37 @@ void NetworkConstructor::createNeurons(const NetworkIR& ir, ConstructedNetwork& 
 
                         // Create neurons for each layer
                         for (const auto& layerIR : colIR.layers) {
+                            auto& layerNeurons = cg.layerNeurons[layerIR.name];
                             for (const auto& popIR : layerIR.populations) {
                                 auto params = resolveNeuronParams(popIR.neuronParams, ir);
-                                std::vector<std::shared_ptr<Neuron>> layerNeurons;
-                                layerNeurons.reserve(popIR.count);
+                                std::vector<std::shared_ptr<Neuron>> populationNeurons;
+                                populationNeurons.reserve(popIR.count);
                                 for (int i = 0; i < popIR.count; ++i) {
                                     auto neuron = factory_.createNeuron(
                                         params.windowSizeMs,
                                         params.similarityThreshold,
                                         params.maxReferencePatterns);
-                                    layerNeurons.push_back(neuron);
+                                    populationNeurons.push_back(neuron);
                                     result.allNeuronIds.push_back(neuron->getId());
                                 }
-                                cg.layerNeurons[layerIR.name] = std::move(layerNeurons);
+                                layerNeurons.insert(layerNeurons.end(),
+                                                    populationNeurons.begin(),
+                                                    populationNeurons.end());
+
+                                ConstructedNetwork::PathGroup populationGroup;
+                                populationGroup.path = joinHierarchyPath(
+                                    {cg.path, layerIR.name, popIR.name});
+                                populationGroup.neurons = std::move(populationNeurons);
+                                result.populationGroupIndex[populationGroup.path] =
+                                    result.populationGroups.size();
+                                result.populationGroups.push_back(std::move(populationGroup));
                             }
+
+                            ConstructedNetwork::PathGroup layerGroup;
+                            layerGroup.path = joinHierarchyPath({cg.path, layerIR.name});
+                            layerGroup.neurons = layerNeurons;
+                            result.layerGroupIndex[layerGroup.path] = result.layerGroups.size();
+                            result.layerGroups.push_back(std::move(layerGroup));
                         }
 
                         result.columns.push_back(std::move(cg));
@@ -689,24 +758,44 @@ std::vector<ColumnIR> NetworkConstructor::expandColumnTemplate(const ColumnTempl
 // ============================================================================
 std::vector<std::vector<std::shared_ptr<Neuron>>>
 NetworkConstructor::resolveNeuronPath(const std::string& path, const ConstructedNetwork& result) {
-    // Path format: "RegionName/*/LayerName" or "RegionName/*/LayerName/PopName"
-    // The * means "for each column"
     std::vector<std::vector<std::shared_ptr<Neuron>>> resolved;
-
-    // Split path by /
-    std::vector<std::string> parts;
-    std::istringstream iss(path);
-    std::string part;
-    while (std::getline(iss, part, '/')) {
-        if (!part.empty()) parts.push_back(part);
-    }
-
-    if (parts.size() < 3) {
-        SNNFW_WARN("Cannot resolve path '{}': need at least Region/*/Layer", path);
+    if (path.empty()) {
         return resolved;
     }
 
-    // Find the layer name (last non-wildcard component, or after the *)
+    const bool hasWildcard = path.find('*') != std::string::npos;
+    if (!hasWildcard) {
+        const auto layerIt = result.layerGroupIndex.find(path);
+        if (layerIt != result.layerGroupIndex.end()) {
+            resolved.push_back(result.layerGroups[layerIt->second].neurons);
+            return resolved;
+        }
+        const auto popIt = result.populationGroupIndex.find(path);
+        if (popIt != result.populationGroupIndex.end()) {
+            resolved.push_back(result.populationGroups[popIt->second].neurons);
+            return resolved;
+        }
+    }
+
+    for (const auto& group : result.layerGroups) {
+        if (pathMatchesPattern(path, group.path)) {
+            resolved.push_back(group.neurons);
+        }
+    }
+    if (!resolved.empty()) {
+        return resolved;
+    }
+    for (const auto& group : result.populationGroups) {
+        if (pathMatchesPattern(path, group.path)) {
+            resolved.push_back(group.neurons);
+        }
+    }
+    if (!resolved.empty()) {
+        return resolved;
+    }
+
+    // Legacy fallback for older short-form paths that only imply a layer name.
+    const auto parts = splitPath(path);
     std::string layerName;
     for (size_t i = 0; i < parts.size(); ++i) {
         if (parts[i] == "*" && i + 1 < parts.size()) {
@@ -714,13 +803,14 @@ NetworkConstructor::resolveNeuronPath(const std::string& path, const Constructed
             break;
         }
     }
-
+    if (layerName.empty() && !parts.empty()) {
+        layerName = parts.back();
+    }
     if (layerName.empty()) {
-        SNNFW_WARN("Cannot resolve path '{}': no layer name found after '*'", path);
+        SNNFW_WARN("Cannot resolve path '{}': no matching layer or population", path);
         return resolved;
     }
 
-    // Collect neurons from each column's matching layer
     for (const auto& col : result.columns) {
         auto it = col.layerNeurons.find(layerName);
         if (it != col.layerNeurons.end()) {

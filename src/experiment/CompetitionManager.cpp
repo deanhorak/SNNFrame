@@ -162,6 +162,8 @@ std::vector<bool> CompetitionManager::runL4Competition(
         struct RankedNeuron {
             double score = 0.0;
             size_t spikes = 0;
+            double incoming = 0.0;
+            double activation = 0.0;
             double similarity = 0.0;
             size_t idx = 0;
         };
@@ -173,17 +175,24 @@ std::vector<bool> CompetitionManager::runL4Competition(
             RankedNeuron candidate;
             candidate.idx = i;
             candidate.spikes = l4Neurons[i]->getSpikes().size();
+            candidate.incoming = static_cast<double>(l4Neurons[i]->getIncomingSpikeCount());
+            candidate.activation = std::max(0.0, l4Neurons[i]->getActivation());
             candidate.similarity = std::max(0.0, l4Neurons[i]->getBestSimilarity());
             ranked.push_back(candidate);
             maxSpikes = std::max(maxSpikes, candidate.spikes);
         }
         for (auto& candidate : ranked) {
+            const double feedforwardDrive =
+                static_cast<double>(candidate.spikes) +
+                (config_.l4IncomingWeight * candidate.incoming) +
+                (config_.l4ActivationWeight * candidate.activation);
             candidate.score = config_.enableSimilarityCompetition
-                ? computeHybridCompetitionScore(
-                    candidate.spikes, maxSpikes, candidate.similarity, config_.l4SimilarityWeight)
-                : static_cast<double>(candidate.spikes);
-            if (candidate.spikes > 0) {
-                callPoolSpikeSum += static_cast<double>(candidate.spikes);
+                ? (((1.0 - std::clamp(config_.l4SimilarityWeight, 0.0, 1.0)) * feedforwardDrive) +
+                   (std::clamp(config_.l4SimilarityWeight, 0.0, 1.0) *
+                    (candidate.similarity * std::max(1.0, static_cast<double>(maxSpikes)))))
+                : feedforwardDrive;
+            if (feedforwardDrive > 0.0) {
+                callPoolSpikeSum += feedforwardDrive;
                 callPoolSimSum += candidate.similarity;
                 callPoolScoreSum += candidate.score;
                 callPoolCount++;
@@ -192,6 +201,8 @@ std::vector<bool> CompetitionManager::runL4Competition(
         std::sort(ranked.begin(), ranked.end(),
                   [](const RankedNeuron& a, const RankedNeuron& b) {
                       if (a.score != b.score) return a.score > b.score;
+                      if (a.incoming != b.incoming) return a.incoming > b.incoming;
+                      if (a.activation != b.activation) return a.activation > b.activation;
                       if (a.spikes != b.spikes) return a.spikes > b.spikes;
                       if (a.similarity != b.similarity) return a.similarity > b.similarity;
                       return a.idx < b.idx;
@@ -199,7 +210,7 @@ std::vector<bool> CompetitionManager::runL4Competition(
 
         int winners = 0;
         for (size_t i = 0; i < ranked.size() && winners < L4_KEEP; ++i) {
-            if (ranked[i].spikes == 0) break;
+            if (ranked[i].score <= 0.0) break;
             int localIdx = static_cast<int>(ranked[i].idx);
             int l4Row = localIdx / config_.layer4Size;
             int l4Col = localIdx % config_.layer4Size;
@@ -297,6 +308,7 @@ std::vector<bool> CompetitionManager::runL5Competition(
         struct RankedNeuron {
             double score = 0.0;
             size_t spikes = 0;
+            double incoming = 0.0;
             double similarity = 0.0;
             double activation = 0.0;
             size_t patternCount = 0;
@@ -313,6 +325,7 @@ std::vector<bool> CompetitionManager::runL5Competition(
             RankedNeuron candidate;
             candidate.idx = i;
             candidate.spikes = l5Neurons[i]->getSpikes().size();
+            candidate.incoming = static_cast<double>(l5Neurons[i]->getIncomingSpikeCount());
             candidate.similarity = std::max(0.0, l5Neurons[i]->getBestSimilarity());
             candidate.activation = std::max(0.0, l5Neurons[i]->getActivation());
             candidate.patternCount = l5Neurons[i]->getLearnedPatternCount();
@@ -333,11 +346,15 @@ std::vector<bool> CompetitionManager::runL5Competition(
             ? std::max(0.0, config_.l5WinnerMinScoreMargin)
             : 0.0;
         for (auto& candidate : ranked) {
+            const double feedforwardDrive =
+                static_cast<double>(candidate.spikes) +
+                (config_.l5IncomingWeight * candidate.incoming) +
+                (config_.l5ActivationWeight * candidate.activation);
             candidate.passesInferenceGate =
                 !gateReady ||
                 candidate.patternCount == 0 ||
                 candidate.similarity >= minSimilarity;
-            if (candidate.spikes >= static_cast<size_t>(config_.l5MinSpikes) &&
+            if (feedforwardDrive >= static_cast<double>(config_.l5MinSpikes) &&
                 candidate.passesInferenceGate) {
                 ++eligibleForStrictGate;
             }
@@ -345,10 +362,15 @@ std::vector<bool> CompetitionManager::runL5Competition(
         const bool enforceStrictGate = gateReady &&
             eligibleForStrictGate >= static_cast<size_t>(std::max(1, l5Keep));
         for (auto& candidate : ranked) {
+            const double feedforwardDrive =
+                static_cast<double>(candidate.spikes) +
+                (config_.l5IncomingWeight * candidate.incoming) +
+                (config_.l5ActivationWeight * candidate.activation);
             const double baseScore = config_.enableSimilarityCompetition
-                ? computeHybridCompetitionScore(
-                    candidate.spikes, maxSpikes, candidate.similarity, config_.l5SimilarityWeight)
-                : static_cast<double>(candidate.spikes);
+                ? (((1.0 - std::clamp(config_.l5SimilarityWeight, 0.0, 1.0)) * feedforwardDrive) +
+                   (std::clamp(config_.l5SimilarityWeight, 0.0, 1.0) *
+                    (candidate.similarity * std::max(1.0, static_cast<double>(maxSpikes)))))
+                : feedforwardDrive;
             if (candidate.patternCount > 0) {
                 candidate.score = baseScore;
                 if (!trainingPhase && config_.l5InferenceSimilarityBias > 0.0) {
@@ -363,8 +385,8 @@ std::vector<bool> CompetitionManager::runL5Competition(
             } else {
                 candidate.score = baseScore;
             }
-            if (candidate.spikes > 0) {
-                callPoolSpikeSum += static_cast<double>(candidate.spikes);
+            if (feedforwardDrive > 0.0) {
+                callPoolSpikeSum += feedforwardDrive;
                 callPoolSimSum += candidate.similarity;
                 callPoolScoreSum += candidate.score;
                 callPoolCount++;
@@ -373,6 +395,7 @@ std::vector<bool> CompetitionManager::runL5Competition(
         std::sort(ranked.begin(), ranked.end(),
                       [](const RankedNeuron& a, const RankedNeuron& b) {
                       if (a.score != b.score) return a.score > b.score;
+                      if (a.incoming != b.incoming) return a.incoming > b.incoming;
                       if (a.activation != b.activation) return a.activation > b.activation;
                       if (a.passesInferenceGate != b.passesInferenceGate) {
                           return a.passesInferenceGate > b.passesInferenceGate;
@@ -387,7 +410,11 @@ std::vector<bool> CompetitionManager::runL5Competition(
             double first = 0.0;
             double second = 0.0;
             for (const auto& candidate : ranked) {
-                if (candidate.spikes < static_cast<size_t>(config_.l5MinSpikes)) continue;
+                const double feedforwardDrive =
+                    static_cast<double>(candidate.spikes) +
+                    (config_.l5IncomingWeight * candidate.incoming) +
+                    (config_.l5ActivationWeight * candidate.activation);
+                if (feedforwardDrive < static_cast<double>(config_.l5MinSpikes)) continue;
                 const bool hasPatterns = candidate.patternCount > 0;
                 if (enforceStrictGate && hasPatterns && candidate.similarity < minSimilarity) continue;
                 if (qualified == 0) {
@@ -410,13 +437,17 @@ std::vector<bool> CompetitionManager::runL5Competition(
         double winnerDrive = 0.0;
         for (size_t i = 0; i < ranked.size() && winners < l5Keep && columnPassesMarginGate; ++i) {
             if (enforceStrictGate && !ranked[i].passesInferenceGate) continue;
-            if (ranked[i].spikes < static_cast<size_t>(config_.l5MinSpikes)) break;
+            const double feedforwardDrive =
+                static_cast<double>(ranked[i].spikes) +
+                (config_.l5IncomingWeight * ranked[i].incoming) +
+                (config_.l5ActivationWeight * ranked[i].activation);
+            if (feedforwardDrive < static_cast<double>(config_.l5MinSpikes)) break;
             const bool hasPatterns = ranked[i].patternCount > 0;
             if (enforceStrictGate && hasPatterns && ranked[i].similarity < minSimilarity) continue;
             l5WinnerGlobal[l5Offset + ranked[i].idx] = true;
             l5WinnerLocal[ranked[i].idx] = true;
             winnerDrive += ranked[i].score;
-            callWinnerSpikeSum += static_cast<double>(ranked[i].spikes);
+            callWinnerSpikeSum += feedforwardDrive;
             callWinnerSimSum += ranked[i].similarity;
             callWinnerScoreSum += ranked[i].score;
             callWinnerCount++;

@@ -15,6 +15,7 @@
 #include <memory>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <string>
 
 namespace snnfw {
@@ -28,6 +29,11 @@ namespace declarative {
  * runtime processors, named neuron groups, and synapse groups.
  */
 struct ConstructedNetwork {
+    struct PathGroup {
+        std::string path;
+        std::vector<std::shared_ptr<Neuron>> neurons;
+    };
+
     std::shared_ptr<Brain> brain;
     std::shared_ptr<SpikeProcessor> spikeProcessor;
     std::shared_ptr<NetworkPropagator> propagator;
@@ -41,6 +47,7 @@ struct ConstructedNetwork {
     /// Per-column structures for feature processing
     struct ColumnGroup {
         std::string name;
+        std::string path;
         double orientation = 0.0;
         double spatialFrequency = 0.0;
         /// Neurons keyed by layer name: "L4" -> [...], "L5" -> [...]
@@ -52,6 +59,15 @@ struct ConstructedNetwork {
         std::vector<int> inputMaskActiveIdx;
     };
     std::vector<ColumnGroup> columns;
+
+    /// Exact full-path layer groups in construction order
+    std::vector<PathGroup> layerGroups;
+    /// Exact full-path population groups in construction order
+    std::vector<PathGroup> populationGroups;
+    /// Exact path lookups for layer groups
+    std::unordered_map<std::string, size_t> layerGroupIndex;
+    /// Exact path lookups for population groups
+    std::unordered_map<std::string, size_t> populationGroupIndex;
 
     /// All synapses grouped by synapse group name
     std::map<std::string, std::vector<std::shared_ptr<Synapse>>> synapseGroups;

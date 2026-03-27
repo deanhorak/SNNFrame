@@ -79,7 +79,11 @@ struct ExperimentConfig {
     int l4Keep = 8;
     int l5Keep = 8;
     bool enableSimilarityCompetition = true;
+    double l4IncomingWeight = 0.0;
+    double l4ActivationWeight = 0.0;
     double l4SimilarityWeight = 0.25;
+    double l5IncomingWeight = 0.0;
+    double l5ActivationWeight = 0.0;
     double l5SimilarityWeight = 0.60;
     bool traceSimilarityCompetition = false;
     bool hasSimilarityRuntimeOverrides = false;
