@@ -8,7 +8,7 @@ These are the benchmark paths worth keeping as the active reference surface:
 
 - Unilateral Retina static: `86.17%`
 - Bilateral Retina static: `87.29%`
-- Bilateral Retina continuous: `87.56%` initial, `88.44%` post-correction
+- Bilateral Retina continuous: `87.67%` initial, `88.77%` post-correction
 
 These live in:
 

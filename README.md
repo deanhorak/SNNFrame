@@ -138,6 +138,60 @@ The bilateral configs use two transformed hemisphere views and corpus-callosum-s
 
 Retina declarative configs can now also declare a real `brain` hierarchy. In that mode, each Retina adapter binds to a declared layer path with `string_params.attach_path`, and the bilateral fusion layer is declared with `classification.string_params.fusion_path` instead of relying only on free-form hemisphere tags.
 
+Current bilateral Retina structure:
+
+```mermaid
+flowchart TD
+    IMG[EMNIST image]
+
+    subgraph LH[Left Hemisphere]
+        LVIEW[Transformed left view]
+        L9[Sobel g9]
+        L10[Sobel g10]
+        LDOG[DoG g9]
+        LSTAGE[Left stage-1 classifier]
+        LASSOC[Association nucleus]
+        LVIEW --> L9
+        LVIEW --> L10
+        LVIEW --> LDOG
+        L9 --> LSTAGE
+        L10 --> LSTAGE
+        LDOG --> LSTAGE
+        LSTAGE --> LASSOC
+    end
+
+    subgraph RH[Right Hemisphere]
+        RVIEW[Transformed right view]
+        R9[Sobel g9]
+        R10[Sobel g10]
+        RDOG[DoG g9]
+        RSTAGE[Right stage-1 classifier]
+        RASSOC[Association nucleus]
+        RVIEW --> R9
+        RVIEW --> R10
+        RVIEW --> RDOG
+        R9 --> RSTAGE
+        R10 --> RSTAGE
+        RDOG --> RSTAGE
+        RSTAGE --> RASSOC
+    end
+
+    subgraph CC[Interhemispheric Bridge]
+        FUSION[Corpus-callosum fusion]
+        CL[Continuous learning]
+        REPLAY[Delayed replay queue]
+        FUSION --> CL
+        CL --> REPLAY
+        REPLAY --> FUSION
+    end
+
+    IMG --> LVIEW
+    IMG --> RVIEW
+    LASSOC --> FUSION
+    RASSOC --> FUSION
+    FUSION --> OUT[Final classification]
+```
+
 Reference full-run benchmarks on EMNIST letters (`3200/class`, `5200` test, `seed 42`):
 
 Static inference benchmarks:
