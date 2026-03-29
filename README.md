@@ -200,6 +200,9 @@ Static inference benchmarks:
 
 Continuous-learning benchmark:
 - Bilateral Retina continuous: initial `87.50%`, post-correction `88.85%`
+- Full benchmark runtime with parallel hemisphere processing: `2448.60s`
+- Prior serial runtime for the same promoted config: `4769.88s`
+- Runtime reduction: `48.67%` (`1.95x` speedup)
 
 Static and continuous results are separate benchmark categories. The continuous result includes online reward-driven adaptation during evaluation and is not directly comparable to the static held-out metric.
 
@@ -277,6 +280,7 @@ Initial accuracy: 87.50%
 Post-correction accuracy: 88.85%
 Correction events: 650, corrected: 70 (10.77%), replays: 1849
 Replay timing: avg_delay_steps=4.00, avg_eligibility=0.40
+Elapsed: 2448.60s
 ```
 
 Expected logs:

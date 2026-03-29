@@ -49,6 +49,9 @@ These are separate benchmark categories. The continuous benchmark includes onlin
   - corrected `70`
   - replays `1849`
   - replay timing `avg_delay_steps=4.00`, `avg_eligibility=0.40`
+  - elapsed `2448.60s` with parallel hemisphere processing
+  - prior serial elapsed `4769.88s`
+  - runtime reduction `48.67%` (`1.95x`)
 
 ## Main implementation points
 - Reward signal is scalar inside the learner
