@@ -29,6 +29,7 @@
         "corpus_vote_gain": 0.2,
         "corpus_margin_gain": 0.5,
         "corpus_centroid_gain": 0.1,
+        "corpus_disagreement_gain": 0.2,
         "online_centroid_lr": 0.25,
         "online_positive_reward_gain": 0.5,
         "online_negative_reward_gain": 1.1,

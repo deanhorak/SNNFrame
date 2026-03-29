@@ -1,5 +1,6 @@
 #include "snnfw/EMNISTLoader.h"
 #include "snnfw/Logger.h"
+#include "snnfw/ThreadPool.h"
 #include "snnfw/adapters/RetinaAdapter.h"
 #include "snnfw/classification/ClassificationStrategy.h"
 #include "snnfw/declarative/NativeJSONParser.h"
@@ -80,6 +81,7 @@ struct Config {
     double corpusMarginGain = 0.50;
     double corpusCentroidGain = 0.0;
     double corpusNeighborGain = 0.0;
+    double corpusDisagreementGain = 0.0;
     int onlineCorrectionRepeats = 0;
     int onlineExemplarBudgetPerClass = 16;
     double onlineCentroidLr = 0.25;
@@ -93,6 +95,12 @@ struct Config {
     double onlineEligibilityTraceDecay = 1.0;
     double onlineContextUncertaintyGain = 0.75;
     double onlineContextDisagreementGain = 0.50;
+    double onlineConfusionClusterGain = 0.0;
+    double onlineConfusionClusterDecay = 0.97;
+    bool focusAdjustmentEnabled = false;
+    double focusAdjustmentMarginThreshold = 0.10;
+    double focusAdjustmentZoom = 1.08;
+    double focusAdjustmentShiftPx = 0.35;
     bool hierarchicalRetinaLayout = false;
     std::vector<std::string> declaredHemisphereOrder;
     std::string fusionPath;
@@ -140,13 +148,20 @@ struct BilateralDecisionTrace {
 struct DecisionContext {
     double uncertainty = 0.0;
     double disagreement = 0.0;
+    double confusionCluster = 0.0;
     double plasticity = 1.0;
     double replayPriority = 0.0;
+};
+
+struct ConfusionClusterMemory {
+    std::array<std::array<double, 26>, 26> strengths{};
 };
 
 struct OnlineSampleRecord {
     size_t imageIndex = 0;
     int truth = -1;
+    int leftInitialPredicted = -1;
+    int rightInitialPredicted = -1;
     int initialPredicted = -1;
     int finalPredicted = -1;
     bool correctionSucceeded = false;
@@ -172,9 +187,54 @@ struct RetinaLayerBinding {
     std::string path;
 };
 
+struct HemisphereTrainingArtifacts {
+    std::vector<ClassificationStrategy::LabeledPattern> trainingPatterns;
+    std::vector<size_t> trainingSourceIndices;
+};
+
 std::vector<double> buildFusionPattern(std::vector<HemisphereRuntime>& hemispheres,
                                        const EMNISTLoader::Image& image,
                                        const Config& config);
+
+size_t hemisphereWorkerCount(size_t hemisphereCount) {
+    const size_t hardwareThreads =
+        std::max<size_t>(1, static_cast<size_t>(std::thread::hardware_concurrency()));
+    return std::max<size_t>(1, std::min(hemisphereCount, hardwareThreads));
+}
+
+snnfw::ThreadPool& getHemisphereThreadPool(size_t hemisphereCount) {
+    static std::unique_ptr<snnfw::ThreadPool> pool;
+    static size_t poolSize = 0;
+
+    const size_t desiredSize = hemisphereWorkerCount(hemisphereCount);
+    if (!pool || poolSize != desiredSize) {
+        pool = std::make_unique<snnfw::ThreadPool>(desiredSize);
+        poolSize = desiredSize;
+    }
+    return *pool;
+}
+
+template <typename Result, typename Fn>
+std::vector<Result> runHemisphereTasks(size_t hemisphereCount, Fn&& fn) {
+    std::vector<Result> results(hemisphereCount);
+    if (hemisphereCount <= 1) {
+        for (size_t i = 0; i < hemisphereCount; ++i) {
+            results[i] = fn(i);
+        }
+        return results;
+    }
+
+    auto& pool = getHemisphereThreadPool(hemisphereCount);
+    std::vector<std::future<Result>> futures;
+    futures.reserve(hemisphereCount);
+    for (size_t i = 0; i < hemisphereCount; ++i) {
+        futures.push_back(pool.enqueue([&fn, i]() { return fn(i); }));
+    }
+    for (size_t i = 0; i < hemisphereCount; ++i) {
+        results[i] = futures[i].get();
+    }
+    return results;
+}
 
 double cosineSimilarity(const std::vector<double>& a, const std::vector<double>& b) {
     if (a.size() != b.size() || a.empty()) {
@@ -307,6 +367,65 @@ void normalizeSum(std::vector<double>& values) {
     for (double& value : values) {
         value /= sum;
     }
+}
+
+EMNISTLoader::Image applyImageFocusTransform(const EMNISTLoader::Image& image,
+                                             double scale,
+                                             double shiftXPx) {
+    const bool hasTransform = std::abs(scale - 1.0) > 1e-6 || std::abs(shiftXPx) > 1e-6;
+    if (!hasTransform) {
+        return image;
+    }
+
+    EMNISTLoader::Image transformed;
+    transformed.label = image.label;
+    transformed.rows = image.rows;
+    transformed.cols = image.cols;
+    transformed.pixels.assign(static_cast<size_t>(image.rows * image.cols), 0);
+
+    const double centerX = 0.5 * static_cast<double>(image.cols - 1);
+    const double centerY = 0.5 * static_cast<double>(image.rows - 1);
+    const double safeScale = std::max(1e-3, scale);
+
+    auto sampleBilinear = [&](double row, double col) -> uint8_t {
+        if (row < 0.0 || col < 0.0 ||
+            row > static_cast<double>(image.rows - 1) ||
+            col > static_cast<double>(image.cols - 1)) {
+            return 0;
+        }
+
+        const int r0 = static_cast<int>(std::floor(row));
+        const int c0 = static_cast<int>(std::floor(col));
+        const int r1 = std::min(r0 + 1, image.rows - 1);
+        const int c1 = std::min(c0 + 1, image.cols - 1);
+        const double fr = row - static_cast<double>(r0);
+        const double fc = col - static_cast<double>(c0);
+
+        const double p00 = static_cast<double>(image.getPixel(r0, c0));
+        const double p01 = static_cast<double>(image.getPixel(r0, c1));
+        const double p10 = static_cast<double>(image.getPixel(r1, c0));
+        const double p11 = static_cast<double>(image.getPixel(r1, c1));
+        const double top = p00 * (1.0 - fc) + p01 * fc;
+        const double bottom = p10 * (1.0 - fc) + p11 * fc;
+        const double value = top * (1.0 - fr) + bottom * fr;
+        return static_cast<uint8_t>(std::clamp(std::lround(value), 0L, 255L));
+    };
+
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            double x = static_cast<double>(col) - centerX;
+            double y = static_cast<double>(row) - centerY;
+            x -= shiftXPx;
+            x /= safeScale;
+            y /= safeScale;
+            const double srcX = x + centerX;
+            const double srcY = y + centerY;
+            transformed.pixels[static_cast<size_t>(row * image.cols + col)] =
+                sampleBilinear(srcY, srcX);
+        }
+    }
+
+    return transformed;
 }
 
 std::string toLower(std::string value) {
@@ -531,6 +650,11 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     if (corpusNeighborGainIt != irConfig.doubleParams.end()) {
         config.corpusNeighborGain = corpusNeighborGainIt->second;
     }
+    const auto corpusDisagreementGainIt =
+        irConfig.doubleParams.find("corpus_disagreement_gain");
+    if (corpusDisagreementGainIt != irConfig.doubleParams.end()) {
+        config.corpusDisagreementGain = corpusDisagreementGainIt->second;
+    }
     const auto onlineRepeatsIt = irConfig.intParams.find("online_correction_repeats");
     if (onlineRepeatsIt != irConfig.intParams.end()) {
         config.onlineCorrectionRepeats = onlineRepeatsIt->second;
@@ -586,6 +710,33 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
         irConfig.doubleParams.find("online_context_disagreement_gain");
     if (onlineContextDisagreementGainIt != irConfig.doubleParams.end()) {
         config.onlineContextDisagreementGain = onlineContextDisagreementGainIt->second;
+    }
+    const auto onlineConfusionClusterGainIt =
+        irConfig.doubleParams.find("online_confusion_cluster_gain");
+    if (onlineConfusionClusterGainIt != irConfig.doubleParams.end()) {
+        config.onlineConfusionClusterGain = onlineConfusionClusterGainIt->second;
+    }
+    const auto onlineConfusionClusterDecayIt =
+        irConfig.doubleParams.find("online_confusion_cluster_decay");
+    if (onlineConfusionClusterDecayIt != irConfig.doubleParams.end()) {
+        config.onlineConfusionClusterDecay = onlineConfusionClusterDecayIt->second;
+    }
+    const auto focusAdjustmentEnabledIt = irConfig.intParams.find("focus_adjustment_enabled");
+    if (focusAdjustmentEnabledIt != irConfig.intParams.end()) {
+        config.focusAdjustmentEnabled = focusAdjustmentEnabledIt->second != 0;
+    }
+    const auto focusAdjustmentMarginIt =
+        irConfig.doubleParams.find("focus_adjustment_margin_threshold");
+    if (focusAdjustmentMarginIt != irConfig.doubleParams.end()) {
+        config.focusAdjustmentMarginThreshold = focusAdjustmentMarginIt->second;
+    }
+    const auto focusAdjustmentZoomIt = irConfig.doubleParams.find("focus_adjustment_zoom");
+    if (focusAdjustmentZoomIt != irConfig.doubleParams.end()) {
+        config.focusAdjustmentZoom = focusAdjustmentZoomIt->second;
+    }
+    const auto focusAdjustmentShiftIt = irConfig.doubleParams.find("focus_adjustment_shift_px");
+    if (focusAdjustmentShiftIt != irConfig.doubleParams.end()) {
+        config.focusAdjustmentShiftPx = focusAdjustmentShiftIt->second;
     }
 }
 
@@ -836,15 +987,44 @@ struct TrainingSplit {
 struct EvaluationResult {
     std::array<std::array<int, 26>, 26> initialConfusion{};
     std::array<std::array<int, 26>, 26> confusion{};
+    std::array<std::array<int, 26>, 26> leftHemisphereConfusion{};
+    std::array<std::array<int, 26>, 26> rightHemisphereConfusion{};
+    std::array<std::array<int, 26>, 26> correctedInitialPairs{};
+    std::array<std::array<int, 26>, 26> unresolvedInitialPairs{};
     int tested = 0;
     int correct = 0;
     int initialCorrect = 0;
+    int hemisphereComparable = 0;
+    int hemisphereAgreements = 0;
+    int hemisphereAgreementCorrect = 0;
+    int hemisphereDisagreements = 0;
+    int leftOnlyCorrectOnDisagreement = 0;
+    int rightOnlyCorrectOnDisagreement = 0;
+    int bothWrongOnDisagreement = 0;
+    int focusAdjustmentTriggers = 0;
+    int focusAdjustmentOverrides = 0;
+    int focusAdjustmentCorrections = 0;
+    int focusAdjustmentRegressions = 0;
+    int focusOriginalSelections = 0;
+    int focusLeftSelections = 0;
+    int focusCenterSelections = 0;
+    int focusRightSelections = 0;
+    int fusionRescuesOneHemisphereRight = 0;
+    int fusionRescuesBothHemispheresWrong = 0;
+    int fusionMissesWhenLeftWasRight = 0;
+    int fusionMissesWhenRightWasRight = 0;
+    int initialWrongBothHemispheresWrong = 0;
+    int correctedFromOneHemisphereRight = 0;
+    int correctedFromBothHemispheresWrong = 0;
     int correctionEvents = 0;
     int correctionSuccesses = 0;
     int correctionReplays = 0;
     int replayDelaySamples = 0;
     double replayDelaySteps = 0.0;
     double replayEligibilityScaleSum = 0.0;
+    double confusionClusterScoreSum = 0.0;
+    int confusionClusterScoreSamples = 0;
+    std::array<std::array<double, 26>, 26> confusionClusterStrengths{};
     double seconds = 0.0;
 };
 
@@ -930,6 +1110,14 @@ int onlineReplayBatchSize(const Config& config) {
     return std::max(1, config.onlineReplayBatchSize);
 }
 
+double onlineConfusionClusterGain(const Config& config) {
+    return std::clamp(config.onlineConfusionClusterGain, 0.0, 3.0);
+}
+
+double onlineConfusionClusterDecay(const Config& config) {
+    return std::clamp(config.onlineConfusionClusterDecay, 0.50, 0.999);
+}
+
 double decayEligibilityTrace(double currentScale, size_t delaySteps, const Config& config) {
     const double decay = std::clamp(config.onlineEligibilityTraceDecay, 0.10, 1.0);
     const double delayed =
@@ -937,7 +1125,123 @@ double decayEligibilityTrace(double currentScale, size_t delaySteps, const Confi
     return std::clamp(delayed, 0.05, 1.0);
 }
 
-DecisionContext buildDecisionContext(const BilateralDecisionTrace& decision, const Config& config) {
+void decayConfusionClusterMemory(ConfusionClusterMemory& memory, const Config& config) {
+    const double decay = onlineConfusionClusterDecay(config);
+    for (auto& row : memory.strengths) {
+        for (double& value : row) {
+            value *= decay;
+        }
+    }
+}
+
+void reinforceConfusionPair(ConfusionClusterMemory& memory, int a, int b, double amount) {
+    if (a < 0 || a >= 26 || b < 0 || b >= 26 || a == b || amount <= 0.0) {
+        return;
+    }
+    auto& ab = memory.strengths[static_cast<size_t>(a)][static_cast<size_t>(b)];
+    auto& ba = memory.strengths[static_cast<size_t>(b)][static_cast<size_t>(a)];
+    ab = std::clamp(ab + amount, 0.0, 10.0);
+    ba = std::clamp(ba + amount, 0.0, 10.0);
+}
+
+void updateConfusionClusterMemory(ConfusionClusterMemory& memory,
+                                  const BilateralDecisionTrace& decision,
+                                  bool negativeReward,
+                                  const Config& config) {
+    decayConfusionClusterMemory(memory, config);
+    if (!negativeReward) {
+        return;
+    }
+
+    const double gain = onlineConfusionClusterGain(config);
+    if (gain <= 0.0) {
+        return;
+    }
+
+    if (decision.hemisphereTraces.size() >= 2) {
+        const int leftPredicted = decision.hemisphereTraces[0].predicted;
+        const int rightPredicted = decision.hemisphereTraces[1].predicted;
+        if (leftPredicted >= 0 && rightPredicted >= 0 && leftPredicted != rightPredicted) {
+            reinforceConfusionPair(memory, leftPredicted, rightPredicted, 1.00 * gain);
+        }
+    }
+
+    if (decision.topHypotheses.size() >= 2) {
+        reinforceConfusionPair(memory,
+                               decision.topHypotheses[0].label,
+                               decision.topHypotheses[1].label,
+                               0.75 * gain);
+    }
+}
+
+double computeConfusionClusterScore(const ConfusionClusterMemory& memory,
+                                    const BilateralDecisionTrace& decision) {
+    double score = 0.0;
+    if (decision.hemisphereTraces.size() >= 2) {
+        const int leftPredicted = decision.hemisphereTraces[0].predicted;
+        const int rightPredicted = decision.hemisphereTraces[1].predicted;
+        if (leftPredicted >= 0 && rightPredicted >= 0 && leftPredicted != rightPredicted) {
+            score = std::max(score,
+                             memory.strengths[static_cast<size_t>(leftPredicted)]
+                                             [static_cast<size_t>(rightPredicted)]);
+        }
+    }
+
+    if (decision.topHypotheses.size() >= 2) {
+        const int best = decision.topHypotheses[0].label;
+        const int second = decision.topHypotheses[1].label;
+        if (best >= 0 && best < 26 && second >= 0 && second < 26 && best != second) {
+            score = std::max(score,
+                             memory.strengths[static_cast<size_t>(best)]
+                                             [static_cast<size_t>(second)]);
+        }
+    }
+    return score;
+}
+
+void recordHemisphereAgreement(EvaluationResult& result,
+                               const BilateralDecisionTrace& decision,
+                               int truth) {
+    if (decision.hemisphereTraces.size() < 2) {
+        return;
+    }
+
+    const int leftPredicted = decision.hemisphereTraces[0].predicted;
+    const int rightPredicted = decision.hemisphereTraces[1].predicted;
+    if (leftPredicted < 0 || leftPredicted >= 26 ||
+        rightPredicted < 0 || rightPredicted >= 26 ||
+        truth < 0 || truth >= 26) {
+        return;
+    }
+
+    result.leftHemisphereConfusion[static_cast<size_t>(truth)]
+                                 [static_cast<size_t>(leftPredicted)]++;
+    result.rightHemisphereConfusion[static_cast<size_t>(truth)]
+                                  [static_cast<size_t>(rightPredicted)]++;
+    result.hemisphereComparable++;
+    if (leftPredicted == rightPredicted) {
+        result.hemisphereAgreements++;
+        if (leftPredicted == truth) {
+            result.hemisphereAgreementCorrect++;
+        }
+        return;
+    }
+
+    result.hemisphereDisagreements++;
+    const bool leftCorrect = (leftPredicted == truth);
+    const bool rightCorrect = (rightPredicted == truth);
+    if (leftCorrect && !rightCorrect) {
+        result.leftOnlyCorrectOnDisagreement++;
+    } else if (rightCorrect && !leftCorrect) {
+        result.rightOnlyCorrectOnDisagreement++;
+    } else if (!leftCorrect && !rightCorrect) {
+        result.bothWrongOnDisagreement++;
+    }
+}
+
+DecisionContext buildDecisionContext(const BilateralDecisionTrace& decision,
+                                     const Config& config,
+                                     const ConfusionClusterMemory* confusionMemory = nullptr) {
     DecisionContext context;
     if (!decision.topHypotheses.empty()) {
         const double best = decision.topHypotheses.front().score;
@@ -963,11 +1267,16 @@ DecisionContext buildDecisionContext(const BilateralDecisionTrace& decision, con
         ? static_cast<double>(disagreements) / static_cast<double>(validVotes)
         : 0.0;
 
+    if (confusionMemory != nullptr) {
+        context.confusionCluster = computeConfusionClusterScore(*confusionMemory, decision);
+    }
+
     context.plasticity = 1.0 +
         config.onlineContextUncertaintyGain * context.uncertainty +
         config.onlineContextDisagreementGain * context.disagreement;
     context.plasticity = std::clamp(context.plasticity, 0.5, 3.0);
-    context.replayPriority = context.plasticity + context.uncertainty + 0.5 * context.disagreement;
+    context.replayPriority = context.plasticity + context.uncertainty +
+                             0.5 * context.disagreement + context.confusionCluster;
     return context;
 }
 
@@ -1055,9 +1364,18 @@ void finalizeEvaluationFromRecords(EvaluationResult& result,
                                    double seconds) {
     result.initialConfusion = {};
     result.confusion = {};
+    result.correctedInitialPairs = {};
+    result.unresolvedInitialPairs = {};
     result.tested = 0;
     result.correct = 0;
     result.initialCorrect = 0;
+    result.fusionRescuesOneHemisphereRight = 0;
+    result.fusionRescuesBothHemispheresWrong = 0;
+    result.fusionMissesWhenLeftWasRight = 0;
+    result.fusionMissesWhenRightWasRight = 0;
+    result.initialWrongBothHemispheresWrong = 0;
+    result.correctedFromOneHemisphereRight = 0;
+    result.correctedFromBothHemispheresWrong = 0;
 
     for (const auto& record : records) {
         if (record.truth < 0 || record.truth >= 26 ||
@@ -1072,6 +1390,44 @@ void finalizeEvaluationFromRecords(EvaluationResult& result,
         result.initialCorrect += (record.initialPredicted == record.truth) ? 1 : 0;
         result.correct += (record.finalPredicted == record.truth) ? 1 : 0;
         result.tested++;
+
+        const bool leftCorrect = record.leftInitialPredicted == record.truth;
+        const bool rightCorrect = record.rightInitialPredicted == record.truth;
+        const bool exactlyOneHemisphereRight = leftCorrect != rightCorrect;
+        const bool bothHemispheresWrong = !leftCorrect && !rightCorrect;
+        const bool initialCorrect = record.initialPredicted == record.truth;
+        const bool finalCorrect = record.finalPredicted == record.truth;
+
+        if (exactlyOneHemisphereRight) {
+            if (initialCorrect) {
+                result.fusionRescuesOneHemisphereRight++;
+            } else if (leftCorrect) {
+                result.fusionMissesWhenLeftWasRight++;
+            } else {
+                result.fusionMissesWhenRightWasRight++;
+            }
+        } else if (bothHemispheresWrong) {
+            if (initialCorrect) {
+                result.fusionRescuesBothHemispheresWrong++;
+            } else if (!initialCorrect) {
+                result.initialWrongBothHemispheresWrong++;
+            }
+        }
+
+        if (!initialCorrect) {
+            if (finalCorrect) {
+                result.correctedInitialPairs[static_cast<size_t>(record.truth)]
+                                            [static_cast<size_t>(record.initialPredicted)]++;
+                if (exactlyOneHemisphereRight) {
+                    result.correctedFromOneHemisphereRight++;
+                } else if (bothHemispheresWrong) {
+                    result.correctedFromBothHemispheresWrong++;
+                }
+            } else {
+                result.unresolvedInitialPairs[static_cast<size_t>(record.truth)]
+                                             [static_cast<size_t>(record.initialPredicted)]++;
+            }
+        }
     }
     result.seconds = seconds;
 }
@@ -1171,6 +1527,17 @@ HemisphereDecisionTrace inferHemisphereDecision(HemisphereRuntime& hemisphere,
     return trace;
 }
 
+std::vector<HemisphereDecisionTrace> inferHemisphereDecisions(
+    std::vector<HemisphereRuntime>& hemispheres,
+    const EMNISTLoader::Image& image,
+    const Config& config) {
+    return runHemisphereTasks<HemisphereDecisionTrace>(
+        hemispheres.size(),
+        [&](size_t hemisphereIndex) {
+            return inferHemisphereDecision(hemispheres[hemisphereIndex], image, config);
+        });
+}
+
 std::vector<double> buildFusionPatternFromTraces(const std::vector<HemisphereDecisionTrace>& traces,
                                                  const Config& config) {
     std::vector<double> fusionPattern;
@@ -1210,12 +1577,9 @@ std::vector<double> buildFusionPatternFromTraces(const std::vector<HemisphereDec
 std::vector<double> buildFusionPattern(std::vector<HemisphereRuntime>& hemispheres,
                                        const EMNISTLoader::Image& image,
                                        const Config& config) {
-    std::vector<HemisphereDecisionTrace> traces;
-    traces.reserve(hemispheres.size());
-    for (auto& hemisphere : hemispheres) {
-        traces.push_back(inferHemisphereDecision(hemisphere, image, config));
-    }
-    return buildFusionPatternFromTraces(traces, config);
+    return buildFusionPatternFromTraces(
+        inferHemisphereDecisions(hemispheres, image, config),
+        config);
 }
 
 bool useCorpusCallosumFusion(const Config& config) {
@@ -1312,60 +1676,56 @@ void calibrateCorpusCallosumWeights(std::vector<HemisphereRuntime>& hemispheres,
         std::array<double, 26> predictionPrecision{};
     };
 
-    std::vector<CorpusStats> rawStats(hemispheres.size());
+    const auto rawStats = runHemisphereTasks<CorpusStats>(
+        hemispheres.size(),
+        [&](size_t hemisphereIndex) {
+            CorpusStats stats;
+            auto& hemisphere = hemispheres[hemisphereIndex];
+            const auto supportPatterns = buildSupportPatterns(hemisphere, indices);
+            std::array<int, 26> totals{};
+            std::array<int, 26> corrects{};
+            std::array<int, 26> predictedTotals{};
+            std::array<int, 26> predictedCorrects{};
+            int totalSamples = 0;
+            int totalCorrect = 0;
 
-    for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
-        auto& hemisphere = hemispheres[hemisphereIndex];
-        const auto supportPatterns = buildSupportPatterns(hemisphere, indices);
-        std::array<int, 26> totals{};
-        std::array<int, 26> corrects{};
-        std::array<int, 26> predictedTotals{};
-        std::array<int, 26> predictedCorrects{};
-        int totalSamples = 0;
-        int totalCorrect = 0;
+            for (size_t index : indices) {
+                const auto& image = loader.getImage(index);
+                const int truth = static_cast<int>(image.label) - 1;
+                if (truth < 0 || truth >= 26 || supportPatterns.empty()) {
+                    continue;
+                }
 
-        for (size_t index : indices) {
-            const auto& image = loader.getImage(index);
-            const int truth = static_cast<int>(image.label) - 1;
-            if (truth < 0 || truth >= 26) {
-                continue;
+                const auto pattern =
+                    extractPattern(hemisphere.retinas, image, config.useFeatures, false);
+                const auto confidence = hemisphere.classifier->classifyWithConfidence(
+                    pattern, supportPatterns, cosineSimilarity);
+                const int predicted = static_cast<int>(
+                    std::distance(confidence.begin(),
+                                  std::max_element(confidence.begin(), confidence.end())));
+                totals[static_cast<size_t>(truth)]++;
+                predictedTotals[static_cast<size_t>(predicted)]++;
+                totalSamples++;
+                if (predicted == truth) {
+                    corrects[static_cast<size_t>(truth)]++;
+                    predictedCorrects[static_cast<size_t>(predicted)]++;
+                    totalCorrect++;
+                }
             }
-            if (supportPatterns.empty()) {
-                continue;
-            }
 
-            const auto pattern =
-                extractPattern(hemisphere.retinas, image, config.useFeatures, false);
-            const auto confidence = hemisphere.classifier->classifyWithConfidence(
-                pattern, supportPatterns, cosineSimilarity);
-            const int predicted = static_cast<int>(
-                std::distance(confidence.begin(),
-                              std::max_element(confidence.begin(), confidence.end())));
-            totals[static_cast<size_t>(truth)]++;
-            predictedTotals[static_cast<size_t>(predicted)]++;
-            totalSamples++;
-            if (predicted == truth) {
-                corrects[static_cast<size_t>(truth)]++;
-                predictedCorrects[static_cast<size_t>(predicted)]++;
-                totalCorrect++;
+            stats.overall =
+                (static_cast<double>(totalCorrect) + 1.0) /
+                (static_cast<double>(std::max(1, totalSamples)) + 2.0);
+            for (size_t label = 0; label < hemisphere.classWeights.size(); ++label) {
+                stats.trueLabelAccuracy[label] =
+                    (static_cast<double>(corrects[label]) + 1.0) /
+                    (static_cast<double>(std::max(1, totals[label])) + 2.0);
+                stats.predictionPrecision[label] =
+                    (static_cast<double>(predictedCorrects[label]) + 1.0) /
+                    (static_cast<double>(std::max(1, predictedTotals[label])) + 2.0);
             }
-        }
-
-        const double overall =
-            (static_cast<double>(totalCorrect) + 1.0) /
-            (static_cast<double>(std::max(1, totalSamples)) + 2.0);
-        rawStats[hemisphereIndex].overall = overall;
-        for (size_t label = 0; label < hemisphere.classWeights.size(); ++label) {
-            const double classAcc =
-                (static_cast<double>(corrects[label]) + 1.0) /
-                (static_cast<double>(std::max(1, totals[label])) + 2.0);
-            const double predictionPrecision =
-                (static_cast<double>(predictedCorrects[label]) + 1.0) /
-                (static_cast<double>(std::max(1, predictedTotals[label])) + 2.0);
-            rawStats[hemisphereIndex].trueLabelAccuracy[label] = classAcc;
-            rawStats[hemisphereIndex].predictionPrecision[label] = predictionPrecision;
-        }
-    }
+            return stats;
+        });
 
     double meanOverall = 0.0;
     for (const auto& stats : rawStats) {
@@ -1415,12 +1775,9 @@ BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime
                                                    const EMNISTLoader::Image& image,
                                                    const Config& config) {
     BilateralDecisionTrace trace;
-    trace.hemisphereTraces.reserve(hemispheres.size());
+    trace.hemisphereTraces = inferHemisphereDecisions(hemispheres, image, config);
     trace.combinedConfidence.assign(26, 0.0);
-
-    for (auto& hemisphere : hemispheres) {
-        trace.hemisphereTraces.push_back(inferHemisphereDecision(hemisphere, image, config));
-    }
+    std::vector<double> disagreementScores(hemispheres.size(), 0.0);
 
     for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
         auto& hemisphere = hemispheres[hemisphereIndex];
@@ -1457,12 +1814,56 @@ BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime
 
         if (hemisphereTrace.predicted >= 0 &&
             static_cast<size_t>(hemisphereTrace.predicted) < trace.combinedConfidence.size()) {
+            const double topScore =
+                hemisphereTrace.topHypotheses.empty() ? 0.0 : hemisphereTrace.topHypotheses.front().score;
+            const double voteEvidence =
+                topScore * (1.0 + config.corpusMarginGain * hemisphereTrace.margin);
             trace.combinedConfidence[static_cast<size_t>(hemisphereTrace.predicted)] +=
                 config.corpusVoteGain *
                 hemisphere.overallWeight *
                 hemisphere.predictionWeights[static_cast<size_t>(hemisphereTrace.predicted)] *
-                (hemisphereTrace.topHypotheses.empty() ? 0.0 : hemisphereTrace.topHypotheses.front().score) *
-                (1.0 + config.corpusMarginGain * hemisphereTrace.margin);
+                voteEvidence;
+            disagreementScores[hemisphereIndex] =
+                hemisphere.overallWeight *
+                hemisphere.predictionWeights[static_cast<size_t>(hemisphereTrace.predicted)] *
+                hemisphere.classWeights[static_cast<size_t>(hemisphereTrace.predicted)] *
+                voteEvidence;
+        }
+    }
+
+    if (config.corpusDisagreementGain > 0.0 && trace.hemisphereTraces.size() >= 2) {
+        bool disagreement = false;
+        int validVotes = 0;
+        int previousPredicted = -1;
+        for (const auto& hemisphereTrace : trace.hemisphereTraces) {
+            if (hemisphereTrace.predicted < 0 || hemisphereTrace.predicted >= 26) {
+                continue;
+            }
+            ++validVotes;
+            if (previousPredicted >= 0 && hemisphereTrace.predicted != previousPredicted) {
+                disagreement = true;
+            }
+            previousPredicted = hemisphereTrace.predicted;
+        }
+
+        if (disagreement && validVotes >= 2) {
+            const double sumScores =
+                std::accumulate(disagreementScores.begin(), disagreementScores.end(), 0.0);
+            for (size_t hemisphereIndex = 0; hemisphereIndex < trace.hemisphereTraces.size(); ++hemisphereIndex) {
+                const auto& hemisphereTrace = trace.hemisphereTraces[hemisphereIndex];
+                if (hemisphereTrace.predicted < 0 ||
+                    static_cast<size_t>(hemisphereTrace.predicted) >= trace.combinedConfidence.size()) {
+                    continue;
+                }
+                const double topScore = hemisphereTrace.topHypotheses.empty()
+                    ? 0.0
+                    : hemisphereTrace.topHypotheses.front().score;
+                const double normalizedScore = sumScores > 1e-9
+                    ? (disagreementScores[hemisphereIndex] / sumScores)
+                    : (1.0 / static_cast<double>(validVotes));
+                trace.combinedConfidence[static_cast<size_t>(hemisphereTrace.predicted)] +=
+                    config.corpusDisagreementGain * normalizedScore * std::max(0.0, topScore);
+            }
         }
     }
 
@@ -1486,10 +1887,7 @@ BilateralDecisionTrace inferFusionDecision(std::vector<HemisphereRuntime>& hemis
                                            const ClassificationStrategy& fusionClassifier,
                                            const FusionRuntime& fusionRuntime) {
     BilateralDecisionTrace trace;
-    trace.hemisphereTraces.reserve(hemispheres.size());
-    for (auto& hemisphere : hemispheres) {
-        trace.hemisphereTraces.push_back(inferHemisphereDecision(hemisphere, image, config));
-    }
+    trace.hemisphereTraces = inferHemisphereDecisions(hemispheres, image, config);
     trace.fusionPattern = buildFusionPatternFromTraces(trace.hemisphereTraces, config);
     trace.combinedConfidence = fusionClassifier.classifyWithConfidence(
         trace.fusionPattern, fusionRuntime.trainingPatterns, cosineSimilarity);
@@ -1499,6 +1897,131 @@ BilateralDecisionTrace inferFusionDecision(std::vector<HemisphereRuntime>& hemis
         trace.predicted = trace.topHypotheses.front().label;
     }
     return trace;
+}
+
+enum class FocusPreset {
+    Original,
+    Left,
+    Center,
+    Right,
+};
+
+bool isFocusPair(int labelA, int labelB, int first, int second) {
+    return (labelA == first && labelB == second) || (labelA == second && labelB == first);
+}
+
+FocusPreset chooseFamilyAwareFocusPreset(const BilateralDecisionTrace& decision) {
+    int leftPredicted = -1;
+    int rightPredicted = -1;
+    if (decision.hemisphereTraces.size() >= 2) {
+        leftPredicted = decision.hemisphereTraces[0].predicted;
+        rightPredicted = decision.hemisphereTraces[1].predicted;
+    }
+
+    if (leftPredicted < 0 || rightPredicted < 0 || leftPredicted == rightPredicted) {
+        return FocusPreset::Original;
+    }
+
+    if (isFocusPair(leftPredicted, rightPredicted, 'C' - 'A', 'E' - 'A') ||
+        isFocusPair(leftPredicted, rightPredicted, 'I' - 'A', 'L' - 'A') ||
+        isFocusPair(leftPredicted, rightPredicted, 'X' - 'A', 'Y' - 'A')) {
+        return FocusPreset::Left;
+    }
+    if (isFocusPair(leftPredicted, rightPredicted, 'G' - 'A', 'O' - 'A') ||
+        isFocusPair(leftPredicted, rightPredicted, 'X' - 'A', 'Z' - 'A')) {
+        return FocusPreset::Right;
+    }
+
+    return FocusPreset::Original;
+}
+
+double decisionQuality(const BilateralDecisionTrace& decision) {
+    if (decision.topHypotheses.empty()) {
+        return -1.0;
+    }
+    const double best = decision.topHypotheses.front().score;
+    const double second = decision.topHypotheses.size() > 1 ? decision.topHypotheses[1].score : 0.0;
+    return best + 0.5 * std::max(0.0, best - second);
+}
+
+bool shouldRunFocusAdjustment(const BilateralDecisionTrace& decision, const Config& config) {
+    return config.focusAdjustmentEnabled &&
+           chooseFamilyAwareFocusPreset(decision) != FocusPreset::Original;
+}
+
+void recordFocusSelection(EvaluationResult& result, FocusPreset preset) {
+    switch (preset) {
+        case FocusPreset::Original:
+            result.focusOriginalSelections++;
+            break;
+        case FocusPreset::Left:
+            result.focusLeftSelections++;
+            break;
+        case FocusPreset::Center:
+            result.focusCenterSelections++;
+            break;
+        case FocusPreset::Right:
+            result.focusRightSelections++;
+            break;
+    }
+}
+
+template <typename InferFn>
+BilateralDecisionTrace maybeApplyFocusAdjustment(const EMNISTLoader::Image& image,
+                                                 const BilateralDecisionTrace& baseDecision,
+                                                 int truth,
+                                                 const Config& config,
+                                                 EvaluationResult& result,
+                                                 InferFn inferFn) {
+    if (!shouldRunFocusAdjustment(baseDecision, config)) {
+        return baseDecision;
+    }
+
+    result.focusAdjustmentTriggers++;
+    BilateralDecisionTrace bestDecision = baseDecision;
+    FocusPreset bestPreset = FocusPreset::Original;
+    double bestQuality = decisionQuality(baseDecision);
+
+    const FocusPreset routedPreset = chooseFamilyAwareFocusPreset(baseDecision);
+    double shiftXPx = 0.0;
+    switch (routedPreset) {
+        case FocusPreset::Left:
+            shiftXPx = -std::abs(config.focusAdjustmentShiftPx);
+            break;
+        case FocusPreset::Right:
+            shiftXPx = std::abs(config.focusAdjustmentShiftPx);
+            break;
+        case FocusPreset::Center:
+        case FocusPreset::Original:
+            recordFocusSelection(result, FocusPreset::Original);
+            return baseDecision;
+    }
+
+    const auto focusedImage =
+        applyImageFocusTransform(image, config.focusAdjustmentZoom, shiftXPx);
+    auto candidate = inferFn(focusedImage);
+    const double candidateQuality = decisionQuality(candidate);
+    const double minimumGain = 0.01;
+    if (candidateQuality > bestQuality + minimumGain) {
+        bestQuality = candidateQuality;
+        bestDecision = std::move(candidate);
+        bestPreset = routedPreset;
+    }
+
+    recordFocusSelection(result, bestPreset);
+    if (bestPreset == FocusPreset::Original) {
+        return baseDecision;
+    }
+
+    if (bestDecision.predicted != baseDecision.predicted) {
+        result.focusAdjustmentOverrides++;
+    }
+    if (baseDecision.predicted != truth && bestDecision.predicted == truth) {
+        result.focusAdjustmentCorrections++;
+    } else if (baseDecision.predicted == truth && bestDecision.predicted != truth) {
+        result.focusAdjustmentRegressions++;
+    }
+    return bestDecision;
 }
 
 void applyRewardToHemisphere(HemisphereRuntime& hemisphere,
@@ -1599,6 +2122,7 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
     std::vector<ReplayItem> replayQueue;
     replayQueue.reserve(static_cast<size_t>(std::max(16, config.onlineReplayQueueCapacity)));
     size_t replaySequence = 0;
+    ConfusionClusterMemory confusionMemory;
 
     auto processReplayItem = [&](ReplayItem item, size_t currentStep) {
         if (item.recordIndex >= records.size()) {
@@ -1614,7 +2138,9 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
         record.finalPredicted = replayDecision.predicted;
         result.correctionReplays++;
         recordReplayTiming(result, item, currentStep);
-        const auto replayContext = buildDecisionContext(replayDecision, config);
+        const auto replayContext = buildDecisionContext(replayDecision, config, &confusionMemory);
+        result.confusionClusterScoreSum += replayContext.confusionCluster;
+        result.confusionClusterScoreSamples++;
         const double effectiveReward =
             std::max(0.05, replayContext.plasticity * item.eligibilityScale);
 
@@ -1630,6 +2156,7 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
                                         effectiveReward,
                                         config);
             }
+            updateConfusionClusterMemory(confusionMemory, replayDecision, false, config);
             return;
         }
 
@@ -1640,6 +2167,7 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
                                     -effectiveReward,
                                     config);
         }
+        updateConfusionClusterMemory(confusionMemory, replayDecision, true, config);
         if (item.remainingReplays > 1) {
             enqueueReplayItem(replayQueue,
                               makeReplayItem(item.recordIndex,
@@ -1687,9 +2215,28 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
         if (initialPredicted < 0 || initialPredicted >= 26) {
             continue;
         }
-        records.push_back({index, truth, initialPredicted, initialPredicted, false});
+        const int leftInitialPredicted =
+            decision.hemisphereTraces.size() > 0 ? decision.hemisphereTraces[0].predicted : -1;
+        const int rightInitialPredicted =
+            decision.hemisphereTraces.size() > 1 ? decision.hemisphereTraces[1].predicted : -1;
+        recordHemisphereAgreement(result, decision, truth);
+        decision = maybeApplyFocusAdjustment(
+            image,
+            decision,
+            truth,
+            config,
+            result,
+            [&](const EMNISTLoader::Image& focusedImage) {
+                return inferCorpusCallosumDecision(hemispheres, focusedImage, config);
+            });
+        records.push_back(
+            {index, truth, leftInitialPredicted, rightInitialPredicted, initialPredicted,
+             initialPredicted, false});
         auto& record = records.back();
-        const auto context = buildDecisionContext(decision, config);
+        record.finalPredicted = decision.predicted;
+        const auto context = buildDecisionContext(decision, config, &confusionMemory);
+        result.confusionClusterScoreSum += context.confusionCluster;
+        result.confusionClusterScoreSamples++;
 
         if (useOnlineCorrection(config)) {
             if (initialPredicted == truth) {
@@ -1724,6 +2271,7 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
                                   config);
             }
         }
+        updateConfusionClusterMemory(confusionMemory, decision, decision.predicted != truth, config);
 
         processReplayBudget(records.size(), std::numeric_limits<int>::max());
 
@@ -1741,6 +2289,7 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
     const auto end = std::chrono::high_resolution_clock::now();
     finalizeEvaluationFromRecords(
         result, records, std::chrono::duration<double>(end - start).count());
+    result.confusionClusterStrengths = confusionMemory.strengths;
     return result;
 }
 
@@ -1945,6 +2494,7 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
     std::vector<ReplayItem> replayQueue;
     replayQueue.reserve(static_cast<size_t>(std::max(16, config.onlineReplayQueueCapacity)));
     size_t replaySequence = 0;
+    ConfusionClusterMemory confusionMemory;
 
     auto processReplayItem = [&](ReplayItem item, size_t currentStep) {
         if (item.recordIndex >= records.size()) {
@@ -1961,7 +2511,9 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
         record.finalPredicted = replayDecision.predicted;
         result.correctionReplays++;
         recordReplayTiming(result, item, currentStep);
-        const auto replayContext = buildDecisionContext(replayDecision, config);
+        const auto replayContext = buildDecisionContext(replayDecision, config, &confusionMemory);
+        result.confusionClusterScoreSum += replayContext.confusionCluster;
+        result.confusionClusterScoreSamples++;
         const double effectiveReward =
             std::max(0.05, replayContext.plasticity * item.eligibilityScale);
 
@@ -1982,6 +2534,7 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                                 replayDecision.predicted,
                                 effectiveReward,
                                 config);
+            updateConfusionClusterMemory(confusionMemory, replayDecision, false, config);
             return;
         }
 
@@ -1992,6 +2545,7 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                                     -effectiveReward,
                                     config);
         }
+        updateConfusionClusterMemory(confusionMemory, replayDecision, true, config);
         if (item.remainingReplays > 1) {
             enqueueReplayItem(replayQueue,
                               makeReplayItem(item.recordIndex,
@@ -2039,8 +2593,28 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
         if (initialPredicted < 0 || initialPredicted >= 26) {
             continue;
         }
-        records.push_back({index, truth, initialPredicted, initialPredicted, false});
-        const auto context = buildDecisionContext(decision, config);
+        const int leftInitialPredicted =
+            decision.hemisphereTraces.size() > 0 ? decision.hemisphereTraces[0].predicted : -1;
+        const int rightInitialPredicted =
+            decision.hemisphereTraces.size() > 1 ? decision.hemisphereTraces[1].predicted : -1;
+        recordHemisphereAgreement(result, decision, truth);
+        decision = maybeApplyFocusAdjustment(
+            image,
+            decision,
+            truth,
+            config,
+            result,
+            [&](const EMNISTLoader::Image& focusedImage) {
+                return inferFusionDecision(
+                    hemispheres, focusedImage, config, fusionClassifier, fusionRuntime);
+            });
+        records.push_back(
+            {index, truth, leftInitialPredicted, rightInitialPredicted, initialPredicted,
+             initialPredicted, false});
+        records.back().finalPredicted = decision.predicted;
+        const auto context = buildDecisionContext(decision, config, &confusionMemory);
+        result.confusionClusterScoreSum += context.confusionCluster;
+        result.confusionClusterScoreSamples++;
 
         if (useOnlineCorrection(config)) {
             if (initialPredicted == truth) {
@@ -2080,6 +2654,7 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                                   config);
             }
         }
+        updateConfusionClusterMemory(confusionMemory, decision, decision.predicted != truth, config);
 
         processReplayBudget(records.size(), std::numeric_limits<int>::max());
 
@@ -2097,6 +2672,7 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
     const auto end = std::chrono::high_resolution_clock::now();
     finalizeEvaluationFromRecords(
         result, records, std::chrono::duration<double>(end - start).count());
+    result.confusionClusterStrengths = confusionMemory.strengths;
     return result;
 }
 
@@ -2273,6 +2849,274 @@ void printOnlineCorrectionSummary(const EvaluationResult& result) {
     }
 }
 
+void printHemisphereAgreementSummary(const EvaluationResult& result) {
+    if (result.hemisphereComparable <= 0) {
+        return;
+    }
+
+    const double agreementRate =
+        100.0 * static_cast<double>(result.hemisphereAgreements) /
+        static_cast<double>(std::max(1, result.hemisphereComparable));
+    const double agreementAccuracy =
+        100.0 * static_cast<double>(result.hemisphereAgreementCorrect) /
+        static_cast<double>(std::max(1, result.hemisphereAgreements));
+
+    std::cout << "  Hemisphere agreement: " << result.hemisphereAgreements
+              << "/" << result.hemisphereComparable
+              << " (" << std::fixed << std::setprecision(2) << agreementRate << "%)"
+              << std::endl;
+    std::cout << "  Agreement accuracy: " << std::fixed << std::setprecision(2)
+              << agreementAccuracy << "%" << std::endl;
+
+    if (result.hemisphereDisagreements <= 0) {
+        return;
+    }
+
+    const double disagreementRate =
+        100.0 * static_cast<double>(result.hemisphereDisagreements) /
+        static_cast<double>(std::max(1, result.hemisphereComparable));
+    std::cout << "  Hemisphere disagreement: " << result.hemisphereDisagreements
+              << "/" << result.hemisphereComparable
+              << " (" << std::fixed << std::setprecision(2) << disagreementRate << "%)"
+              << std::endl;
+    std::cout << "  On disagreement: left_only_correct="
+              << result.leftOnlyCorrectOnDisagreement
+              << ", right_only_correct=" << result.rightOnlyCorrectOnDisagreement
+              << ", both_wrong=" << result.bothWrongOnDisagreement << std::endl;
+}
+
+void printHemisphereStage1Summary(const EvaluationResult& result) {
+    if (result.hemisphereComparable <= 0) {
+        return;
+    }
+
+    int leftCorrect = 0;
+    int rightCorrect = 0;
+    for (size_t label = 0; label < 26; ++label) {
+        leftCorrect += result.leftHemisphereConfusion[label][label];
+        rightCorrect += result.rightHemisphereConfusion[label][label];
+    }
+
+    const double leftAccuracy =
+        100.0 * static_cast<double>(leftCorrect) /
+        static_cast<double>(std::max(1, result.hemisphereComparable));
+    const double rightAccuracy =
+        100.0 * static_cast<double>(rightCorrect) /
+        static_cast<double>(std::max(1, result.hemisphereComparable));
+    std::cout << "  Stage-1 accuracy by view: left=" << std::fixed << std::setprecision(2)
+              << leftAccuracy << "%, right=" << rightAccuracy << "%" << std::endl;
+
+    struct LabelDelta {
+        int label = -1;
+        int total = 0;
+        int leftCorrect = 0;
+        int rightCorrect = 0;
+        double delta = 0.0;
+    };
+    std::vector<LabelDelta> labelDeltas;
+    for (size_t label = 0; label < 26; ++label) {
+        int total = 0;
+        for (size_t predicted = 0; predicted < 26; ++predicted) {
+            total += result.leftHemisphereConfusion[label][predicted];
+        }
+        if (total <= 0) {
+            continue;
+        }
+        const int leftLabelCorrect = result.leftHemisphereConfusion[label][label];
+        const int rightLabelCorrect = result.rightHemisphereConfusion[label][label];
+        const double leftLabelAccuracy =
+            static_cast<double>(leftLabelCorrect) / static_cast<double>(total);
+        const double rightLabelAccuracy =
+            static_cast<double>(rightLabelCorrect) / static_cast<double>(total);
+        labelDeltas.push_back(
+            {static_cast<int>(label), total, leftLabelCorrect, rightLabelCorrect,
+             leftLabelAccuracy - rightLabelAccuracy});
+    }
+    std::sort(labelDeltas.begin(),
+              labelDeltas.end(),
+              [](const LabelDelta& lhs, const LabelDelta& rhs) {
+                  return std::abs(lhs.delta) > std::abs(rhs.delta);
+              });
+
+    if (!labelDeltas.empty()) {
+        std::cout << "  Largest view bias by label:" << std::endl;
+        const size_t limit = std::min<size_t>(5, labelDeltas.size());
+        for (size_t i = 0; i < limit; ++i) {
+            const auto& delta = labelDeltas[i];
+            const char favored = delta.delta >= 0.0 ? 'L' : 'R';
+            std::cout << "    " << classToChar(delta.label)
+                      << ": favor=" << favored
+                      << ", left=" << delta.leftCorrect << "/" << delta.total
+                      << ", right=" << delta.rightCorrect << "/" << delta.total
+                      << ", delta=" << std::fixed << std::setprecision(2)
+                      << (100.0 * std::abs(delta.delta)) << " pts" << std::endl;
+        }
+    }
+
+    struct PairDelta {
+        int a = -1;
+        int b = -1;
+        int leftTotal = 0;
+        int rightTotal = 0;
+    };
+    std::vector<PairDelta> pairDeltas;
+    for (int a = 0; a < 26; ++a) {
+        for (int b = a + 1; b < 26; ++b) {
+            const int leftPair =
+                result.leftHemisphereConfusion[static_cast<size_t>(a)][static_cast<size_t>(b)] +
+                result.leftHemisphereConfusion[static_cast<size_t>(b)][static_cast<size_t>(a)];
+            const int rightPair =
+                result.rightHemisphereConfusion[static_cast<size_t>(a)][static_cast<size_t>(b)] +
+                result.rightHemisphereConfusion[static_cast<size_t>(b)][static_cast<size_t>(a)];
+            if (leftPair == 0 && rightPair == 0) {
+                continue;
+            }
+            pairDeltas.push_back({a, b, leftPair, rightPair});
+        }
+    }
+    std::sort(pairDeltas.begin(),
+              pairDeltas.end(),
+              [](const PairDelta& lhs, const PairDelta& rhs) {
+                  return std::abs(lhs.leftTotal - lhs.rightTotal) >
+                         std::abs(rhs.leftTotal - rhs.rightTotal);
+              });
+
+    if (!pairDeltas.empty()) {
+        std::cout << "  Largest view bias by confusion pair:" << std::endl;
+        const size_t limit = std::min<size_t>(5, pairDeltas.size());
+        for (size_t i = 0; i < limit; ++i) {
+            const auto& delta = pairDeltas[i];
+            const char favored = delta.leftTotal <= delta.rightTotal ? 'L' : 'R';
+            std::cout << "    " << classToChar(delta.a) << "<->" << classToChar(delta.b)
+                      << ": fewer errors on " << favored
+                      << " view (left=" << delta.leftTotal
+                      << ", right=" << delta.rightTotal << ")" << std::endl;
+        }
+    }
+}
+
+void printTopDirectedPairs(const std::array<std::array<int, 26>, 26>& matrix,
+                           const std::string& heading,
+                           size_t limit) {
+    struct PairCount {
+        int truth = -1;
+        int predicted = -1;
+        int count = 0;
+    };
+
+    std::vector<PairCount> pairs;
+    for (int truth = 0; truth < 26; ++truth) {
+        for (int predicted = 0; predicted < 26; ++predicted) {
+            if (truth == predicted || matrix[static_cast<size_t>(truth)][static_cast<size_t>(predicted)] <= 0) {
+                continue;
+            }
+            pairs.push_back({truth, predicted, matrix[static_cast<size_t>(truth)][static_cast<size_t>(predicted)]});
+        }
+    }
+    if (pairs.empty()) {
+        return;
+    }
+
+    std::sort(pairs.begin(), pairs.end(), [](const PairCount& lhs, const PairCount& rhs) {
+        if (lhs.count != rhs.count) {
+            return lhs.count > rhs.count;
+        }
+        if (lhs.truth != rhs.truth) {
+            return lhs.truth < rhs.truth;
+        }
+        return lhs.predicted < rhs.predicted;
+    });
+
+    std::cout << "  " << heading << ":" << std::endl;
+    for (size_t i = 0; i < std::min(limit, pairs.size()); ++i) {
+        const auto& pair = pairs[i];
+        std::cout << "    " << classToChar(pair.truth) << "->" << classToChar(pair.predicted)
+                  << ": " << pair.count << std::endl;
+    }
+}
+
+void printBilateralAttributionSummary(const EvaluationResult& result) {
+    if (result.tested <= 0) {
+        return;
+    }
+
+    std::cout << "  Initial error attribution: fusion_rescues_one_hemi_right="
+              << result.fusionRescuesOneHemisphereRight
+              << ", fusion_rescues_both_hemi_wrong="
+              << result.fusionRescuesBothHemispheresWrong
+              << ", fusion_misses_left_was_right="
+              << result.fusionMissesWhenLeftWasRight
+              << ", fusion_misses_right_was_right="
+              << result.fusionMissesWhenRightWasRight
+              << ", initial_wrong_both_hemi_wrong="
+              << result.initialWrongBothHemispheresWrong << std::endl;
+
+    if (result.correctionEvents > 0) {
+        std::cout << "  Replay correction attribution: corrected_from_one_hemi_right="
+                  << result.correctedFromOneHemisphereRight
+                  << ", corrected_from_both_hemi_wrong="
+                  << result.correctedFromBothHemispheresWrong << std::endl;
+    }
+
+    printTopDirectedPairs(result.correctedInitialPairs, "Top corrected initial pairs", 5);
+    printTopDirectedPairs(result.unresolvedInitialPairs, "Top unresolved initial pairs", 5);
+
+    if (result.confusionClusterScoreSamples > 0) {
+        const double averageClusterScore =
+            result.confusionClusterScoreSum /
+            static_cast<double>(std::max(1, result.confusionClusterScoreSamples));
+        std::cout << "  Average confusion-cluster score: " << std::fixed
+                  << std::setprecision(2) << averageClusterScore << std::endl;
+    }
+
+    struct ClusterPair {
+        int a = -1;
+        int b = -1;
+        double strength = 0.0;
+    };
+    std::vector<ClusterPair> pairs;
+    for (int a = 0; a < 26; ++a) {
+        for (int b = a + 1; b < 26; ++b) {
+            const double strength =
+                result.confusionClusterStrengths[static_cast<size_t>(a)][static_cast<size_t>(b)];
+            if (strength > 0.0) {
+                pairs.push_back({a, b, strength});
+            }
+        }
+    }
+    std::sort(pairs.begin(), pairs.end(), [](const ClusterPair& lhs, const ClusterPair& rhs) {
+        return lhs.strength > rhs.strength;
+    });
+    if (!pairs.empty()) {
+        std::cout << "  Top learned confusion clusters:" << std::endl;
+        for (size_t i = 0; i < std::min<size_t>(5, pairs.size()); ++i) {
+            const auto& pair = pairs[i];
+            std::cout << "    " << classToChar(pair.a) << "<->" << classToChar(pair.b)
+                      << ": " << std::fixed << std::setprecision(2) << pair.strength
+                      << std::endl;
+        }
+    }
+}
+
+void printFocusAdjustmentSummary(const EvaluationResult& result) {
+    if (result.focusAdjustmentTriggers <= 0) {
+        return;
+    }
+
+    const double overrideRate =
+        100.0 * static_cast<double>(result.focusAdjustmentOverrides) /
+        static_cast<double>(std::max(1, result.focusAdjustmentTriggers));
+    std::cout << "  Focus adjustment: triggers=" << result.focusAdjustmentTriggers
+              << ", overrides=" << result.focusAdjustmentOverrides
+              << " (" << std::fixed << std::setprecision(2) << overrideRate << "%)"
+              << ", corrected=" << result.focusAdjustmentCorrections
+              << ", regressed=" << result.focusAdjustmentRegressions << std::endl;
+    std::cout << "  Focus preset selections: original=" << result.focusOriginalSelections
+              << ", left=" << result.focusLeftSelections
+              << ", center=" << result.focusCenterSelections
+              << ", right=" << result.focusRightSelections << std::endl;
+}
+
 Config parseArgs(int argc, char* argv[]) {
     Config config;
 
@@ -2410,6 +3254,20 @@ Config parseArgs(int argc, char* argv[]) {
             config.onlineContextUncertaintyGain = std::atof(argv[++i]);
         } else if (arg == "--online-context-disagreement-gain" && i + 1 < argc) {
             config.onlineContextDisagreementGain = std::atof(argv[++i]);
+        } else if (arg == "--corpus-disagreement-gain" && i + 1 < argc) {
+            config.corpusDisagreementGain = std::atof(argv[++i]);
+        } else if (arg == "--online-confusion-cluster-gain" && i + 1 < argc) {
+            config.onlineConfusionClusterGain = std::atof(argv[++i]);
+        } else if (arg == "--online-confusion-cluster-decay" && i + 1 < argc) {
+            config.onlineConfusionClusterDecay = std::atof(argv[++i]);
+        } else if (arg == "--focus-adjustment-enabled") {
+            config.focusAdjustmentEnabled = true;
+        } else if (arg == "--focus-adjustment-margin-threshold" && i + 1 < argc) {
+            config.focusAdjustmentMarginThreshold = std::atof(argv[++i]);
+        } else if (arg == "--focus-adjustment-zoom" && i + 1 < argc) {
+            config.focusAdjustmentZoom = std::atof(argv[++i]);
+        } else if (arg == "--focus-adjustment-shift-px" && i + 1 < argc) {
+            config.focusAdjustmentShiftPx = std::atof(argv[++i]);
         } else if (arg == "--use-features") {
             config.useFeatures = true;
         } else if (arg == "--use-activations") {
@@ -2458,6 +3316,13 @@ Config parseArgs(int argc, char* argv[]) {
                 << "  --online-eligibility-trace-decay <v>\n"
                 << "  --online-context-uncertainty-gain <v>\n"
                 << "  --online-context-disagreement-gain <v>\n"
+                << "  --corpus-disagreement-gain <v>\n"
+                << "  --online-confusion-cluster-gain <v>\n"
+                << "  --online-confusion-cluster-decay <v>\n"
+                << "  --focus-adjustment-enabled\n"
+                << "  --focus-adjustment-margin-threshold <v>\n"
+                << "  --focus-adjustment-zoom <v>\n"
+                << "  --focus-adjustment-shift-px <v>\n"
                 << "  --focus-groups <A,B;C,D;...>\n"
                 << "  --focus-limit-per-label <n>\n"
                 << "  --focus-only\n"
@@ -2537,6 +3402,7 @@ int main(int argc, char* argv[]) {
                       << ", corpus_margin_gain=" << config.corpusMarginGain
                       << ", corpus_centroid_gain=" << config.corpusCentroidGain
                       << ", corpus_neighbor_gain=" << config.corpusNeighborGain
+                      << ", corpus_disagreement_gain=" << config.corpusDisagreementGain
                       << ", online_repeats=" << config.onlineCorrectionRepeats
                       << ", online_budget/class=" << config.onlineExemplarBudgetPerClass
                       << ", online_centroid_lr=" << config.onlineCentroidLr
@@ -2550,6 +3416,12 @@ int main(int argc, char* argv[]) {
                       << ", eligibility_decay=" << config.onlineEligibilityTraceDecay
                       << ", context_uncertainty_gain=" << config.onlineContextUncertaintyGain
                       << ", context_disagreement_gain=" << config.onlineContextDisagreementGain
+                      << ", confusion_cluster_gain=" << config.onlineConfusionClusterGain
+                      << ", confusion_cluster_decay=" << config.onlineConfusionClusterDecay
+                      << ", focus_adjustment=" << (config.focusAdjustmentEnabled ? "on" : "off")
+                      << ", focus_margin_threshold=" << config.focusAdjustmentMarginThreshold
+                      << ", focus_zoom=" << config.focusAdjustmentZoom
+                      << ", focus_shift_px=" << config.focusAdjustmentShiftPx
                       << ", fusion_path=" << (config.fusionPath.empty() ? "<none>" : config.fusionPath)
                       << std::endl;
         }
@@ -2703,26 +3575,36 @@ int main(int argc, char* argv[]) {
                                                     useCorpusCallosumFusion(config));
 
             const auto trainingStart = std::chrono::high_resolution_clock::now();
-            for (auto& hemisphere : hemispheres) {
-                hemisphere.trainingPatterns.reserve(split.stage1Indices.size());
-                hemisphere.trainingSourceIndices.reserve(split.stage1Indices.size());
-                for (size_t i : split.stage1Indices) {
-                    const auto& image = trainLoader.getImage(i);
-                    const int label = static_cast<int>(image.label) - 1;
-                    if (label < 0 || label >= 26) {
-                        continue;
+            if (hemispheres.size() > 1) {
+                std::cout << "  Hemisphere stage1 extraction: parallel workers="
+                          << hemisphereWorkerCount(hemispheres.size()) << std::endl;
+            }
+            const auto trainingArtifacts = runHemisphereTasks<HemisphereTrainingArtifacts>(
+                hemispheres.size(),
+                [&](size_t hemisphereIndex) {
+                    HemisphereTrainingArtifacts artifacts;
+                    auto& hemisphere = hemispheres[hemisphereIndex];
+                    artifacts.trainingPatterns.reserve(split.stage1Indices.size());
+                    artifacts.trainingSourceIndices.reserve(split.stage1Indices.size());
+                    for (size_t i : split.stage1Indices) {
+                        const auto& image = trainLoader.getImage(i);
+                        const int label = static_cast<int>(image.label) - 1;
+                        if (label < 0 || label >= 26) {
+                            continue;
+                        }
+                        artifacts.trainingPatterns.emplace_back(
+                            extractPattern(hemisphere.retinas, image, config.useFeatures,
+                                           !config.useFeatures && config.activationMode != "binary"),
+                            label);
+                        artifacts.trainingSourceIndices.push_back(i);
                     }
-                    hemisphere.trainingPatterns.emplace_back(
-                        extractPattern(hemisphere.retinas, image, config.useFeatures,
-                                       !config.useFeatures && config.activationMode != "binary"),
-                        label);
-                    hemisphere.trainingSourceIndices.push_back(i);
-                    if (static_cast<int>(hemisphere.trainingPatterns.size()) % 1000 == 0) {
-                        std::cout << "  Hemisphere " << hemisphere.name
-                                  << " stage1 patterns: " << hemisphere.trainingPatterns.size()
-                                  << std::endl;
-                    }
-                }
+                    return artifacts;
+                });
+            for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+                auto& hemisphere = hemispheres[hemisphereIndex];
+                hemisphere.trainingPatterns = trainingArtifacts[hemisphereIndex].trainingPatterns;
+                hemisphere.trainingSourceIndices =
+                    trainingArtifacts[hemisphereIndex].trainingSourceIndices;
                 hemisphere.classifier = makeClassifierStrategy(
                     config.stage1Classifier, stage1K, config.stage1Exponent, config);
                 buildHemisphereClassCentroids(hemisphere);
@@ -2796,6 +3678,10 @@ int main(int argc, char* argv[]) {
                 std::cout << "  Correct: " << eval.correct << "/" << eval.tested << std::endl;
                 std::cout << "  Elapsed: " << std::fixed << std::setprecision(2)
                           << (trainingSeconds + eval.seconds) << "s" << std::endl;
+                printHemisphereAgreementSummary(eval);
+                printHemisphereStage1Summary(eval);
+                printBilateralAttributionSummary(eval);
+                printFocusAdjustmentSummary(eval);
                 printOnlineCorrectionSummary(eval);
 
                 printPerClassAccuracy(eval.confusion);
@@ -2820,6 +3706,10 @@ int main(int argc, char* argv[]) {
                           << std::endl;
                 std::cout << "  Elapsed: " << std::fixed << std::setprecision(2)
                           << focusedEval.seconds << "s" << std::endl;
+                printHemisphereAgreementSummary(focusedEval);
+                printHemisphereStage1Summary(focusedEval);
+                printBilateralAttributionSummary(focusedEval);
+                printFocusAdjustmentSummary(focusedEval);
                 printOnlineCorrectionSummary(focusedEval);
 
                 printPerClassAccuracy(focusedEval.confusion);

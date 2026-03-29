@@ -199,7 +199,7 @@ Static inference benchmarks:
 - Bilateral Retina: `87.29%`
 
 Continuous-learning benchmark:
-- Bilateral Retina continuous: initial `87.67%`, post-correction `88.77%`
+- Bilateral Retina continuous: initial `87.50%`, post-correction `88.85%`
 
 Static and continuous results are separate benchmark categories. The continuous result includes online reward-driven adaptation during evaluation and is not directly comparable to the static held-out metric.
 
@@ -209,7 +209,7 @@ Benchmark summary:
 | --- | --- | --- | --- |
 | Unilateral Retina | `configs/emnist_retina_experimental.sonata.json` | Static accuracy | `86.17%` |
 | Bilateral Retina | `configs/emnist_retina_bilateral_experimental.sonata.json` | Static accuracy | `87.29%` |
-| Bilateral Retina Continuous | `configs/emnist_retina_bilateral_continuous.sonata.json` | Initial / post-correction accuracy | `87.67% -> 88.77%` |
+| Bilateral Retina Continuous | `configs/emnist_retina_bilateral_continuous.sonata.json` | Initial / post-correction accuracy | `87.50% -> 88.85%` |
 
 Minimal hierarchy-driven Retina pattern:
 ```json
@@ -271,11 +271,11 @@ Continuous benchmark command:
 
 Expected continuous benchmark output summary:
 ```text
-Accuracy: 88.77%
-Correct: 4616/5200
-Initial accuracy: 87.67%
-Post-correction accuracy: 88.77%
-Correction events: 641, corrected: 57 (8.89%), replays: 1847
+Accuracy: 88.85%
+Correct: 4620/5200
+Initial accuracy: 87.50%
+Post-correction accuracy: 88.85%
+Correction events: 650, corrected: 70 (10.77%), replays: 1849
 Replay timing: avg_delay_steps=4.00, avg_eligibility=0.40
 ```
 
