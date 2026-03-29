@@ -192,6 +192,10 @@ flowchart TD
     FUSION --> OUT[Final classification]
 ```
 
+Rendered PNG version with temporal spike-pattern flow:
+
+![Bilateral Retina spike-driven network](docs/bilateral_retina_spike_network.png)
+
 Reference full-run benchmarks on EMNIST letters (`3200/class`, `5200` test, `seed 42`):
 
 Static inference benchmarks:
