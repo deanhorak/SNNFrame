@@ -14,6 +14,7 @@ set(LIB_SOURCES
     Datastore.cpp
     MNISTLoader.cpp
     EMNISTLoader.cpp
+    domain/VisualDomainAdapter.cpp
     STDPLearning.cpp
     HyperparameterOptimizer.cpp
     ConfigOptimizer.cpp

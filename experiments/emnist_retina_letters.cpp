@@ -1,10 +1,10 @@
-#include "snnfw/EMNISTLoader.h"
 #include "snnfw/Logger.h"
 #include "snnfw/ThreadPool.h"
 #include "snnfw/adapters/RetinaAdapter.h"
 #include "snnfw/classification/ClassificationStrategy.h"
 #include "snnfw/declarative/NativeJSONParser.h"
 #include "snnfw/declarative/SONATAParser.h"
+#include "snnfw/domain/VisualDomainAdapter.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <array>
@@ -26,7 +26,6 @@
 
 namespace {
 
-using snnfw::EMNISTLoader;
 using snnfw::adapters::BaseAdapter;
 using snnfw::adapters::RetinaAdapter;
 using snnfw::classification::ClassificationStrategy;
@@ -37,6 +36,13 @@ using snnfw::declarative::ColumnTemplateIR;
 using snnfw::declarative::NativeJSONParser;
 using snnfw::declarative::NetworkIR;
 using snnfw::declarative::SONATAParser;
+using snnfw::domain::VisualDomainAdapter;
+using snnfw::domain::VisualDomainConfig;
+using snnfw::domain::VisualStimulus;
+
+using IndexBuckets = std::vector<std::vector<size_t>>;
+using IntMatrix = std::vector<std::vector<int>>;
+using DoubleMatrix = std::vector<std::vector<double>>;
 
 struct Config {
     std::string configPath;
@@ -44,6 +50,11 @@ struct Config {
     std::string trainLabelsPath;
     std::string testImagesPath;
     std::string testLabelsPath;
+    std::string inputDomain = "emnist";
+    std::string inputVariant = "letters";
+    bool inputApplyTransform = true;
+    int numClasses = 26;
+    std::vector<std::string> classNames;
     int examplesPerClass = 200;
     int testLimit = 1000;
     unsigned int seed = 42;
@@ -66,6 +77,7 @@ struct Config {
     bool useFeatures = false;
     std::vector<BaseAdapter::Config> retinaConfigs;
     std::vector<std::vector<int>> focusGroups;
+    std::string focusGroupSpec;
     int focusLimitPerLabel = 0;
     bool focusOnly = false;
     bool bilateralFusion = false;
@@ -113,15 +125,15 @@ struct HemisphereRuntime {
     std::vector<size_t> trainingSourceIndices;
     std::unique_ptr<ClassificationStrategy> classifier;
     double overallWeight = 1.0;
-    std::array<double, 26> classWeights{};
-    std::array<double, 26> predictionWeights{};
-    std::array<std::vector<double>, 26> classCentroids{};
-    std::array<std::vector<size_t>, 26> onlinePatternIndices{};
+    std::vector<double> classWeights;
+    std::vector<double> predictionWeights;
+    std::vector<std::vector<double>> classCentroids;
+    std::vector<std::vector<size_t>> onlinePatternIndices;
 };
 
 struct FusionRuntime {
     std::vector<ClassificationStrategy::LabeledPattern> trainingPatterns;
-    std::array<std::vector<size_t>, 26> onlinePatternIndices{};
+    std::vector<std::vector<size_t>> onlinePatternIndices;
 };
 
 struct LabelTrace {
@@ -154,7 +166,7 @@ struct DecisionContext {
 };
 
 struct ConfusionClusterMemory {
-    std::array<std::array<double, 26>, 26> strengths{};
+    DoubleMatrix strengths;
 };
 
 struct OnlineSampleRecord {
@@ -193,7 +205,7 @@ struct HemisphereTrainingArtifacts {
 };
 
 std::vector<double> buildFusionPattern(std::vector<HemisphereRuntime>& hemispheres,
-                                       const EMNISTLoader::Image& image,
+                                       const VisualStimulus& image,
                                        const Config& config);
 
 size_t hemisphereWorkerCount(size_t hemisphereCount) {
@@ -236,6 +248,54 @@ std::vector<Result> runHemisphereTasks(size_t hemisphereCount, Fn&& fn) {
     return results;
 }
 
+template <typename T>
+std::vector<T> makeClassVector(int numClasses, const T& value = T()) {
+    return std::vector<T>(static_cast<size_t>(std::max(0, numClasses)), value);
+}
+
+template <typename T>
+std::vector<std::vector<T>> makeClassMatrix(int numClasses, const T& value = T()) {
+    return std::vector<std::vector<T>>(
+        static_cast<size_t>(std::max(0, numClasses)),
+        std::vector<T>(static_cast<size_t>(std::max(0, numClasses)), value));
+}
+
+std::string classLabel(const Config& config, int label) {
+    if (label >= 0 && static_cast<size_t>(label) < config.classNames.size() &&
+        !config.classNames[static_cast<size_t>(label)].empty()) {
+        return config.classNames[static_cast<size_t>(label)];
+    }
+    return std::to_string(label);
+}
+
+void configureClassMetadata(Config& config, const VisualDomainAdapter& adapter) {
+    config.numClasses = adapter.numClasses();
+    config.classNames = adapter.classNames();
+    if (config.classNames.size() != static_cast<size_t>(config.numClasses)) {
+        config.classNames.clear();
+        for (int label = 0; label < config.numClasses; ++label) {
+            config.classNames.push_back(std::to_string(label));
+        }
+    }
+}
+
+void initializeHemisphereRuntime(HemisphereRuntime& hemisphere, int numClasses) {
+    hemisphere.classWeights.assign(static_cast<size_t>(numClasses), 1.0);
+    hemisphere.predictionWeights.assign(static_cast<size_t>(numClasses), 1.0);
+    hemisphere.classCentroids.assign(static_cast<size_t>(numClasses), {});
+    hemisphere.onlinePatternIndices.assign(static_cast<size_t>(numClasses), {});
+}
+
+void initializeFusionRuntime(FusionRuntime& fusionRuntime, int numClasses) {
+    fusionRuntime.onlinePatternIndices.assign(static_cast<size_t>(numClasses), {});
+}
+
+ConfusionClusterMemory makeConfusionClusterMemory(const Config& config) {
+    ConfusionClusterMemory memory;
+    memory.strengths = makeClassMatrix<double>(config.numClasses, 0.0);
+    return memory;
+}
+
 double cosineSimilarity(const std::vector<double>& a, const std::vector<double>& b) {
     if (a.size() != b.size() || a.empty()) {
         return 0.0;
@@ -255,8 +315,12 @@ double cosineSimilarity(const std::vector<double>& a, const std::vector<double>&
     return dot / (std::sqrt(normA) * std::sqrt(normB));
 }
 
-char classToChar(int label) {
-    return static_cast<char>('A' + label);
+std::string normalizeLabelToken(std::string token) {
+    token.erase(std::remove_if(token.begin(), token.end(), ::isspace), token.end());
+    std::transform(token.begin(), token.end(), token.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    return token;
 }
 
 std::vector<int> parseCsvInts(const std::string& csv) {
@@ -271,31 +335,29 @@ std::vector<int> parseCsvInts(const std::string& csv) {
     return values;
 }
 
-int parseLabelToken(std::string token) {
-    token.erase(std::remove_if(token.begin(), token.end(), ::isspace), token.end());
+int parseLabelToken(std::string token, const Config& config) {
+    token = normalizeLabelToken(std::move(token));
     if (token.empty()) {
         throw std::runtime_error("Empty label token in focus group definition");
     }
 
-    if (token.size() == 1 && std::isalpha(static_cast<unsigned char>(token[0]))) {
-        const char upper = static_cast<char>(std::toupper(static_cast<unsigned char>(token[0])));
-        if (upper < 'A' || upper > 'Z') {
-            throw std::runtime_error("Invalid class label token: " + token);
+    for (size_t label = 0; label < config.classNames.size(); ++label) {
+        if (normalizeLabelToken(config.classNames[label]) == token) {
+            return static_cast<int>(label);
         }
-        return upper - 'A';
     }
 
     const int numeric = std::stoi(token);
-    if (numeric >= 0 && numeric < 26) {
+    if (numeric >= 0 && numeric < config.numClasses) {
         return numeric;
     }
-    if (numeric >= 1 && numeric <= 26) {
+    if (numeric >= 1 && numeric <= config.numClasses) {
         return numeric - 1;
     }
     throw std::runtime_error("Label token out of range: " + token);
 }
 
-std::vector<std::vector<int>> parseLabelGroups(const std::string& spec) {
+std::vector<std::vector<int>> parseLabelGroups(const std::string& spec, const Config& config) {
     std::vector<std::vector<int>> groups;
     std::stringstream outer(spec);
     std::string groupToken;
@@ -308,7 +370,7 @@ std::vector<std::vector<int>> parseLabelGroups(const std::string& spec) {
         std::vector<int> group;
         while (std::getline(inner, labelToken, ',')) {
             if (!labelToken.empty()) {
-                const int label = parseLabelToken(labelToken);
+                const int label = parseLabelToken(labelToken, config);
                 if (std::find(group.begin(), group.end(), label) == group.end()) {
                     group.push_back(label);
                 }
@@ -334,13 +396,13 @@ std::vector<int> flattenLabelGroups(const std::vector<std::vector<int>>& groups)
     return labels;
 }
 
-std::string labelGroupToString(const std::vector<int>& group) {
+std::string labelGroupToString(const std::vector<int>& group, const Config& config) {
     std::ostringstream oss;
     for (size_t i = 0; i < group.size(); ++i) {
         if (i > 0) {
             oss << "/";
         }
-        oss << classToChar(group[i]);
+        oss << classLabel(config, group[i]);
     }
     return oss.str();
 }
@@ -369,15 +431,15 @@ void normalizeSum(std::vector<double>& values) {
     }
 }
 
-EMNISTLoader::Image applyImageFocusTransform(const EMNISTLoader::Image& image,
-                                             double scale,
-                                             double shiftXPx) {
+VisualStimulus applyImageFocusTransform(const VisualStimulus& image,
+                                        double scale,
+                                        double shiftXPx) {
     const bool hasTransform = std::abs(scale - 1.0) > 1e-6 || std::abs(shiftXPx) > 1e-6;
     if (!hasTransform) {
         return image;
     }
 
-    EMNISTLoader::Image transformed;
+    VisualStimulus transformed;
     transformed.label = image.label;
     transformed.rows = image.rows;
     transformed.cols = image.cols;
@@ -738,6 +800,18 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     if (focusAdjustmentShiftIt != irConfig.doubleParams.end()) {
         config.focusAdjustmentShiftPx = focusAdjustmentShiftIt->second;
     }
+    const auto inputDomainIt = irConfig.stringParams.find("input_domain");
+    if (inputDomainIt != irConfig.stringParams.end()) {
+        config.inputDomain = inputDomainIt->second;
+    }
+    const auto inputVariantIt = irConfig.stringParams.find("input_variant");
+    if (inputVariantIt != irConfig.stringParams.end()) {
+        config.inputVariant = inputVariantIt->second;
+    }
+    const auto inputApplyTransformIt = irConfig.intParams.find("input_apply_transform");
+    if (inputApplyTransformIt != irConfig.intParams.end()) {
+        config.inputApplyTransform = inputApplyTransformIt->second != 0;
+    }
 }
 
 BaseAdapter::Config makeRetinaAdapterConfig(const AdapterConfigIR& adapter,
@@ -905,7 +979,7 @@ std::vector<BaseAdapter::Config> buildRetinaConfigs(const Config& config) {
 }
 
 std::vector<double> extractPattern(std::vector<std::unique_ptr<RetinaAdapter>>& retinas,
-                                   const EMNISTLoader::Image& image,
+                                   const VisualStimulus& image,
                                    bool useFeatures,
                                    bool learnPatterns);
 
@@ -951,7 +1025,7 @@ std::unique_ptr<ClassificationStrategy> makeClassifierStrategy(const std::string
     ClassificationStrategy::Config clsConfig;
     clsConfig.name = type;
     clsConfig.k = k;
-    clsConfig.numClasses = 26;
+    clsConfig.numClasses = config.numClasses;
     clsConfig.distanceExponent = exponent;
     clsConfig.stringParams["group_definitions"] = config.hierarchicalGroups;
     clsConfig.stringParams["coarse_strategy"] = config.hierarchicalCoarseStrategy;
@@ -985,12 +1059,12 @@ struct TrainingSplit {
 };
 
 struct EvaluationResult {
-    std::array<std::array<int, 26>, 26> initialConfusion{};
-    std::array<std::array<int, 26>, 26> confusion{};
-    std::array<std::array<int, 26>, 26> leftHemisphereConfusion{};
-    std::array<std::array<int, 26>, 26> rightHemisphereConfusion{};
-    std::array<std::array<int, 26>, 26> correctedInitialPairs{};
-    std::array<std::array<int, 26>, 26> unresolvedInitialPairs{};
+    IntMatrix initialConfusion;
+    IntMatrix confusion;
+    IntMatrix leftHemisphereConfusion;
+    IntMatrix rightHemisphereConfusion;
+    IntMatrix correctedInitialPairs;
+    IntMatrix unresolvedInitialPairs;
     int tested = 0;
     int correct = 0;
     int initialCorrect = 0;
@@ -1024,11 +1098,23 @@ struct EvaluationResult {
     double replayEligibilityScaleSum = 0.0;
     double confusionClusterScoreSum = 0.0;
     int confusionClusterScoreSamples = 0;
-    std::array<std::array<double, 26>, 26> confusionClusterStrengths{};
+    DoubleMatrix confusionClusterStrengths;
     double seconds = 0.0;
 };
 
-TrainingSplit splitTrainingIndices(const std::array<std::vector<size_t>, 26>& indicesByLabel,
+EvaluationResult makeEvaluationResult(const Config& config) {
+    EvaluationResult result;
+    result.initialConfusion = makeClassMatrix<int>(config.numClasses, 0);
+    result.confusion = makeClassMatrix<int>(config.numClasses, 0);
+    result.leftHemisphereConfusion = makeClassMatrix<int>(config.numClasses, 0);
+    result.rightHemisphereConfusion = makeClassMatrix<int>(config.numClasses, 0);
+    result.correctedInitialPairs = makeClassMatrix<int>(config.numClasses, 0);
+    result.unresolvedInitialPairs = makeClassMatrix<int>(config.numClasses, 0);
+    result.confusionClusterStrengths = makeClassMatrix<double>(config.numClasses, 0.0);
+    return result;
+}
+
+TrainingSplit splitTrainingIndices(const IndexBuckets& indicesByLabel,
                                    int examplesPerClass,
                                    int fusionHoldoutPerClass,
                                    unsigned int seed,
@@ -1135,7 +1221,10 @@ void decayConfusionClusterMemory(ConfusionClusterMemory& memory, const Config& c
 }
 
 void reinforceConfusionPair(ConfusionClusterMemory& memory, int a, int b, double amount) {
-    if (a < 0 || a >= 26 || b < 0 || b >= 26 || a == b || amount <= 0.0) {
+    if (a < 0 || b < 0 ||
+        static_cast<size_t>(a) >= memory.strengths.size() ||
+        static_cast<size_t>(b) >= memory.strengths.size() ||
+        a == b || amount <= 0.0) {
         return;
     }
     auto& ab = memory.strengths[static_cast<size_t>(a)][static_cast<size_t>(b)];
@@ -1190,7 +1279,10 @@ double computeConfusionClusterScore(const ConfusionClusterMemory& memory,
     if (decision.topHypotheses.size() >= 2) {
         const int best = decision.topHypotheses[0].label;
         const int second = decision.topHypotheses[1].label;
-        if (best >= 0 && best < 26 && second >= 0 && second < 26 && best != second) {
+        if (best >= 0 && second >= 0 &&
+            static_cast<size_t>(best) < memory.strengths.size() &&
+            static_cast<size_t>(second) < memory.strengths.size() &&
+            best != second) {
             score = std::max(score,
                              memory.strengths[static_cast<size_t>(best)]
                                              [static_cast<size_t>(second)]);
@@ -1208,9 +1300,10 @@ void recordHemisphereAgreement(EvaluationResult& result,
 
     const int leftPredicted = decision.hemisphereTraces[0].predicted;
     const int rightPredicted = decision.hemisphereTraces[1].predicted;
-    if (leftPredicted < 0 || leftPredicted >= 26 ||
-        rightPredicted < 0 || rightPredicted >= 26 ||
-        truth < 0 || truth >= 26) {
+    if (leftPredicted < 0 || rightPredicted < 0 || truth < 0 ||
+        static_cast<size_t>(leftPredicted) >= result.leftHemisphereConfusion.size() ||
+        static_cast<size_t>(rightPredicted) >= result.rightHemisphereConfusion.size() ||
+        static_cast<size_t>(truth) >= result.leftHemisphereConfusion.size()) {
         return;
     }
 
@@ -1362,10 +1455,11 @@ ReplayItem makeReplayItem(size_t recordIndex,
 void finalizeEvaluationFromRecords(EvaluationResult& result,
                                    const std::vector<OnlineSampleRecord>& records,
                                    double seconds) {
-    result.initialConfusion = {};
-    result.confusion = {};
-    result.correctedInitialPairs = {};
-    result.unresolvedInitialPairs = {};
+    const int numClasses = static_cast<int>(result.confusion.size());
+    result.initialConfusion = makeClassMatrix<int>(numClasses, 0);
+    result.confusion = makeClassMatrix<int>(numClasses, 0);
+    result.correctedInitialPairs = makeClassMatrix<int>(numClasses, 0);
+    result.unresolvedInitialPairs = makeClassMatrix<int>(numClasses, 0);
     result.tested = 0;
     result.correct = 0;
     result.initialCorrect = 0;
@@ -1378,9 +1472,10 @@ void finalizeEvaluationFromRecords(EvaluationResult& result,
     result.correctedFromBothHemispheresWrong = 0;
 
     for (const auto& record : records) {
-        if (record.truth < 0 || record.truth >= 26 ||
-            record.initialPredicted < 0 || record.initialPredicted >= 26 ||
-            record.finalPredicted < 0 || record.finalPredicted >= 26) {
+        if (record.truth < 0 || record.initialPredicted < 0 || record.finalPredicted < 0 ||
+            static_cast<size_t>(record.truth) >= result.confusion.size() ||
+            static_cast<size_t>(record.initialPredicted) >= result.confusion.size() ||
+            static_cast<size_t>(record.finalPredicted) >= result.confusion.size()) {
             continue;
         }
         result.initialConfusion[static_cast<size_t>(record.truth)]
@@ -1456,11 +1551,12 @@ void updateCentroid(std::vector<double>& centroid,
 void insertOrReplaceOnlinePattern(
     std::vector<ClassificationStrategy::LabeledPattern>& patterns,
     std::vector<size_t>* sourceIndices,
-    std::array<std::vector<size_t>, 26>& onlineIndices,
+    std::vector<std::vector<size_t>>& onlineIndices,
     const std::vector<double>& pattern,
     int label,
     int budgetPerClass) {
-    if (label < 0 || label >= 26 || pattern.empty() || budgetPerClass <= 0) {
+    if (label < 0 || static_cast<size_t>(label) >= onlineIndices.size() ||
+        pattern.empty() || budgetPerClass <= 0) {
         return;
     }
 
@@ -1510,7 +1606,7 @@ std::vector<LabelTrace> collectTopHypotheses(const std::vector<double>& confiden
 }
 
 HemisphereDecisionTrace inferHemisphereDecision(HemisphereRuntime& hemisphere,
-                                                const EMNISTLoader::Image& image,
+                                                const VisualStimulus& image,
                                                 const Config& config) {
     HemisphereDecisionTrace trace;
     trace.pattern = extractPattern(hemisphere.retinas, image, config.useFeatures, false);
@@ -1529,7 +1625,7 @@ HemisphereDecisionTrace inferHemisphereDecision(HemisphereRuntime& hemisphere,
 
 std::vector<HemisphereDecisionTrace> inferHemisphereDecisions(
     std::vector<HemisphereRuntime>& hemispheres,
-    const EMNISTLoader::Image& image,
+    const VisualStimulus& image,
     const Config& config) {
     return runHemisphereTasks<HemisphereDecisionTrace>(
         hemispheres.size(),
@@ -1575,7 +1671,7 @@ std::vector<double> buildFusionPatternFromTraces(const std::vector<HemisphereDec
 }
 
 std::vector<double> buildFusionPattern(std::vector<HemisphereRuntime>& hemispheres,
-                                       const EMNISTLoader::Image& image,
+                                       const VisualStimulus& image,
                                        const Config& config) {
     return buildFusionPatternFromTraces(
         inferHemisphereDecisions(hemispheres, image, config),
@@ -1587,11 +1683,14 @@ bool useCorpusCallosumFusion(const Config& config) {
 }
 
 void buildHemisphereClassCentroids(HemisphereRuntime& hemisphere) {
-    hemisphere.classCentroids = {};
+    for (auto& centroid : hemisphere.classCentroids) {
+        centroid.clear();
+    }
 
-    std::array<int, 26> counts{};
+    std::vector<int> counts(hemisphere.classCentroids.size(), 0);
     for (const auto& labeledPattern : hemisphere.trainingPatterns) {
-        if (labeledPattern.label < 0 || labeledPattern.label >= 26 ||
+        if (labeledPattern.label < 0 ||
+            static_cast<size_t>(labeledPattern.label) >= hemisphere.classCentroids.size() ||
             labeledPattern.pattern.empty()) {
             continue;
         }
@@ -1621,7 +1720,7 @@ void buildHemisphereClassCentroids(HemisphereRuntime& hemisphere) {
 
 std::vector<double> computeCentroidEvidence(const HemisphereRuntime& hemisphere,
                                             const std::vector<double>& pattern) {
-    std::vector<double> centroidScores(26, 0.0);
+    std::vector<double> centroidScores(hemisphere.classCentroids.size(), 0.0);
     for (size_t label = 0; label < hemisphere.classCentroids.size(); ++label) {
         const auto& centroid = hemisphere.classCentroids[label];
         if (centroid.empty() || centroid.size() != pattern.size()) {
@@ -1641,7 +1740,8 @@ std::vector<double> computeNeighborSignature(const HemisphereRuntime& hemisphere
 
     for (size_t i = 0; i < hemisphere.trainingPatterns.size(); ++i) {
         const auto& labeledPattern = hemisphere.trainingPatterns[i];
-        if (labeledPattern.label < 0 || labeledPattern.label >= 26) {
+        if (labeledPattern.label < 0 ||
+            static_cast<size_t>(labeledPattern.label) >= hemisphere.classCentroids.size()) {
             continue;
         }
         neighbors.emplace_back(static_cast<int>(i),
@@ -1650,13 +1750,13 @@ std::vector<double> computeNeighborSignature(const HemisphereRuntime& hemisphere
 
     const int actualK = std::min<int>(std::max(1, k), static_cast<int>(neighbors.size()));
     if (actualK <= 0) {
-        return std::vector<double>(26, 0.0);
+        return std::vector<double>(hemisphere.classCentroids.size(), 0.0);
     }
 
     std::partial_sort(neighbors.begin(), neighbors.begin() + actualK, neighbors.end(),
                       [](const auto& a, const auto& b) { return a.second > b.second; });
 
-    std::vector<double> signature(26, 0.0);
+    std::vector<double> signature(hemisphere.classCentroids.size(), 0.0);
     for (int i = 0; i < actualK; ++i) {
         const auto& [index, similarity] = neighbors[static_cast<size_t>(i)];
         const int label = hemisphere.trainingPatterns[static_cast<size_t>(index)].label;
@@ -1667,13 +1767,13 @@ std::vector<double> computeNeighborSignature(const HemisphereRuntime& hemisphere
 }
 
 void calibrateCorpusCallosumWeights(std::vector<HemisphereRuntime>& hemispheres,
-                                    const EMNISTLoader& loader,
+                                    const VisualDomainAdapter& loader,
                                     const std::vector<size_t>& indices,
                                     const Config& config) {
     struct CorpusStats {
         double overall = 1.0;
-        std::array<double, 26> trueLabelAccuracy{};
-        std::array<double, 26> predictionPrecision{};
+        std::vector<double> trueLabelAccuracy;
+        std::vector<double> predictionPrecision;
     };
 
     const auto rawStats = runHemisphereTasks<CorpusStats>(
@@ -1681,18 +1781,22 @@ void calibrateCorpusCallosumWeights(std::vector<HemisphereRuntime>& hemispheres,
         [&](size_t hemisphereIndex) {
             CorpusStats stats;
             auto& hemisphere = hemispheres[hemisphereIndex];
+            stats.trueLabelAccuracy.assign(hemisphere.classWeights.size(), 1.0);
+            stats.predictionPrecision.assign(hemisphere.classWeights.size(), 1.0);
             const auto supportPatterns = buildSupportPatterns(hemisphere, indices);
-            std::array<int, 26> totals{};
-            std::array<int, 26> corrects{};
-            std::array<int, 26> predictedTotals{};
-            std::array<int, 26> predictedCorrects{};
+            std::vector<int> totals(hemisphere.classWeights.size(), 0);
+            std::vector<int> corrects(hemisphere.classWeights.size(), 0);
+            std::vector<int> predictedTotals(hemisphere.classWeights.size(), 0);
+            std::vector<int> predictedCorrects(hemisphere.classWeights.size(), 0);
             int totalSamples = 0;
             int totalCorrect = 0;
 
             for (size_t index : indices) {
-                const auto& image = loader.getImage(index);
-                const int truth = static_cast<int>(image.label) - 1;
-                if (truth < 0 || truth >= 26 || supportPatterns.empty()) {
+                const auto& image = loader.getStimulus(index);
+                const int truth = image.label;
+                if (truth < 0 ||
+                    static_cast<size_t>(truth) >= hemisphere.classWeights.size() ||
+                    supportPatterns.empty()) {
                     continue;
                 }
 
@@ -1772,11 +1876,11 @@ void scaleClamped(double& value, double factor, double minValue, double maxValue
 }
 
 BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime>& hemispheres,
-                                                   const EMNISTLoader::Image& image,
+                                                   const VisualStimulus& image,
                                                    const Config& config) {
     BilateralDecisionTrace trace;
     trace.hemisphereTraces = inferHemisphereDecisions(hemispheres, image, config);
-    trace.combinedConfidence.assign(26, 0.0);
+    trace.combinedConfidence.assign(static_cast<size_t>(config.numClasses), 0.0);
     std::vector<double> disagreementScores(hemispheres.size(), 0.0);
 
     for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
@@ -1836,7 +1940,7 @@ BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime
         int validVotes = 0;
         int previousPredicted = -1;
         for (const auto& hemisphereTrace : trace.hemisphereTraces) {
-            if (hemisphereTrace.predicted < 0 || hemisphereTrace.predicted >= 26) {
+            if (hemisphereTrace.predicted < 0 || hemisphereTrace.predicted >= config.numClasses) {
                 continue;
             }
             ++validVotes;
@@ -1876,13 +1980,13 @@ BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime
 }
 
 std::vector<double> buildCorpusCallosumConfidence(std::vector<HemisphereRuntime>& hemispheres,
-                                                  const EMNISTLoader::Image& image,
+                                                  const VisualStimulus& image,
                                                   const Config& config) {
     return inferCorpusCallosumDecision(hemispheres, image, config).combinedConfidence;
 }
 
 BilateralDecisionTrace inferFusionDecision(std::vector<HemisphereRuntime>& hemispheres,
-                                           const EMNISTLoader::Image& image,
+                                           const VisualStimulus& image,
                                            const Config& config,
                                            const ClassificationStrategy& fusionClassifier,
                                            const FusionRuntime& fusionRuntime) {
@@ -1967,7 +2071,7 @@ void recordFocusSelection(EvaluationResult& result, FocusPreset preset) {
 }
 
 template <typename InferFn>
-BilateralDecisionTrace maybeApplyFocusAdjustment(const EMNISTLoader::Image& image,
+BilateralDecisionTrace maybeApplyFocusAdjustment(const VisualStimulus& image,
                                                  const BilateralDecisionTrace& baseDecision,
                                                  int truth,
                                                  const Config& config,
@@ -2029,7 +2133,9 @@ void applyRewardToHemisphere(HemisphereRuntime& hemisphere,
                              int rewardedLabel,
                              double reward,
                              const Config& config) {
-    if (rewardedLabel < 0 || rewardedLabel >= 26 || trace.topHypotheses.empty()) {
+    if (rewardedLabel < 0 ||
+        static_cast<size_t>(rewardedLabel) >= hemisphere.classWeights.size() ||
+        trace.topHypotheses.empty()) {
         return;
     }
 
@@ -2109,11 +2215,11 @@ void applyRewardToFusion(FusionRuntime& fusionRuntime,
 }
 
 EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& hemispheres,
-                                                const EMNISTLoader& loader,
+                                                const VisualDomainAdapter& loader,
                                                 const std::vector<size_t>& indices,
                                                 const Config& config,
                                                 const std::string& label) {
-    EvaluationResult result;
+    EvaluationResult result = makeEvaluationResult(config);
     const auto start = std::chrono::high_resolution_clock::now();
     const int maxTests = static_cast<int>(indices.size());
     const int progressStep = maxTests >= 1000 ? 200 : (maxTests >= 200 ? 50 : 25);
@@ -2122,16 +2228,16 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
     std::vector<ReplayItem> replayQueue;
     replayQueue.reserve(static_cast<size_t>(std::max(16, config.onlineReplayQueueCapacity)));
     size_t replaySequence = 0;
-    ConfusionClusterMemory confusionMemory;
+    ConfusionClusterMemory confusionMemory = makeConfusionClusterMemory(config);
 
     auto processReplayItem = [&](ReplayItem item, size_t currentStep) {
         if (item.recordIndex >= records.size()) {
             return;
         }
         auto& record = records[item.recordIndex];
-        const auto& replayImage = loader.getImage(record.imageIndex);
+        const auto& replayImage = loader.getStimulus(record.imageIndex);
         auto replayDecision = inferCorpusCallosumDecision(hemispheres, replayImage, config);
-        if (replayDecision.predicted < 0 || replayDecision.predicted >= 26) {
+        if (replayDecision.predicted < 0 || replayDecision.predicted >= config.numClasses) {
             return;
         }
 
@@ -2204,15 +2310,15 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
     };
 
     for (size_t index : indices) {
-        const auto& image = loader.getImage(index);
-        const int truth = static_cast<int>(image.label) - 1;
-        if (truth < 0 || truth >= 26) {
+        const auto& image = loader.getStimulus(index);
+        const int truth = image.label;
+        if (truth < 0 || truth >= config.numClasses) {
             continue;
         }
 
         auto decision = inferCorpusCallosumDecision(hemispheres, image, config);
         const int initialPredicted = decision.predicted;
-        if (initialPredicted < 0 || initialPredicted >= 26) {
+        if (initialPredicted < 0 || initialPredicted >= config.numClasses) {
             continue;
         }
         const int leftInitialPredicted =
@@ -2226,7 +2332,7 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
             truth,
             config,
             result,
-            [&](const EMNISTLoader::Image& focusedImage) {
+            [&](const VisualStimulus& focusedImage) {
                 return inferCorpusCallosumDecision(hemispheres, focusedImage, config);
             });
         records.push_back(
@@ -2294,7 +2400,7 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
 }
 
 std::vector<double> extractPattern(std::vector<std::unique_ptr<RetinaAdapter>>& retinas,
-                                   const EMNISTLoader::Image& image,
+                                   const VisualStimulus& image,
                                    bool useFeatures,
                                    bool learnPatterns) {
     std::vector<double> combined;
@@ -2331,18 +2437,18 @@ std::vector<double> extractPattern(std::vector<std::unique_ptr<RetinaAdapter>>& 
     return combined;
 }
 
-std::array<std::vector<size_t>, 26> collectLabelIndices(const EMNISTLoader& loader) {
-    std::array<std::vector<size_t>, 26> indicesByLabel;
+IndexBuckets collectLabelIndices(const VisualDomainAdapter& loader, int numClasses) {
+    IndexBuckets indicesByLabel(static_cast<size_t>(std::max(0, numClasses)));
     for (size_t i = 0; i < loader.size(); ++i) {
-        const int label = static_cast<int>(loader.getImage(i).label) - 1;
-        if (label >= 0 && label < 26) {
+        const int label = loader.getStimulus(i).label;
+        if (label >= 0 && static_cast<size_t>(label) < indicesByLabel.size()) {
             indicesByLabel[static_cast<size_t>(label)].push_back(i);
         }
     }
     return indicesByLabel;
 }
 
-std::vector<size_t> selectStratifiedIndices(const std::array<std::vector<size_t>, 26>& indicesByLabel,
+std::vector<size_t> selectStratifiedIndices(const IndexBuckets& indicesByLabel,
                                             int maxPerClass,
                                             unsigned int seed) {
     std::mt19937 rng(seed);
@@ -2361,7 +2467,7 @@ std::vector<size_t> selectStratifiedIndices(const std::array<std::vector<size_t>
     return selected;
 }
 
-std::vector<size_t> selectBalancedTestIndices(const std::array<std::vector<size_t>, 26>& indicesByLabel,
+std::vector<size_t> selectBalancedTestIndices(const IndexBuckets& indicesByLabel,
                                               int testLimit,
                                               unsigned int seed) {
     if (testLimit <= 0) {
@@ -2369,8 +2475,8 @@ std::vector<size_t> selectBalancedTestIndices(const std::array<std::vector<size_
     }
 
     std::mt19937 rng(seed);
-    std::array<std::vector<size_t>, 26> shuffledByLabel = indicesByLabel;
-    std::array<size_t, 26> offsets{};
+    IndexBuckets shuffledByLabel = indicesByLabel;
+    std::vector<size_t> offsets(indicesByLabel.size(), 0);
     for (auto& indices : shuffledByLabel) {
         std::shuffle(indices.begin(), indices.end(), rng);
     }
@@ -2378,7 +2484,7 @@ std::vector<size_t> selectBalancedTestIndices(const std::array<std::vector<size_
     std::vector<size_t> selected;
     selected.reserve(static_cast<size_t>(testLimit));
 
-    // Round-robin keeps the sample balanced even when the limit is not divisible by 26.
+    // Round-robin keeps the sample balanced even when the limit is not divisible by class count.
     while (static_cast<int>(selected.size()) < testLimit) {
         bool addedAny = false;
         for (size_t label = 0; label < shuffledByLabel.size(); ++label) {
@@ -2400,7 +2506,7 @@ std::vector<size_t> selectBalancedTestIndices(const std::array<std::vector<size_
     return selected;
 }
 
-std::vector<size_t> selectFocusedTestIndices(const std::array<std::vector<size_t>, 26>& indicesByLabel,
+std::vector<size_t> selectFocusedTestIndices(const IndexBuckets& indicesByLabel,
                                              const std::vector<int>& focusLabels,
                                              int limitPerLabel,
                                              unsigned int seed) {
@@ -2409,8 +2515,8 @@ std::vector<size_t> selectFocusedTestIndices(const std::array<std::vector<size_t
     }
 
     std::mt19937 rng(seed);
-    std::array<std::vector<size_t>, 26> shuffledByLabel = indicesByLabel;
-    std::array<size_t, 26> offsets{};
+    IndexBuckets shuffledByLabel = indicesByLabel;
+    std::vector<size_t> offsets(indicesByLabel.size(), 0);
 
     for (int label : focusLabels) {
         auto& indices = shuffledByLabel[static_cast<size_t>(label)];
@@ -2440,21 +2546,21 @@ std::vector<size_t> selectFocusedTestIndices(const std::array<std::vector<size_t
 }
 
 EvaluationResult evaluatePatterns(std::vector<std::unique_ptr<RetinaAdapter>>& retinas,
-                                  const EMNISTLoader& loader,
+                                  const VisualDomainAdapter& loader,
                                   const std::vector<size_t>& indices,
                                   const Config& config,
                                   const ClassificationStrategy& classifier,
                                   const std::vector<ClassificationStrategy::LabeledPattern>& trainingPatterns,
                                   const std::string& label) {
-    EvaluationResult result;
+    EvaluationResult result = makeEvaluationResult(config);
     const auto start = std::chrono::high_resolution_clock::now();
     const int maxTests = static_cast<int>(indices.size());
     const int progressStep = maxTests >= 1000 ? 200 : (maxTests >= 200 ? 50 : 25);
 
     for (size_t index : indices) {
-        const auto& image = loader.getImage(index);
-        const int truth = static_cast<int>(image.label) - 1;
-        if (truth < 0 || truth >= 26) {
+        const auto& image = loader.getStimulus(index);
+        const int truth = image.label;
+        if (truth < 0 || truth >= config.numClasses) {
             continue;
         }
 
@@ -2479,13 +2585,13 @@ EvaluationResult evaluatePatterns(std::vector<std::unique_ptr<RetinaAdapter>>& r
 }
 
 EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemispheres,
-                                           const EMNISTLoader& loader,
+                                           const VisualDomainAdapter& loader,
                                            const std::vector<size_t>& indices,
                                            const Config& config,
                                            const ClassificationStrategy& fusionClassifier,
                                            FusionRuntime& fusionRuntime,
                                            const std::string& label) {
-    EvaluationResult result;
+    EvaluationResult result = makeEvaluationResult(config);
     const auto start = std::chrono::high_resolution_clock::now();
     const int maxTests = static_cast<int>(indices.size());
     const int progressStep = maxTests >= 1000 ? 200 : (maxTests >= 200 ? 50 : 25);
@@ -2494,17 +2600,17 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
     std::vector<ReplayItem> replayQueue;
     replayQueue.reserve(static_cast<size_t>(std::max(16, config.onlineReplayQueueCapacity)));
     size_t replaySequence = 0;
-    ConfusionClusterMemory confusionMemory;
+    ConfusionClusterMemory confusionMemory = makeConfusionClusterMemory(config);
 
     auto processReplayItem = [&](ReplayItem item, size_t currentStep) {
         if (item.recordIndex >= records.size()) {
             return;
         }
         auto& record = records[item.recordIndex];
-        const auto& replayImage = loader.getImage(record.imageIndex);
+        const auto& replayImage = loader.getStimulus(record.imageIndex);
         auto replayDecision = inferFusionDecision(
             hemispheres, replayImage, config, fusionClassifier, fusionRuntime);
-        if (replayDecision.predicted < 0 || replayDecision.predicted >= 26) {
+        if (replayDecision.predicted < 0 || replayDecision.predicted >= config.numClasses) {
             return;
         }
 
@@ -2582,15 +2688,15 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
     };
 
     for (size_t index : indices) {
-        const auto& image = loader.getImage(index);
-        const int truth = static_cast<int>(image.label) - 1;
-        if (truth < 0 || truth >= 26) {
+        const auto& image = loader.getStimulus(index);
+        const int truth = image.label;
+        if (truth < 0 || truth >= config.numClasses) {
             continue;
         }
 
         auto decision = inferFusionDecision(hemispheres, image, config, fusionClassifier, fusionRuntime);
         const int initialPredicted = decision.predicted;
-        if (initialPredicted < 0 || initialPredicted >= 26) {
+        if (initialPredicted < 0 || initialPredicted >= config.numClasses) {
             continue;
         }
         const int leftInitialPredicted =
@@ -2604,7 +2710,7 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
             truth,
             config,
             result,
-            [&](const EMNISTLoader::Image& focusedImage) {
+            [&](const VisualStimulus& focusedImage) {
                 return inferFusionDecision(
                     hemispheres, focusedImage, config, fusionClassifier, fusionRuntime);
             });
@@ -2676,7 +2782,7 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
     return result;
 }
 
-void printTopConfusions(const std::array<std::array<int, 26>, 26>& confusion) {
+void printTopConfusions(const IntMatrix& confusion, const Config& config) {
     struct PairConfusion {
         int a;
         int b;
@@ -2686,11 +2792,12 @@ void printTopConfusions(const std::array<std::array<int, 26>, 26>& confusion) {
     };
 
     std::vector<PairConfusion> pairs;
-    for (int i = 0; i < 26; ++i) {
-        for (int j = i + 1; j < 26; ++j) {
+    for (size_t i = 0; i < confusion.size(); ++i) {
+        for (size_t j = i + 1; j < confusion.size(); ++j) {
             const int total = confusion[i][j] + confusion[j][i];
             if (total > 0) {
-                pairs.push_back({i, j, total, confusion[i][j], confusion[j][i]});
+                pairs.push_back({static_cast<int>(i), static_cast<int>(j), total,
+                                 confusion[i][j], confusion[j][i]});
             }
         }
     }
@@ -2704,32 +2811,35 @@ void printTopConfusions(const std::array<std::array<int, 26>, 26>& confusion) {
     std::cout << "\nTop confusion pairs:" << std::endl;
     for (size_t i = 0; i < std::min<size_t>(10, pairs.size()); ++i) {
         const auto& p = pairs[i];
-        std::cout << "  " << classToChar(p.a) << "<->" << classToChar(p.b)
+        std::cout << "  " << classLabel(config, p.a) << "<->" << classLabel(config, p.b)
                   << ": " << p.total
-                  << " (" << classToChar(p.a) << "->" << classToChar(p.b) << "=" << p.aToB
-                  << ", " << classToChar(p.b) << "->" << classToChar(p.a) << "=" << p.bToA
+                  << " (" << classLabel(config, p.a) << "->" << classLabel(config, p.b)
+                  << "=" << p.aToB
+                  << ", " << classLabel(config, p.b) << "->" << classLabel(config, p.a)
+                  << "=" << p.bToA
                   << ")" << std::endl;
     }
 }
 
-void printPerClassAccuracy(const std::array<std::array<int, 26>, 26>& confusion) {
+void printPerClassAccuracy(const IntMatrix& confusion, const Config& config) {
     std::cout << "\nPer-class accuracy:" << std::endl;
-    for (int label = 0; label < 26; ++label) {
+    for (size_t label = 0; label < confusion.size(); ++label) {
         int total = 0;
-        for (int pred = 0; pred < 26; ++pred) {
+        for (size_t pred = 0; pred < confusion.size(); ++pred) {
             total += confusion[label][pred];
         }
         const double acc = total > 0
             ? (100.0 * static_cast<double>(confusion[label][label]) / static_cast<double>(total))
             : 0.0;
-        std::cout << "  " << classToChar(label) << ": "
+        std::cout << "  " << classLabel(config, static_cast<int>(label)) << ": "
                   << std::fixed << std::setprecision(2) << acc << "% ("
                   << confusion[label][label] << "/" << total << ")" << std::endl;
     }
 }
 
-void printFocusedFamilyReport(const std::array<std::array<int, 26>, 26>& confusion,
-                              const std::vector<std::vector<int>>& focusGroups) {
+void printFocusedFamilyReport(const IntMatrix& confusion,
+                              const std::vector<std::vector<int>>& focusGroups,
+                              const Config& config) {
     if (focusGroups.empty()) {
         return;
     }
@@ -2744,13 +2854,16 @@ void printFocusedFamilyReport(const std::array<std::array<int, 26>, 26>& confusi
         int correct = 0;
         int inFamily = 0;
         for (int truth : group) {
-            for (int pred = 0; pred < 26; ++pred) {
-                const int count = confusion[static_cast<size_t>(truth)][static_cast<size_t>(pred)];
+            if (truth < 0 || static_cast<size_t>(truth) >= confusion.size()) {
+                continue;
+            }
+            for (size_t pred = 0; pred < confusion.size(); ++pred) {
+                const int count = confusion[static_cast<size_t>(truth)][pred];
                 total += count;
-                if (truth == pred) {
+                if (truth == static_cast<int>(pred)) {
                     correct += count;
                 }
-                if (std::find(group.begin(), group.end(), pred) != group.end()) {
+                if (std::find(group.begin(), group.end(), static_cast<int>(pred)) != group.end()) {
                     inFamily += count;
                 }
             }
@@ -2763,7 +2876,7 @@ void printFocusedFamilyReport(const std::array<std::array<int, 26>, 26>& confusi
             ? 100.0 * static_cast<double>(inFamily) / static_cast<double>(total)
             : 0.0;
 
-        std::cout << "  [" << labelGroupToString(group) << "] accuracy="
+        std::cout << "  [" << labelGroupToString(group, config) << "] accuracy="
                   << std::fixed << std::setprecision(2) << familyAcc << "% (" << correct
                   << "/" << total << "), in-family=" << familyContainment << "%" << std::endl;
 
@@ -2775,11 +2888,11 @@ void printFocusedFamilyReport(const std::array<std::array<int, 26>, 26>& confusi
                     confusion[static_cast<size_t>(a)][static_cast<size_t>(b)] +
                     confusion[static_cast<size_t>(b)][static_cast<size_t>(a)];
                 if (totalPair > 0) {
-                    std::cout << "    " << classToChar(a) << "<->" << classToChar(b)
+                    std::cout << "    " << classLabel(config, a) << "<->" << classLabel(config, b)
                               << ": " << totalPair
-                              << " (" << classToChar(a) << "->" << classToChar(b) << "="
+                              << " (" << classLabel(config, a) << "->" << classLabel(config, b) << "="
                               << confusion[static_cast<size_t>(a)][static_cast<size_t>(b)]
-                              << ", " << classToChar(b) << "->" << classToChar(a) << "="
+                              << ", " << classLabel(config, b) << "->" << classLabel(config, a) << "="
                               << confusion[static_cast<size_t>(b)][static_cast<size_t>(a)] << ")"
                               << std::endl;
                 }
@@ -2793,14 +2906,16 @@ void printFocusedFamilyReport(const std::array<std::array<int, 26>, 26>& confusi
         };
         std::vector<EscapeConfusion> escapes;
         for (int truth : group) {
-            for (int pred = 0; pred < 26; ++pred) {
-                if (std::find(group.begin(), group.end(), pred) != group.end()) {
+            if (truth < 0 || static_cast<size_t>(truth) >= confusion.size()) {
+                continue;
+            }
+            for (size_t pred = 0; pred < confusion.size(); ++pred) {
+                if (std::find(group.begin(), group.end(), static_cast<int>(pred)) != group.end()) {
                     continue;
                 }
-                const int count =
-                    confusion[static_cast<size_t>(truth)][static_cast<size_t>(pred)];
+                const int count = confusion[static_cast<size_t>(truth)][pred];
                 if (count > 0) {
-                    escapes.push_back({truth, pred, count});
+                    escapes.push_back({truth, static_cast<int>(pred), count});
                 }
             }
         }
@@ -2809,8 +2924,8 @@ void printFocusedFamilyReport(const std::array<std::array<int, 26>, 26>& confusi
                       return lhs.count > rhs.count;
                   });
         for (size_t i = 0; i < std::min<size_t>(3, escapes.size()); ++i) {
-            std::cout << "    escape " << classToChar(escapes[i].truth) << "->"
-                      << classToChar(escapes[i].pred) << ": " << escapes[i].count << std::endl;
+            std::cout << "    escape " << classLabel(config, escapes[i].truth) << "->"
+                      << classLabel(config, escapes[i].pred) << ": " << escapes[i].count << std::endl;
         }
     }
 }
@@ -2885,14 +3000,14 @@ void printHemisphereAgreementSummary(const EvaluationResult& result) {
               << ", both_wrong=" << result.bothWrongOnDisagreement << std::endl;
 }
 
-void printHemisphereStage1Summary(const EvaluationResult& result) {
+void printHemisphereStage1Summary(const EvaluationResult& result, const Config& config) {
     if (result.hemisphereComparable <= 0) {
         return;
     }
 
     int leftCorrect = 0;
     int rightCorrect = 0;
-    for (size_t label = 0; label < 26; ++label) {
+    for (size_t label = 0; label < result.leftHemisphereConfusion.size(); ++label) {
         leftCorrect += result.leftHemisphereConfusion[label][label];
         rightCorrect += result.rightHemisphereConfusion[label][label];
     }
@@ -2914,9 +3029,9 @@ void printHemisphereStage1Summary(const EvaluationResult& result) {
         double delta = 0.0;
     };
     std::vector<LabelDelta> labelDeltas;
-    for (size_t label = 0; label < 26; ++label) {
+    for (size_t label = 0; label < result.leftHemisphereConfusion.size(); ++label) {
         int total = 0;
-        for (size_t predicted = 0; predicted < 26; ++predicted) {
+        for (size_t predicted = 0; predicted < result.leftHemisphereConfusion.size(); ++predicted) {
             total += result.leftHemisphereConfusion[label][predicted];
         }
         if (total <= 0) {
@@ -2944,7 +3059,7 @@ void printHemisphereStage1Summary(const EvaluationResult& result) {
         for (size_t i = 0; i < limit; ++i) {
             const auto& delta = labelDeltas[i];
             const char favored = delta.delta >= 0.0 ? 'L' : 'R';
-            std::cout << "    " << classToChar(delta.label)
+            std::cout << "    " << classLabel(config, delta.label)
                       << ": favor=" << favored
                       << ", left=" << delta.leftCorrect << "/" << delta.total
                       << ", right=" << delta.rightCorrect << "/" << delta.total
@@ -2960,18 +3075,17 @@ void printHemisphereStage1Summary(const EvaluationResult& result) {
         int rightTotal = 0;
     };
     std::vector<PairDelta> pairDeltas;
-    for (int a = 0; a < 26; ++a) {
-        for (int b = a + 1; b < 26; ++b) {
-            const int leftPair =
-                result.leftHemisphereConfusion[static_cast<size_t>(a)][static_cast<size_t>(b)] +
-                result.leftHemisphereConfusion[static_cast<size_t>(b)][static_cast<size_t>(a)];
-            const int rightPair =
-                result.rightHemisphereConfusion[static_cast<size_t>(a)][static_cast<size_t>(b)] +
-                result.rightHemisphereConfusion[static_cast<size_t>(b)][static_cast<size_t>(a)];
+    for (size_t a = 0; a < result.leftHemisphereConfusion.size(); ++a) {
+        for (size_t b = a + 1; b < result.leftHemisphereConfusion.size(); ++b) {
+            const int leftPair = result.leftHemisphereConfusion[a][b] +
+                                 result.leftHemisphereConfusion[b][a];
+            const int rightPair = result.rightHemisphereConfusion[a][b] +
+                                  result.rightHemisphereConfusion[b][a];
             if (leftPair == 0 && rightPair == 0) {
                 continue;
             }
-            pairDeltas.push_back({a, b, leftPair, rightPair});
+            pairDeltas.push_back(
+                {static_cast<int>(a), static_cast<int>(b), leftPair, rightPair});
         }
     }
     std::sort(pairDeltas.begin(),
@@ -2987,7 +3101,7 @@ void printHemisphereStage1Summary(const EvaluationResult& result) {
         for (size_t i = 0; i < limit; ++i) {
             const auto& delta = pairDeltas[i];
             const char favored = delta.leftTotal <= delta.rightTotal ? 'L' : 'R';
-            std::cout << "    " << classToChar(delta.a) << "<->" << classToChar(delta.b)
+            std::cout << "    " << classLabel(config, delta.a) << "<->" << classLabel(config, delta.b)
                       << ": fewer errors on " << favored
                       << " view (left=" << delta.leftTotal
                       << ", right=" << delta.rightTotal << ")" << std::endl;
@@ -2995,9 +3109,10 @@ void printHemisphereStage1Summary(const EvaluationResult& result) {
     }
 }
 
-void printTopDirectedPairs(const std::array<std::array<int, 26>, 26>& matrix,
+void printTopDirectedPairs(const IntMatrix& matrix,
                            const std::string& heading,
-                           size_t limit) {
+                           size_t limit,
+                           const Config& config) {
     struct PairCount {
         int truth = -1;
         int predicted = -1;
@@ -3005,12 +3120,13 @@ void printTopDirectedPairs(const std::array<std::array<int, 26>, 26>& matrix,
     };
 
     std::vector<PairCount> pairs;
-    for (int truth = 0; truth < 26; ++truth) {
-        for (int predicted = 0; predicted < 26; ++predicted) {
-            if (truth == predicted || matrix[static_cast<size_t>(truth)][static_cast<size_t>(predicted)] <= 0) {
+    for (size_t truth = 0; truth < matrix.size(); ++truth) {
+        for (size_t predicted = 0; predicted < matrix.size(); ++predicted) {
+            if (truth == predicted || matrix[truth][predicted] <= 0) {
                 continue;
             }
-            pairs.push_back({truth, predicted, matrix[static_cast<size_t>(truth)][static_cast<size_t>(predicted)]});
+            pairs.push_back(
+                {static_cast<int>(truth), static_cast<int>(predicted), matrix[truth][predicted]});
         }
     }
     if (pairs.empty()) {
@@ -3030,12 +3146,13 @@ void printTopDirectedPairs(const std::array<std::array<int, 26>, 26>& matrix,
     std::cout << "  " << heading << ":" << std::endl;
     for (size_t i = 0; i < std::min(limit, pairs.size()); ++i) {
         const auto& pair = pairs[i];
-        std::cout << "    " << classToChar(pair.truth) << "->" << classToChar(pair.predicted)
+        std::cout << "    " << classLabel(config, pair.truth) << "->"
+                  << classLabel(config, pair.predicted)
                   << ": " << pair.count << std::endl;
     }
 }
 
-void printBilateralAttributionSummary(const EvaluationResult& result) {
+void printBilateralAttributionSummary(const EvaluationResult& result, const Config& config) {
     if (result.tested <= 0) {
         return;
     }
@@ -3058,8 +3175,8 @@ void printBilateralAttributionSummary(const EvaluationResult& result) {
                   << result.correctedFromBothHemispheresWrong << std::endl;
     }
 
-    printTopDirectedPairs(result.correctedInitialPairs, "Top corrected initial pairs", 5);
-    printTopDirectedPairs(result.unresolvedInitialPairs, "Top unresolved initial pairs", 5);
+    printTopDirectedPairs(result.correctedInitialPairs, "Top corrected initial pairs", 5, config);
+    printTopDirectedPairs(result.unresolvedInitialPairs, "Top unresolved initial pairs", 5, config);
 
     if (result.confusionClusterScoreSamples > 0) {
         const double averageClusterScore =
@@ -3075,12 +3192,11 @@ void printBilateralAttributionSummary(const EvaluationResult& result) {
         double strength = 0.0;
     };
     std::vector<ClusterPair> pairs;
-    for (int a = 0; a < 26; ++a) {
-        for (int b = a + 1; b < 26; ++b) {
-            const double strength =
-                result.confusionClusterStrengths[static_cast<size_t>(a)][static_cast<size_t>(b)];
+    for (size_t a = 0; a < result.confusionClusterStrengths.size(); ++a) {
+        for (size_t b = a + 1; b < result.confusionClusterStrengths.size(); ++b) {
+            const double strength = result.confusionClusterStrengths[a][b];
             if (strength > 0.0) {
-                pairs.push_back({a, b, strength});
+                pairs.push_back({static_cast<int>(a), static_cast<int>(b), strength});
             }
         }
     }
@@ -3091,7 +3207,7 @@ void printBilateralAttributionSummary(const EvaluationResult& result) {
         std::cout << "  Top learned confusion clusters:" << std::endl;
         for (size_t i = 0; i < std::min<size_t>(5, pairs.size()); ++i) {
             const auto& pair = pairs[i];
-            std::cout << "    " << classToChar(pair.a) << "<->" << classToChar(pair.b)
+            std::cout << "    " << classLabel(config, pair.a) << "<->" << classLabel(config, pair.b)
                       << ": " << std::fixed << std::setprecision(2) << pair.strength
                       << std::endl;
         }
@@ -3177,6 +3293,12 @@ Config parseArgs(int argc, char* argv[]) {
             config.testImagesPath = argv[++i];
         } else if (arg == "--test-labels" && i + 1 < argc) {
             config.testLabelsPath = argv[++i];
+        } else if (arg == "--input-domain" && i + 1 < argc) {
+            config.inputDomain = argv[++i];
+        } else if (arg == "--input-variant" && i + 1 < argc) {
+            config.inputVariant = argv[++i];
+        } else if (arg == "--input-apply-transform" && i + 1 < argc) {
+            config.inputApplyTransform = std::atoi(argv[++i]) != 0;
         } else if (arg == "--examples-per-class" && i + 1 < argc) {
             config.examplesPerClass = std::atoi(argv[++i]);
         } else if (arg == "--test-limit" && i + 1 < argc) {
@@ -3273,7 +3395,7 @@ Config parseArgs(int argc, char* argv[]) {
         } else if (arg == "--use-activations") {
             config.useFeatures = false;
         } else if (arg == "--focus-groups" && i + 1 < argc) {
-            config.focusGroups = parseLabelGroups(argv[++i]);
+            config.focusGroupSpec = argv[++i];
         } else if (arg == "--focus-limit-per-label" && i + 1 < argc) {
             config.focusLimitPerLabel = std::atoi(argv[++i]);
         } else if (arg == "--focus-only") {
@@ -3286,6 +3408,9 @@ Config parseArgs(int argc, char* argv[]) {
                 << "  --train-labels <path>\n"
                 << "  --test-images <path>\n"
                 << "  --test-labels <path>\n"
+                << "  --input-domain emnist|mnist\n"
+                << "  --input-variant <letters|digits|balanced|byclass|bymerge>\n"
+                << "  --input-apply-transform <0|1>\n"
                 << "  --examples-per-class <n>\n"
                 << "  --test-limit <n>\n"
                 << "  --grid-size <n>\n"
@@ -3335,9 +3460,9 @@ Config parseArgs(int argc, char* argv[]) {
 
     if (config.trainImagesPath.empty() || config.trainLabelsPath.empty() ||
         config.testImagesPath.empty() || config.testLabelsPath.empty()) {
-        throw std::runtime_error("EMNIST image/label paths are required");
+        throw std::runtime_error("Input image/label paths are required");
     }
-    if (config.focusOnly && config.focusGroups.empty()) {
+    if (config.focusOnly && config.focusGroups.empty() && config.focusGroupSpec.empty()) {
         throw std::runtime_error("--focus-only requires --focus-groups");
     }
 
@@ -3350,10 +3475,10 @@ int main(int argc, char* argv[]) {
     snnfw::Logger::getInstance().setLevel(spdlog::level::warn);
 
     try {
-        const Config config = parseArgs(argc, argv);
+        Config config = parseArgs(argc, argv);
         const auto retinaConfigs = buildRetinaConfigs(config);
 
-        std::cout << "=== EMNIST Retina Classification ===" << std::endl;
+        std::cout << "=== Retina Classification ===" << std::endl;
         if (!config.configPath.empty()) {
             std::cout << "  Config: " << config.configPath << std::endl;
         }
@@ -3441,7 +3566,7 @@ int main(int argc, char* argv[]) {
                 if (i > 0) {
                     std::cout << ", ";
                 }
-                std::cout << "[" << labelGroupToString(config.focusGroups[i]) << "]";
+                std::cout << "[" << labelGroupToString(config.focusGroups[i], config) << "]";
             }
             if (config.focusLimitPerLabel > 0) {
                 std::cout << " limit/class=" << config.focusLimitPerLabel;
@@ -3452,16 +3577,29 @@ int main(int argc, char* argv[]) {
             std::cout << std::endl;
         }
 
-        EMNISTLoader trainLoader(EMNISTLoader::Variant::LETTERS);
-        EMNISTLoader testLoader(EMNISTLoader::Variant::LETTERS);
-        if (!trainLoader.load(config.trainImagesPath, config.trainLabelsPath) ||
-            !testLoader.load(config.testImagesPath, config.testLabelsPath)) {
-            std::cerr << "Failed to load EMNIST dataset" << std::endl;
+        VisualDomainConfig domainConfig;
+        domainConfig.source = config.inputDomain;
+        domainConfig.variant = config.inputVariant;
+        domainConfig.applyTransform = config.inputApplyTransform;
+        auto trainLoader = snnfw::domain::createVisualDomainAdapter(domainConfig);
+        auto testLoader = snnfw::domain::createVisualDomainAdapter(domainConfig);
+        if (!trainLoader->load(config.trainImagesPath, config.trainLabelsPath) ||
+            !testLoader->load(config.testImagesPath, config.testLabelsPath)) {
+            std::cerr << "Failed to load input dataset" << std::endl;
             return 1;
         }
+        configureClassMetadata(config, *trainLoader);
+        if (!config.focusGroupSpec.empty()) {
+            config.focusGroups = parseLabelGroups(config.focusGroupSpec, config);
+        }
+        if (config.focusOnly && config.focusGroups.empty()) {
+            throw std::runtime_error("--focus-only requires --focus-groups");
+        }
+        std::cout << "  Input domain=" << trainLoader->domainName()
+                  << ", classes=" << config.numClasses << std::endl;
 
-        const auto trainIndicesByLabel = collectLabelIndices(trainLoader);
-        const auto testIndicesByLabel = collectLabelIndices(testLoader);
+        const auto trainIndicesByLabel = collectLabelIndices(*trainLoader, config.numClasses);
+        const auto testIndicesByLabel = collectLabelIndices(*testLoader, config.numClasses);
         const auto selectedTestIndices =
             selectBalancedTestIndices(testIndicesByLabel, config.testLimit, config.seed + 1U);
         const auto focusLabels = flattenLabelGroups(config.focusGroups);
@@ -3475,15 +3613,16 @@ int main(int argc, char* argv[]) {
                                                      config.classifierExponent, config);
 
             std::vector<ClassificationStrategy::LabeledPattern> trainingPatterns;
-            trainingPatterns.reserve(static_cast<size_t>(26 * std::max(1, config.examplesPerClass)));
+            trainingPatterns.reserve(
+                static_cast<size_t>(config.numClasses * std::max(1, config.examplesPerClass)));
             const auto selectedTrainIndices =
                 selectStratifiedIndices(trainIndicesByLabel, config.examplesPerClass, config.seed);
 
             const auto trainingStart = std::chrono::high_resolution_clock::now();
             for (size_t i : selectedTrainIndices) {
-                const auto& image = trainLoader.getImage(i);
-                const int label = static_cast<int>(image.label) - 1;
-                if (label < 0 || label >= 26) {
+                const auto& image = trainLoader->getStimulus(i);
+                const int label = image.label;
+                if (label < 0 || label >= config.numClasses) {
                     continue;
                 }
                 trainingPatterns.emplace_back(
@@ -3501,7 +3640,7 @@ int main(int argc, char* argv[]) {
                 std::chrono::duration<double>(end - trainingStart).count();
 
             if (!config.focusOnly) {
-                const auto eval = evaluatePatterns(retinas, testLoader, selectedTestIndices, config,
+                const auto eval = evaluatePatterns(retinas, *testLoader, selectedTestIndices, config,
                                                    *classifier, trainingPatterns, "Testing");
                 const double accuracy =
                     100.0 * static_cast<double>(eval.correct) /
@@ -3514,13 +3653,13 @@ int main(int argc, char* argv[]) {
                 std::cout << "  Elapsed: " << std::fixed << std::setprecision(2)
                           << (trainingSeconds + eval.seconds) << "s" << std::endl;
 
-                printPerClassAccuracy(eval.confusion);
-                printTopConfusions(eval.confusion);
+                printPerClassAccuracy(eval.confusion, config);
+                printTopConfusions(eval.confusion, config);
             }
 
             if (!config.focusGroups.empty()) {
                 const auto focusedEval = evaluatePatterns(
-                    retinas, testLoader, focusedTestIndices, config, *classifier,
+                    retinas, *testLoader, focusedTestIndices, config, *classifier,
                     trainingPatterns, "Focus");
                 const double focusedAccuracy =
                     100.0 * static_cast<double>(focusedEval.correct) /
@@ -3534,9 +3673,9 @@ int main(int argc, char* argv[]) {
                 std::cout << "  Elapsed: " << std::fixed << std::setprecision(2)
                           << focusedEval.seconds << "s" << std::endl;
 
-                printPerClassAccuracy(focusedEval.confusion);
-                printTopConfusions(focusedEval.confusion);
-                printFocusedFamilyReport(focusedEval.confusion, config.focusGroups);
+                printPerClassAccuracy(focusedEval.confusion, config);
+                printTopConfusions(focusedEval.confusion, config);
+                printFocusedFamilyReport(focusedEval.confusion, config.focusGroups, config);
             }
         } else {
             const auto groupedConfigs = groupRetinaConfigsByHemisphere(retinaConfigs, config);
@@ -3556,6 +3695,7 @@ int main(int argc, char* argv[]) {
                 HemisphereRuntime hemisphere;
                 hemisphere.name = name;
                 hemisphere.retinas = createRetinaAdapters(configsForHemisphere);
+                initializeHemisphereRuntime(hemisphere, config.numClasses);
                 hemispheres.push_back(std::move(hemisphere));
                 std::cout << "    * " << name << ": " << configsForHemisphere.size()
                           << " retina branches" << std::endl;
@@ -3587,9 +3727,9 @@ int main(int argc, char* argv[]) {
                     artifacts.trainingPatterns.reserve(split.stage1Indices.size());
                     artifacts.trainingSourceIndices.reserve(split.stage1Indices.size());
                     for (size_t i : split.stage1Indices) {
-                        const auto& image = trainLoader.getImage(i);
-                        const int label = static_cast<int>(image.label) - 1;
-                        if (label < 0 || label >= 26) {
+                        const auto& image = trainLoader->getStimulus(i);
+                        const int label = image.label;
+                        if (label < 0 || label >= config.numClasses) {
                             continue;
                         }
                         artifacts.trainingPatterns.emplace_back(
@@ -3615,20 +3755,19 @@ int main(int argc, char* argv[]) {
 
             std::unique_ptr<ClassificationStrategy> fusionClassifier;
             FusionRuntime fusionRuntime;
+            initializeFusionRuntime(fusionRuntime, config.numClasses);
             if (useCorpusCallosumFusion(config)) {
-                calibrateCorpusCallosumWeights(hemispheres, trainLoader, split.fusionIndices, config);
+                calibrateCorpusCallosumWeights(hemispheres, *trainLoader, split.fusionIndices, config);
                 std::cout << "  Corpus-callosum calibration samples: "
                           << split.fusionIndices.size() << std::endl;
                 for (const auto& hemisphere : hemispheres) {
                     std::cout << "    - " << hemisphere.name
                               << " overall_weight=" << std::fixed << std::setprecision(3)
                               << hemisphere.overallWeight
-                              << ", class_bias[I]=" << hemisphere.classWeights[8]
-                              << ", class_bias[L]=" << hemisphere.classWeights[11]
-                              << ", class_bias[Q]=" << hemisphere.classWeights[16]
-                              << ", vote_bias[I]=" << hemisphere.predictionWeights[8]
-                              << ", vote_bias[L]=" << hemisphere.predictionWeights[11]
-                              << ", vote_bias[Q]=" << hemisphere.predictionWeights[16]
+                              << ", class_bias[0]="
+                              << (!hemisphere.classWeights.empty() ? hemisphere.classWeights[0] : 0.0)
+                              << ", vote_bias[0]="
+                              << (!hemisphere.predictionWeights.empty() ? hemisphere.predictionWeights[0] : 0.0)
                               << std::endl;
                 }
             } else {
@@ -3636,9 +3775,9 @@ int main(int argc, char* argv[]) {
                     config.fusionClassifier, fusionK, config.fusionExponent, config);
                 fusionRuntime.trainingPatterns.reserve(split.fusionIndices.size());
                 for (size_t i : split.fusionIndices) {
-                    const auto& image = trainLoader.getImage(i);
-                    const int label = static_cast<int>(image.label) - 1;
-                    if (label < 0 || label >= 26) {
+                    const auto& image = trainLoader->getStimulus(i);
+                    const int label = image.label;
+                    if (label < 0 || label >= config.numClasses) {
                         continue;
                     }
                     fusionRuntime.trainingPatterns.emplace_back(
@@ -3664,9 +3803,9 @@ int main(int argc, char* argv[]) {
             if (!config.focusOnly) {
                 const auto eval = useCorpusCallosumFusion(config)
                     ? evaluateCorpusCallosumPatterns(
-                          hemispheres, testLoader, selectedTestIndices, config, "Testing")
+                          hemispheres, *testLoader, selectedTestIndices, config, "Testing")
                     : evaluateBilateralPatterns(
-                          hemispheres, testLoader, selectedTestIndices, config, *fusionClassifier,
+                          hemispheres, *testLoader, selectedTestIndices, config, *fusionClassifier,
                           fusionRuntime, "Testing");
                 const double accuracy =
                     100.0 * static_cast<double>(eval.correct) /
@@ -3679,21 +3818,21 @@ int main(int argc, char* argv[]) {
                 std::cout << "  Elapsed: " << std::fixed << std::setprecision(2)
                           << (trainingSeconds + eval.seconds) << "s" << std::endl;
                 printHemisphereAgreementSummary(eval);
-                printHemisphereStage1Summary(eval);
-                printBilateralAttributionSummary(eval);
+                printHemisphereStage1Summary(eval, config);
+                printBilateralAttributionSummary(eval, config);
                 printFocusAdjustmentSummary(eval);
                 printOnlineCorrectionSummary(eval);
 
-                printPerClassAccuracy(eval.confusion);
-                printTopConfusions(eval.confusion);
+                printPerClassAccuracy(eval.confusion, config);
+                printTopConfusions(eval.confusion, config);
             }
 
             if (!config.focusGroups.empty()) {
                 const auto focusedEval = useCorpusCallosumFusion(config)
                     ? evaluateCorpusCallosumPatterns(
-                          hemispheres, testLoader, focusedTestIndices, config, "Focus")
+                          hemispheres, *testLoader, focusedTestIndices, config, "Focus")
                     : evaluateBilateralPatterns(
-                          hemispheres, testLoader, focusedTestIndices, config, *fusionClassifier,
+                          hemispheres, *testLoader, focusedTestIndices, config, *fusionClassifier,
                           fusionRuntime, "Focus");
                 const double focusedAccuracy =
                     100.0 * static_cast<double>(focusedEval.correct) /
@@ -3707,14 +3846,14 @@ int main(int argc, char* argv[]) {
                 std::cout << "  Elapsed: " << std::fixed << std::setprecision(2)
                           << focusedEval.seconds << "s" << std::endl;
                 printHemisphereAgreementSummary(focusedEval);
-                printHemisphereStage1Summary(focusedEval);
-                printBilateralAttributionSummary(focusedEval);
+                printHemisphereStage1Summary(focusedEval, config);
+                printBilateralAttributionSummary(focusedEval, config);
                 printFocusAdjustmentSummary(focusedEval);
                 printOnlineCorrectionSummary(focusedEval);
 
-                printPerClassAccuracy(focusedEval.confusion);
-                printTopConfusions(focusedEval.confusion);
-                printFocusedFamilyReport(focusedEval.confusion, config.focusGroups);
+                printPerClassAccuracy(focusedEval.confusion, config);
+                printTopConfusions(focusedEval.confusion, config);
+                printFocusedFamilyReport(focusedEval.confusion, config.focusGroups, config);
             }
         }
 

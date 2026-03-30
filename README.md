@@ -125,6 +125,9 @@ The framework includes a high-performance EMNIST letters classification experime
 
 # Bilateral Retina continuous-learning reference
 ./scripts/run_emnist_retina_bilateral_continuous.sh
+
+# Bilateral Retina on MNIST digits
+./scripts/run_mnist_retina_bilateral.sh
 ```
 
 Static reference configs:
@@ -134,7 +137,14 @@ Static reference configs:
 Continuous-learning reference config:
 - `configs/emnist_retina_bilateral_continuous.sonata.json`
 
+Additional domain config:
+- `configs/mnist_retina_bilateral_experimental.sonata.json`
+
 The bilateral configs use two transformed hemisphere views and corpus-callosum-style weighted fusion over the hemisphere classifications. The continuous config adds reward-driven online adaptation with delayed replay and context-gated plasticity.
+
+The Retina experiment now consumes a domain adapter instead of being hardwired to EMNIST letters. Current built-in domain adapters are:
+- `emnist` with variants `letters|digits|balanced|byclass|bymerge`
+- `mnist` with digits
 
 Retina declarative configs can now also declare a real `brain` hierarchy. In that mode, each Retina adapter binds to a declared layer path with `string_params.attach_path`, and the bilateral fusion layer is declared with `classification.string_params.fusion_path` instead of relying only on free-form hemisphere tags.
 
