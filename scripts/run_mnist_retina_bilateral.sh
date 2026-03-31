@@ -3,12 +3,22 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${ROOT_DIR}/build"
+DEFAULT_DATA_DIR="${ROOT_DIR}/data/MNIST"
+ALT_DATA_DIR="$(cd "${ROOT_DIR}/.." && pwd)/data/MNIST/raw"
+
+if [[ -f "${DEFAULT_DATA_DIR}/train-images-idx3-ubyte" ]]; then
+  DATA_DIR="${DEFAULT_DATA_DIR}"
+elif [[ -f "${ALT_DATA_DIR}/train-images-idx3-ubyte" ]]; then
+  DATA_DIR="${ALT_DATA_DIR}"
+else
+  DATA_DIR="${DEFAULT_DATA_DIR}"
+fi
 
 CONFIG_PATH="${CONFIG_PATH:-${ROOT_DIR}/configs/mnist_retina_bilateral_experimental.sonata.json}"
-TRAIN_IMAGES="${TRAIN_IMAGES:-${ROOT_DIR}/data/MNIST/train-images-idx3-ubyte}"
-TRAIN_LABELS="${TRAIN_LABELS:-${ROOT_DIR}/data/MNIST/train-labels-idx1-ubyte}"
-TEST_IMAGES="${TEST_IMAGES:-${ROOT_DIR}/data/MNIST/t10k-images-idx3-ubyte}"
-TEST_LABELS="${TEST_LABELS:-${ROOT_DIR}/data/MNIST/t10k-labels-idx1-ubyte}"
+TRAIN_IMAGES="${TRAIN_IMAGES:-${DATA_DIR}/train-images-idx3-ubyte}"
+TRAIN_LABELS="${TRAIN_LABELS:-${DATA_DIR}/train-labels-idx1-ubyte}"
+TEST_IMAGES="${TEST_IMAGES:-${DATA_DIR}/t10k-images-idx3-ubyte}"
+TEST_LABELS="${TEST_LABELS:-${DATA_DIR}/t10k-labels-idx1-ubyte}"
 
 EXAMPLES_PER_CLASS="${EXAMPLES_PER_CLASS:-0}"
 TEST_LIMIT="${TEST_LIMIT:-0}"
