@@ -84,7 +84,7 @@ make -j$(nproc)
 
 ### Running Example Experiments
 
-The framework includes a high-performance EMNIST letters classification experiment achieving ~90% accuracy:
+The framework includes high-performance Retina classification experiments for both EMNIST letters and MNIST digits:
 
 #### Hardcoded C++ Experiment
 ```bash
@@ -227,6 +227,15 @@ Benchmark summary:
 | Unilateral Retina | `configs/emnist_retina_experimental.sonata.json` | Static accuracy | `86.17%` |
 | Bilateral Retina | `configs/emnist_retina_bilateral_experimental.sonata.json` | Static accuracy | `87.29%` |
 | Bilateral Retina Continuous | `configs/emnist_retina_bilateral_continuous.sonata.json` | Initial / post-correction accuracy | `87.50% -> 88.85%` |
+
+Full-dataset static runs:
+
+| Dataset | Config | Train / Test | Result | Log |
+| --- | --- | --- | --- | --- |
+| EMNIST Letters | `configs/emnist_retina_bilateral_experimental.sonata.json` | `124800 / 20800` | `88.51%` (`18410/20800`) | `build/emnist_retina_bilateral_full_all.log` |
+| MNIST Digits | `configs/mnist_retina_bilateral_experimental.sonata.json` | `60000 / 10000` | `96.88%` (`9688/10000`) | `build/mnist_retina_bilateral_full_all.log` |
+
+These full-dataset readings use the same bilateral Retina architecture without additional framework changes; only the config and dataset source differ.
 
 Minimal hierarchy-driven Retina pattern:
 ```json
