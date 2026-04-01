@@ -88,12 +88,33 @@ public:
         std::vector<uint8_t> pixels;  ///< Pixel values (0-255)
         int rows;                      ///< Image height
         int cols;                      ///< Image width
+        int channels = 1;              ///< Number of channels (1=gray, 3=RGB)
         
-        uint8_t getPixel(int row, int col) const {
+        uint8_t getPixel(int row, int col, int channel) const {
             if (row < 0 || row >= rows || col < 0 || col >= cols) return 0;
-            return pixels[row * cols + col];
+            if (channel < 0 || channel >= std::max(1, channels)) return 0;
+            const size_t idx =
+                (static_cast<size_t>(row * cols + col) * static_cast<size_t>(std::max(1, channels))) +
+                static_cast<size_t>(channel);
+            if (idx >= pixels.size()) return 0;
+            return pixels[idx];
+        }
+
+        uint8_t getPixel(int row, int col) const {
+            if (channels <= 1) {
+                return getPixel(row, col, 0);
+            }
+            const double red = static_cast<double>(getPixel(row, col, 0));
+            const double green = static_cast<double>(getPixel(row, col, 1));
+            const double blue = static_cast<double>(getPixel(row, col, 2));
+            return static_cast<uint8_t>(std::clamp(
+                std::lround(0.299 * red + 0.587 * green + 0.114 * blue), 0L, 255L));
         }
         
+        double getNormalizedPixel(int row, int col, int channel) const {
+            return static_cast<double>(getPixel(row, col, channel)) / 255.0;
+        }
+
         double getNormalizedPixel(int row, int col) const {
             return static_cast<double>(getPixel(row, col)) / 255.0;
         }
@@ -194,8 +215,12 @@ private:
         const size_t subfields = getSubfieldCount();
         return subfields == 0 ? 1u : (subfieldIncludePooled_ ? 1u + subfields : subfields);
     }
+    size_t getColorEdgeChannelCount() const {
+        return colorEdgeMode_ == "opponent" ? 3u : 1u;
+    }
     size_t getChannelsPerBand() const {
-        return static_cast<size_t>(numOrientations_) * getOrientationChannelBlocks() +
+        return static_cast<size_t>(numOrientations_) * getOrientationChannelBlocks() *
+                   getColorEdgeChannelCount() +
                getAuxiliaryChannelCount();
     }
 
@@ -208,6 +233,7 @@ private:
     std::string edgeOperatorType_; ///< Configured edge operator name
     std::string activationMode_;   ///< Activation readout mode: binary, similarity, hybrid
     std::string auxiliaryFeatureMode_; ///< Optional derived feature channels per region/band
+    std::string colorEdgeMode_;        ///< Optional color-opponent edge channel mode
     int subfieldGridSize_;          ///< Optional spatial subdivision within each region
     bool subfieldIncludePooled_;    ///< Keep pooled region response alongside subfields
     double orientationFeatureGain_; ///< Gain applied to orientation/subfield channels
@@ -249,6 +275,7 @@ private:
     // Image dimensions (set during first processData call)
     int imageRows_;
     int imageCols_;
+    int imageChannels_;
     std::vector<double> frequencyBands_; ///< Spatial frequencies from the connected column set
     std::vector<double> blurSigmas_;     ///< Derived blur sigma per frequency band
 
@@ -277,6 +304,10 @@ private:
     Image blurImage(const Image& image, double sigma) const;
     Image applyViewTransform(const Image& image) const;
     void applyOrientationCompetition(std::vector<double>& responses) const;
+    std::vector<double> computeColorOpponentFeatures(const Image& image,
+                                                     int regionRow,
+                                                     int regionCol,
+                                                     int targetSize) const;
     std::vector<double> computeAuxiliaryFeatures(const std::vector<double>& orientationResponses,
                                                  const std::vector<uint8_t>& region,
                                                  int regionSize) const;

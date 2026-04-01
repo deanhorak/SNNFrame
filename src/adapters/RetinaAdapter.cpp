@@ -772,6 +772,7 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , edgeOperatorType_("sobel")
     , activationMode_("binary")
     , auxiliaryFeatureMode_("none")
+    , colorEdgeMode_("none")
     , subfieldGridSize_(1)
     , subfieldIncludePooled_(true)
     , orientationFeatureGain_(1.0)
@@ -800,6 +801,7 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , mirrorY_(false)
     , imageRows_(0)
     , imageCols_(0)
+    , imageChannels_(1)
 {
     // Load configuration parameters
     gridSize_ = getIntParam("grid_size", 7);
@@ -809,6 +811,7 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     activationMode_ = getStringParam("activation_mode", "binary");
     edgeOperatorType_ = getStringParam("edge_operator", "sobel");
     auxiliaryFeatureMode_ = getStringParam("auxiliary_feature_mode", "none");
+    colorEdgeMode_ = getStringParam("color_edge_mode", "none");
     subfieldGridSize_ = std::max(1, getIntParam("subfield_grid_size", 1));
     subfieldIncludePooled_ = getIntParam("subfield_include_pooled", 1) != 0;
     orientationFeatureGain_ = std::max(0.0, getDoubleParam("orientation_feature_gain", 1.0));
@@ -999,6 +1002,9 @@ size_t RetinaAdapter::getAuxiliaryChannelCount() const {
     if (auxiliaryFeatureMode_ == "contour_sequence") {
         return 8u;
     }
+    if (auxiliaryFeatureMode_ == "color_opponent") {
+        return 3u;
+    }
     return 1u;
 }
 
@@ -1017,35 +1023,46 @@ RetinaAdapter::Image RetinaAdapter::blurImage(const Image& image, double sigma) 
     const auto kernel = makeGaussianKernel(sigma);
     const int radius = static_cast<int>(kernel.size() / 2);
     const size_t pixelCount = static_cast<size_t>(image.rows) * static_cast<size_t>(image.cols);
-    std::vector<double> horizontal(pixelCount, 0.0);
+    const int channels = std::max(1, image.channels);
+    std::vector<double> horizontal(pixelCount * static_cast<size_t>(channels), 0.0);
 
-    for (int row = 0; row < image.rows; ++row) {
-        for (int col = 0; col < image.cols; ++col) {
-            double accum = 0.0;
-            for (int k = -radius; k <= radius; ++k) {
-                const int srcCol = std::clamp(col + k, 0, image.cols - 1);
-                accum += kernel[static_cast<size_t>(k + radius)] *
-                         static_cast<double>(image.getPixel(row, srcCol));
+    for (int channel = 0; channel < channels; ++channel) {
+        for (int row = 0; row < image.rows; ++row) {
+            for (int col = 0; col < image.cols; ++col) {
+                double accum = 0.0;
+                for (int k = -radius; k <= radius; ++k) {
+                    const int srcCol = std::clamp(col + k, 0, image.cols - 1);
+                    accum += kernel[static_cast<size_t>(k + radius)] *
+                             static_cast<double>(image.getPixel(row, srcCol, channel));
+                }
+                horizontal[(static_cast<size_t>(row * image.cols + col) *
+                            static_cast<size_t>(channels)) +
+                           static_cast<size_t>(channel)] = accum;
             }
-            horizontal[static_cast<size_t>(row * image.cols + col)] = accum;
         }
     }
 
     Image blurred;
     blurred.rows = image.rows;
     blurred.cols = image.cols;
-    blurred.pixels.resize(pixelCount);
-    for (int row = 0; row < image.rows; ++row) {
-        for (int col = 0; col < image.cols; ++col) {
-            double accum = 0.0;
-            for (int k = -radius; k <= radius; ++k) {
-                const int srcRow = std::clamp(row + k, 0, image.rows - 1);
-                accum += kernel[static_cast<size_t>(k + radius)] *
-                         horizontal[static_cast<size_t>(srcRow * image.cols + col)];
+    blurred.channels = channels;
+    blurred.pixels.resize(pixelCount * static_cast<size_t>(channels));
+    for (int channel = 0; channel < channels; ++channel) {
+        for (int row = 0; row < image.rows; ++row) {
+            for (int col = 0; col < image.cols; ++col) {
+                double accum = 0.0;
+                for (int k = -radius; k <= radius; ++k) {
+                    const int srcRow = std::clamp(row + k, 0, image.rows - 1);
+                    accum += kernel[static_cast<size_t>(k + radius)] *
+                             horizontal[(static_cast<size_t>(srcRow * image.cols + col) *
+                                         static_cast<size_t>(channels)) +
+                                        static_cast<size_t>(channel)];
+                }
+                const int value = static_cast<int>(std::lround(std::clamp(accum, 0.0, 255.0)));
+                blurred.pixels[(static_cast<size_t>(row * image.cols + col) *
+                                static_cast<size_t>(channels)) +
+                               static_cast<size_t>(channel)] = static_cast<uint8_t>(value);
             }
-            const int value = static_cast<int>(std::lround(std::clamp(accum, 0.0, 255.0)));
-            blurred.pixels[static_cast<size_t>(row * image.cols + col)] =
-                static_cast<uint8_t>(value);
         }
     }
     return blurred;
@@ -1065,7 +1082,9 @@ RetinaAdapter::Image RetinaAdapter::applyViewTransform(const Image& image) const
     Image transformed;
     transformed.rows = image.rows;
     transformed.cols = image.cols;
-    transformed.pixels.assign(static_cast<size_t>(image.rows * image.cols), 0);
+    transformed.channels = std::max(1, image.channels);
+    transformed.pixels.assign(
+        static_cast<size_t>(image.rows * image.cols * transformed.channels), 0);
 
     const double centerX = 0.5 * static_cast<double>(image.cols - 1);
     const double centerY = 0.5 * static_cast<double>(image.rows - 1);
@@ -1073,7 +1092,7 @@ RetinaAdapter::Image RetinaAdapter::applyViewTransform(const Image& image) const
     const double cosTheta = std::cos(theta);
     const double sinTheta = std::sin(theta);
 
-    auto sampleBilinear = [&](double row, double col) -> uint8_t {
+    auto sampleBilinear = [&](double row, double col, int channel) -> uint8_t {
         if (row < 0.0 || col < 0.0 ||
             row > static_cast<double>(image.rows - 1) ||
             col > static_cast<double>(image.cols - 1)) {
@@ -1087,10 +1106,10 @@ RetinaAdapter::Image RetinaAdapter::applyViewTransform(const Image& image) const
         const double fr = row - static_cast<double>(r0);
         const double fc = col - static_cast<double>(c0);
 
-        const double p00 = static_cast<double>(image.getPixel(r0, c0));
-        const double p01 = static_cast<double>(image.getPixel(r0, c1));
-        const double p10 = static_cast<double>(image.getPixel(r1, c0));
-        const double p11 = static_cast<double>(image.getPixel(r1, c1));
+        const double p00 = static_cast<double>(image.getPixel(r0, c0, channel));
+        const double p01 = static_cast<double>(image.getPixel(r0, c1, channel));
+        const double p10 = static_cast<double>(image.getPixel(r1, c0, channel));
+        const double p11 = static_cast<double>(image.getPixel(r1, c1, channel));
 
         const double top = p00 * (1.0 - fc) + p01 * fc;
         const double bottom = p10 * (1.0 - fc) + p11 * fc;
@@ -1115,8 +1134,12 @@ RetinaAdapter::Image RetinaAdapter::applyViewTransform(const Image& image) const
 
             const double srcX = cosTheta * x + sinTheta * y + centerX;
             const double srcY = -sinTheta * x + cosTheta * y + centerY;
-            transformed.pixels[static_cast<size_t>(row * image.cols + col)] =
-                sampleBilinear(srcY, srcX);
+            for (int channel = 0; channel < transformed.channels; ++channel) {
+                transformed.pixels[(static_cast<size_t>(row * image.cols + col) *
+                                    static_cast<size_t>(transformed.channels)) +
+                                   static_cast<size_t>(channel)] =
+                    sampleBilinear(srcY, srcX, channel);
+            }
         }
     }
 
@@ -1176,6 +1199,62 @@ std::vector<uint8_t> RetinaAdapter::extractRegion(const Image& image,
     }
 
     return region;
+}
+
+std::vector<double> RetinaAdapter::computeColorOpponentFeatures(const Image& image,
+                                                                int regionRow,
+                                                                int regionCol,
+                                                                int targetSize) const {
+    std::vector<double> auxiliary(getAuxiliaryChannelCount(), 0.0);
+    if (auxiliaryFeatureMode_ != "color_opponent" || image.channels < 3 || auxiliary.empty()) {
+        return auxiliary;
+    }
+
+    const int effectiveSize = std::max(1, targetSize);
+    const int startRow = (regionRow * image.rows) / gridSize_;
+    const int endRow = ((regionRow + 1) * image.rows) / gridSize_;
+    const int startCol = (regionCol * image.cols) / gridSize_;
+    const int endCol = ((regionCol + 1) * image.cols) / gridSize_;
+    const int sourceHeight = std::max(1, endRow - startRow);
+    const int sourceWidth = std::max(1, endCol - startCol);
+
+    double redSum = 0.0;
+    double greenSum = 0.0;
+    double blueSum = 0.0;
+    const double sampleCount = static_cast<double>(effectiveSize * effectiveSize);
+
+    for (int r = 0; r < effectiveSize; ++r) {
+        for (int c = 0; c < effectiveSize; ++c) {
+            const int localRow = clampIndex(
+                static_cast<int>(((static_cast<double>(r) + 0.5) * sourceHeight) /
+                                 static_cast<double>(effectiveSize)),
+                0, sourceHeight - 1);
+            const int localCol = clampIndex(
+                static_cast<int>(((static_cast<double>(c) + 0.5) * sourceWidth) /
+                                 static_cast<double>(effectiveSize)),
+                0, sourceWidth - 1);
+            const int imgRow = startRow + localRow;
+            const int imgCol = startCol + localCol;
+
+            redSum += image.getNormalizedPixel(imgRow, imgCol, 0);
+            greenSum += image.getNormalizedPixel(imgRow, imgCol, 1);
+            blueSum += image.getNormalizedPixel(imgRow, imgCol, 2);
+        }
+    }
+
+    const double redMean = redSum / sampleCount;
+    const double greenMean = greenSum / sampleCount;
+    const double blueMean = blueSum / sampleCount;
+    const double yellowMean = 0.5 * (redMean + greenMean);
+    const double rgOpponent = std::clamp(0.5 + 0.5 * (redMean - greenMean), 0.0, 1.0);
+    const double byOpponent = std::clamp(0.5 + 0.5 * (blueMean - yellowMean), 0.0, 1.0);
+    const double chroma = std::clamp(
+        0.5 * (std::abs(redMean - greenMean) + std::abs(blueMean - yellowMean)), 0.0, 1.0);
+
+    auxiliary[0] = std::clamp(rgOpponent * auxiliaryFeatureGain_, 0.0, 1.0);
+    auxiliary[1] = std::clamp(byOpponent * auxiliaryFeatureGain_, 0.0, 1.0);
+    auxiliary[2] = std::clamp(chroma * auxiliaryFeatureGain_, 0.0, 1.0);
+    return auxiliary;
 }
 
 /**
@@ -1476,20 +1555,29 @@ SensoryAdapter::SpikePattern RetinaAdapter::processData(const DataSample& data) 
     // Convert raw data to image
     Image image;
     image.pixels = data.rawData;
+    image.channels = std::max(1, data.channels);
     
     // Infer image dimensions if not set
-    if (imageRows_ == 0 || imageCols_ == 0) {
-        // Assume square image
-        int totalPixels = data.rawData.size();
-        imageRows_ = imageCols_ = static_cast<int>(std::sqrt(totalPixels));
+    if (data.rows > 0 && data.cols > 0) {
+        imageRows_ = data.rows;
+        imageCols_ = data.cols;
+        imageChannels_ = std::max(1, data.channels);
+        regionSize_ = std::max(minimumRegionSize_, std::max(1, imageRows_ / gridSize_));
+    } else if (imageRows_ == 0 || imageCols_ == 0) {
+        int totalPixels = static_cast<int>(data.rawData.size());
+        int inferredChannels = std::max(1, data.channels);
+        int pixelsPerChannel = totalPixels / inferredChannels;
+        imageRows_ = imageCols_ = static_cast<int>(std::sqrt(std::max(1, pixelsPerChannel)));
+        imageChannels_ = inferredChannels;
         regionSize_ = std::max(minimumRegionSize_, std::max(1, imageRows_ / gridSize_));
         
-        SNNFW_INFO("RetinaAdapter '{}': inferred image size {}x{}, region size {}", 
-                   getName(), imageRows_, imageCols_, regionSize_);
+        SNNFW_INFO("RetinaAdapter '{}': inferred image size {}x{}x{}, region size {}",
+                   getName(), imageRows_, imageCols_, imageChannels_, regionSize_);
     }
     
     image.rows = imageRows_;
     image.cols = imageCols_;
+    image.channels = imageChannels_;
     
     // Extract features and encode as spikes
     auto features = extractFeatures(data);
@@ -1503,8 +1591,9 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
     // Convert to image
     Image image;
     image.pixels = data.rawData;
-    image.rows = imageRows_;
-    image.cols = imageCols_;
+    image.rows = (data.rows > 0 ? data.rows : imageRows_);
+    image.cols = (data.cols > 0 ? data.cols : imageCols_);
+    image.channels = std::max(1, data.channels > 0 ? data.channels : imageChannels_);
     image = applyViewTransform(image);
 
     std::vector<Image> bandImages;
@@ -1519,9 +1608,10 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
     const size_t frequencyBandCount = bandImages.size();
     const size_t auxiliaryChannels = getAuxiliaryChannelCount();
     const size_t subfieldCount = getSubfieldCount();
+    const size_t colorEdgeChannels = getColorEdgeChannelCount();
     const size_t orientationBlocks = getOrientationChannelBlocks();
     const size_t orientationFeatureCount =
-        static_cast<size_t>(numOrientations_) * orientationBlocks;
+        static_cast<size_t>(numOrientations_) * orientationBlocks * colorEdgeChannels;
     std::vector<TopologyMaps> topologyMaps;
     if (auxiliaryFeatureMode_ == "topology_maps") {
         topologyMaps.reserve(frequencyBandCount);
@@ -1551,6 +1641,50 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
             analysisRegionSize += subfieldGridSize_ - (analysisRegionSize % subfieldGridSize_);
         }
     }
+
+    auto buildColorEdgeRegions = [&](const Image& sourceImage,
+                                     int regionRow,
+                                     int regionCol,
+                                     int targetSize) {
+        const int effectiveSize = std::max(1, targetSize);
+        std::vector<std::vector<uint8_t>> regions(
+            colorEdgeChannels,
+            std::vector<uint8_t>(static_cast<size_t>(effectiveSize * effectiveSize), 128));
+        const int startRow = (regionRow * sourceImage.rows) / gridSize_;
+        const int endRow = ((regionRow + 1) * sourceImage.rows) / gridSize_;
+        const int startCol = (regionCol * sourceImage.cols) / gridSize_;
+        const int endCol = ((regionCol + 1) * sourceImage.cols) / gridSize_;
+        const int sourceHeight = std::max(1, endRow - startRow);
+        const int sourceWidth = std::max(1, endCol - startCol);
+
+        for (int r = 0; r < effectiveSize; ++r) {
+            for (int c = 0; c < effectiveSize; ++c) {
+                const int localRow = clampIndex(
+                    static_cast<int>(((static_cast<double>(r) + 0.5) * sourceHeight) /
+                                     static_cast<double>(effectiveSize)),
+                    0, sourceHeight - 1);
+                const int localCol = clampIndex(
+                    static_cast<int>(((static_cast<double>(c) + 0.5) * sourceWidth) /
+                                     static_cast<double>(effectiveSize)),
+                    0, sourceWidth - 1);
+                const int imgRow = startRow + localRow;
+                const int imgCol = startCol + localCol;
+                const size_t idx = static_cast<size_t>(r * effectiveSize + c);
+
+                regions[0][idx] = sourceImage.getPixel(imgRow, imgCol);
+                if (colorEdgeChannels >= 3 && sourceImage.channels >= 3) {
+                    const int red = static_cast<int>(sourceImage.getPixel(imgRow, imgCol, 0));
+                    const int green = static_cast<int>(sourceImage.getPixel(imgRow, imgCol, 1));
+                    const int blue = static_cast<int>(sourceImage.getPixel(imgRow, imgCol, 2));
+                    regions[1][idx] = static_cast<uint8_t>(
+                        std::clamp(128 + (red - green) / 2, 0, 255));
+                    regions[2][idx] = static_cast<uint8_t>(
+                        std::clamp(128 + ((2 * blue) - red - green) / 4, 0, 255));
+                }
+            }
+        }
+        return regions;
+    };
     
     // Extract features for each region
     for (int row = 0; row < gridSize_; ++row) {
@@ -1560,39 +1694,52 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
             std::vector<std::vector<double>> auxiliaryFeatures(
                 frequencyBandCount, std::vector<double>(auxiliaryChannels, 0.0));
             for (size_t bandIdx = 0; bandIdx < frequencyBandCount; ++bandIdx) {
-                const auto pooledRegion = extractRegion(bandImages[bandIdx], row, col);
+                const auto pooledRegions = buildColorEdgeRegions(bandImages[bandIdx], row, col, regionSize_);
+                const auto& pooledRegion = pooledRegions[0];
                 auto pooledResponses = extractEdgeFeatures(pooledRegion, regionSize_);
                 applyOrientationCompetition(pooledResponses);
                 size_t writeOffset = 0;
 
                 if (subfieldCount == 0 || subfieldIncludePooled_) {
-                    std::copy(pooledResponses.begin(), pooledResponses.end(),
-                              bandFeatures[bandIdx].begin());
-                    writeOffset += static_cast<size_t>(numOrientations_);
+                    for (size_t colorIdx = 0; colorIdx < colorEdgeChannels; ++colorIdx) {
+                        std::vector<double> responses =
+                            (colorIdx == 0) ? pooledResponses
+                                            : extractEdgeFeatures(pooledRegions[colorIdx], regionSize_);
+                        if (colorIdx != 0) {
+                            applyOrientationCompetition(responses);
+                        }
+                        std::copy(responses.begin(), responses.end(),
+                                  bandFeatures[bandIdx].begin() +
+                                      static_cast<std::ptrdiff_t>(writeOffset));
+                        writeOffset += static_cast<size_t>(numOrientations_);
+                    }
                 }
 
                 if (subfieldCount > 0) {
-                    const auto analysisRegion =
-                        extractRegion(bandImages[bandIdx], row, col, analysisRegionSize);
+                    const auto analysisRegions =
+                        buildColorEdgeRegions(bandImages[bandIdx], row, col, analysisRegionSize);
                     const int subfieldSize = analysisRegionSize / subfieldGridSize_;
                     for (int subRow = 0; subRow < subfieldGridSize_; ++subRow) {
                         for (int subCol = 0; subCol < subfieldGridSize_; ++subCol) {
-                            std::vector<uint8_t> subRegion(
-                                static_cast<size_t>(subfieldSize * subfieldSize));
-                            for (int r = 0; r < subfieldSize; ++r) {
-                                for (int c = 0; c < subfieldSize; ++c) {
-                                    const int srcRow = subRow * subfieldSize + r;
-                                    const int srcCol = subCol * subfieldSize + c;
-                                    subRegion[static_cast<size_t>(r * subfieldSize + c)] =
-                                        analysisRegion[static_cast<size_t>(srcRow * analysisRegionSize + srcCol)];
+                            for (size_t colorIdx = 0; colorIdx < colorEdgeChannels; ++colorIdx) {
+                                std::vector<uint8_t> subRegion(
+                                    static_cast<size_t>(subfieldSize * subfieldSize));
+                                for (int r = 0; r < subfieldSize; ++r) {
+                                    for (int c = 0; c < subfieldSize; ++c) {
+                                        const int srcRow = subRow * subfieldSize + r;
+                                        const int srcCol = subCol * subfieldSize + c;
+                                        subRegion[static_cast<size_t>(r * subfieldSize + c)] =
+                                            analysisRegions[colorIdx][static_cast<size_t>(
+                                                srcRow * analysisRegionSize + srcCol)];
+                                    }
                                 }
+                                auto subResponses = extractEdgeFeatures(subRegion, subfieldSize);
+                                applyOrientationCompetition(subResponses);
+                                std::copy(subResponses.begin(), subResponses.end(),
+                                          bandFeatures[bandIdx].begin() +
+                                              static_cast<std::ptrdiff_t>(writeOffset));
+                                writeOffset += static_cast<size_t>(numOrientations_);
                             }
-                            auto subResponses = extractEdgeFeatures(subRegion, subfieldSize);
-                            applyOrientationCompetition(subResponses);
-                            std::copy(subResponses.begin(), subResponses.end(),
-                                      bandFeatures[bandIdx].begin() +
-                                          static_cast<std::ptrdiff_t>(writeOffset));
-                            writeOffset += static_cast<size_t>(numOrientations_);
                         }
                     }
                 }
@@ -1610,6 +1757,12 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
                     auxiliaryFeatures[bandIdx] =
                         poolContourSequenceFeatures(contourSequenceMaps[bandIdx], gridSize_,
                                                     row, col, auxiliaryFeatureGain_);
+                } else if (auxiliaryFeatureMode_ == "color_opponent") {
+                    auxiliaryFeatures[bandIdx] =
+                        computeColorOpponentFeatures(bandImages[bandIdx], row, col,
+                                                     auxiliaryAnalysisRegionSize_ > regionSize_
+                                                         ? auxiliaryAnalysisRegionSize_
+                                                         : regionSize_);
                 } else {
                     if (auxiliaryAnalysisRegionSize_ > regionSize_) {
                         auxiliaryRegion = extractRegion(
@@ -1767,10 +1920,14 @@ std::vector<double> RetinaAdapter::processImage(const Image& image) {
     DataSample sample;
     sample.rawData = image.pixels;
     sample.timestamp = 0.0;
+    sample.rows = image.rows;
+    sample.cols = image.cols;
+    sample.channels = image.channels;
 
     // Set image dimensions
     imageRows_ = image.rows;
     imageCols_ = image.cols;
+    imageChannels_ = std::max(1, image.channels);
     regionSize_ = std::max(minimumRegionSize_, std::max(1, imageRows_ / gridSize_));
 
     if (callCount <= 6) SNNFW_INFO("processImage call #{}: About to call processData()", callCount);

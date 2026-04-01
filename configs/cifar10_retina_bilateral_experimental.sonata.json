@@ -224,14 +224,17 @@
           "neuron_window_size": 200.0,
           "neuron_threshold": 0.7,
           "rotation_deg": -2.0,
-          "shift_x_px": -0.35
+          "shift_x_px": -0.35,
+          "auxiliary_feature_gain": 1.0
         },
         "string_params": {
           "edge_operator": "sobel",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
           "hemisphere": "left",
-          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9"
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9",
+          "auxiliary_feature_mode": "color_opponent",
+          "color_edge_mode": "opponent"
         }
       },
       {
@@ -248,14 +251,17 @@
           "neuron_window_size": 200.0,
           "neuron_threshold": 0.7,
           "rotation_deg": -1.0,
-          "shift_x_px": -0.25
+          "shift_x_px": -0.25,
+          "auxiliary_feature_gain": 1.0
         },
         "string_params": {
           "edge_operator": "sobel",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
           "hemisphere": "left",
-          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10"
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10",
+          "auxiliary_feature_mode": "color_opponent",
+          "color_edge_mode": "opponent"
         }
       },
       {
@@ -275,14 +281,17 @@
           "sigma1": 1.0,
           "sigma2": 1.8,
           "rotation_deg": -1.5,
-          "shift_x_px": -0.35
+          "shift_x_px": -0.35,
+          "auxiliary_feature_gain": 1.0
         },
         "string_params": {
           "edge_operator": "dog",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
           "hemisphere": "left",
-          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/DogG9"
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/DogG9",
+          "auxiliary_feature_mode": "color_opponent",
+          "color_edge_mode": "opponent"
         }
       },
       {
@@ -299,14 +308,17 @@
           "neuron_window_size": 200.0,
           "neuron_threshold": 0.7,
           "rotation_deg": 2.0,
-          "shift_x_px": 0.35
+          "shift_x_px": 0.35,
+          "auxiliary_feature_gain": 1.0
         },
         "string_params": {
           "edge_operator": "sobel",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
           "hemisphere": "right",
-          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9"
+          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9",
+          "auxiliary_feature_mode": "color_opponent",
+          "color_edge_mode": "opponent"
         }
       },
       {
@@ -323,14 +335,17 @@
           "neuron_window_size": 200.0,
           "neuron_threshold": 0.7,
           "rotation_deg": 1.0,
-          "shift_x_px": 0.25
+          "shift_x_px": 0.25,
+          "auxiliary_feature_gain": 1.0
         },
         "string_params": {
           "edge_operator": "sobel",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
           "hemisphere": "right",
-          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10"
+          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10",
+          "auxiliary_feature_mode": "color_opponent",
+          "color_edge_mode": "opponent"
         }
       },
       {
@@ -350,14 +365,17 @@
           "sigma1": 1.0,
           "sigma2": 1.8,
           "rotation_deg": 1.5,
-          "shift_x_px": 0.35
+          "shift_x_px": 0.35,
+          "auxiliary_feature_gain": 1.0
         },
         "string_params": {
           "edge_operator": "dog",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
           "hemisphere": "right",
-          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/DogG9"
+          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/DogG9",
+          "auxiliary_feature_mode": "color_opponent",
+          "color_edge_mode": "opponent"
         }
       }
     ]

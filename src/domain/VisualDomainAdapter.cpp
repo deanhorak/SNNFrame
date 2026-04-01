@@ -54,7 +54,6 @@ uint8_t rgbToGrayscale(uint8_t red, uint8_t green, uint8_t blue) {
         0.114 * static_cast<double>(blue);
     return static_cast<uint8_t>(std::clamp(luminance, 0.0, 255.0));
 }
-
 std::vector<fs::path> collectCifar10BatchFiles(const std::string& imageFile) {
     const fs::path path(imageFile);
     if (fs::is_regular_file(path)) {
@@ -103,6 +102,7 @@ public:
             stimulus.pixels = image.pixels;
             stimulus.rows = image.rows;
             stimulus.cols = image.cols;
+            stimulus.channels = 1;
             stimulus.timestamp = static_cast<double>(i);
             stimulus.label = normalizeLabel(image.label);
             stimuli_.push_back(std::move(stimulus));
@@ -195,6 +195,7 @@ public:
             stimulus.pixels = image.pixels;
             stimulus.rows = image.rows;
             stimulus.cols = image.cols;
+            stimulus.channels = 1;
             stimulus.timestamp = static_cast<double>(i);
             stimulus.label = static_cast<int>(image.label);
             stimuli_.push_back(std::move(stimulus));
@@ -307,14 +308,18 @@ private:
             stimulus.label = static_cast<int>(record[0]);
             stimulus.rows = 32;
             stimulus.cols = 32;
+            stimulus.channels = 3;
             stimulus.timestamp = static_cast<double>(stimuli_.size());
-            stimulus.pixels.resize(kImageSize);
+            stimulus.pixels.resize(kImageSize * 3);
 
             const uint8_t* red = record.data() + 1;
             const uint8_t* green = red + kImageSize;
             const uint8_t* blue = green + kImageSize;
             for (size_t i = 0; i < kImageSize; ++i) {
-                stimulus.pixels[i] = rgbToGrayscale(red[i], green[i], blue[i]);
+                const size_t idx = i * 3;
+                stimulus.pixels[idx] = red[i];
+                stimulus.pixels[idx + 1] = green[i];
+                stimulus.pixels[idx + 2] = blue[i];
             }
             stimuli_.push_back(std::move(stimulus));
         }

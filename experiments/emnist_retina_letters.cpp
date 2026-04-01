@@ -443,13 +443,15 @@ VisualStimulus applyImageFocusTransform(const VisualStimulus& image,
     transformed.label = image.label;
     transformed.rows = image.rows;
     transformed.cols = image.cols;
-    transformed.pixels.assign(static_cast<size_t>(image.rows * image.cols), 0);
+    transformed.channels = std::max(1, image.channels);
+    transformed.pixels.assign(
+        static_cast<size_t>(image.rows * image.cols * transformed.channels), 0);
 
     const double centerX = 0.5 * static_cast<double>(image.cols - 1);
     const double centerY = 0.5 * static_cast<double>(image.rows - 1);
     const double safeScale = std::max(1e-3, scale);
 
-    auto sampleBilinear = [&](double row, double col) -> uint8_t {
+    auto sampleBilinear = [&](double row, double col, int channel) -> uint8_t {
         if (row < 0.0 || col < 0.0 ||
             row > static_cast<double>(image.rows - 1) ||
             col > static_cast<double>(image.cols - 1)) {
@@ -463,10 +465,10 @@ VisualStimulus applyImageFocusTransform(const VisualStimulus& image,
         const double fr = row - static_cast<double>(r0);
         const double fc = col - static_cast<double>(c0);
 
-        const double p00 = static_cast<double>(image.getPixel(r0, c0));
-        const double p01 = static_cast<double>(image.getPixel(r0, c1));
-        const double p10 = static_cast<double>(image.getPixel(r1, c0));
-        const double p11 = static_cast<double>(image.getPixel(r1, c1));
+        const double p00 = static_cast<double>(image.getPixel(r0, c0, channel));
+        const double p01 = static_cast<double>(image.getPixel(r0, c1, channel));
+        const double p10 = static_cast<double>(image.getPixel(r1, c0, channel));
+        const double p11 = static_cast<double>(image.getPixel(r1, c1, channel));
         const double top = p00 * (1.0 - fc) + p01 * fc;
         const double bottom = p10 * (1.0 - fc) + p11 * fc;
         const double value = top * (1.0 - fr) + bottom * fr;
@@ -482,8 +484,12 @@ VisualStimulus applyImageFocusTransform(const VisualStimulus& image,
             y /= safeScale;
             const double srcX = x + centerX;
             const double srcY = y + centerY;
-            transformed.pixels[static_cast<size_t>(row * image.cols + col)] =
-                sampleBilinear(srcY, srcX);
+            for (int channel = 0; channel < transformed.channels; ++channel) {
+                transformed.pixels[(static_cast<size_t>(row * image.cols + col) *
+                                    static_cast<size_t>(transformed.channels)) +
+                                   static_cast<size_t>(channel)] =
+                    sampleBilinear(srcY, srcX, channel);
+            }
         }
     }
 
@@ -2409,6 +2415,9 @@ std::vector<double> extractPattern(std::vector<std::unique_ptr<RetinaAdapter>>& 
         snnfw::adapters::SensoryAdapter::DataSample sample;
         sample.rawData = image.pixels;
         sample.timestamp = 0.0;
+        sample.rows = image.rows;
+        sample.cols = image.cols;
+        sample.channels = std::max(1, image.channels);
 
         std::vector<double> part;
         if (useFeatures) {

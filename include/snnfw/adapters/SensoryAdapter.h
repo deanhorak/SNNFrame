@@ -44,6 +44,9 @@ public:
     struct DataSample {
         std::vector<uint8_t> rawData;     ///< Raw input data
         double timestamp;                  ///< Sample timestamp (ms)
+        int rows = 0;                      ///< Optional image rows
+        int cols = 0;                      ///< Optional image cols
+        int channels = 1;                  ///< Optional image channels
         std::map<std::string, double> metadata; ///< Additional metadata
     };
 
@@ -192,4 +195,3 @@ protected:
 } // namespace snnfw
 
 #endif // SNNFW_SENSORY_ADAPTER_H
-
