@@ -145,7 +145,7 @@ The bilateral configs use two transformed hemisphere views and corpus-callosum-s
 The Retina experiment now consumes a domain adapter instead of being hardwired to EMNIST letters. Current built-in domain adapters are:
 - `emnist` with variants `letters|digits|balanced|byclass|bymerge`
 - `mnist` with digits
-- `cifar10` as experimental support through grayscale conversion of CIFAR-10 binary batches
+- `cifar10` as experimental support through RGB CIFAR-10 binary batches with color-opponent Retina channels
 
 Retina declarative configs can now also declare a real `brain` hierarchy. In that mode, each Retina adapter binds to a declared layer path with `string_params.attach_path`, and the bilateral fusion layer is declared with `classification.string_params.fusion_path` instead of relying only on free-form hemisphere tags.
 
@@ -254,8 +254,14 @@ Experimental Retina example:
 - CIFAR-10
   - runner: `./scripts/run_cifar10_retina_bilateral.sh`
   - config: `configs/cifar10_retina_bilateral_experimental.sonata.json`
-  - sampled result: `10.40%` (`104/1000`) on the current grayscale Retina path
-  - note: this validates domain-adapter support, but CIFAR-10 needs color-aware Retina channels before the benchmark is meaningful
+  - sampled result: `15.20%` (`152/1000`) on the color-aware Retina path
+  - log: `build/cifar10_retina_color_200_1000.log`
+- CIFAR-10 natural-image Retina
+  - runner: `./scripts/run_cifar10_retina_bilateral_natural.sh`
+  - config: `configs/cifar10_retina_bilateral_natural_experimental.sonata.json`
+  - sampled result: `19.30%` (`193/1000`)
+  - log: `build/cifar10_retina_natural_200_1000.log`
+  - note: this is still experimental, but it is the current best CIFAR-10 Retina reading on the bilateral path
 
 Minimal hierarchy-driven Retina pattern:
 ```json
