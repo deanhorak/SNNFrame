@@ -1,5 +1,5 @@
 {
-  "network_name": "CIFAR10RetinaBilateralNaturalExperimental",
+  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesExperimental",
   "snnframe": {
     "classification": {
       "type": "weighted_distance",
@@ -12,7 +12,8 @@
         "fusion_feature_mode": "interaction",
         "fusion_path": "Interhemispheric Bridge/Association Lobe/Corpus Callosum Region/Corpus Callosum Nucleus/Fusion Column/Fusion",
         "input_domain": "cifar10",
-        "input_variant": "binary"
+        "input_variant": "binary",
+        "representation": "features"
       },
       "int_params": {
         "stage1_k": 9,

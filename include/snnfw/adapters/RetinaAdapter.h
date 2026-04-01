@@ -249,6 +249,8 @@ private:
     double orientationResponseGamma_;     ///< Sharpen surviving orientation responses
     double auxiliaryFeatureGain_;         ///< Gain applied to auxiliary features
     int auxiliaryAnalysisRegionSize_;     ///< Optional higher-resolution patch for auxiliary features
+    int localContrastRadius_;             ///< Local contrast normalization radius in pixels
+    double localContrastStrength_;        ///< Strength of local contrast normalization
     double cornerMinDeltaDeg_;            ///< Minimum orientation separation for corner responses
     double cornerMaxDeltaDeg_;            ///< Maximum orientation separation for corner responses
     double curveMinDeltaDeg_;             ///< Minimum orientation separation for curve responses
@@ -303,6 +305,7 @@ private:
     void configureFrequencyBands();
     Image blurImage(const Image& image, double sigma) const;
     Image applyViewTransform(const Image& image) const;
+    Image applyLocalContrastNormalization(const Image& image) const;
     void applyOrientationCompetition(std::vector<double>& responses) const;
     std::vector<double> computeColorOpponentFeatures(const Image& image,
                                                      int regionRow,

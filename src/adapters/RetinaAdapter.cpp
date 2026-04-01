@@ -786,6 +786,8 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , orientationResponseGamma_(1.0)
     , auxiliaryFeatureGain_(1.0)
     , auxiliaryAnalysisRegionSize_(0)
+    , localContrastRadius_(0)
+    , localContrastStrength_(1.0)
     , cornerMinDeltaDeg_(45.0)
     , cornerMaxDeltaDeg_(110.0)
     , curveMinDeltaDeg_(10.0)
@@ -829,6 +831,8 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     orientationResponseGamma_ = std::max(0.1, getDoubleParam("orientation_response_gamma", 1.0));
     auxiliaryFeatureGain_ = std::max(0.0, getDoubleParam("auxiliary_feature_gain", 1.0));
     auxiliaryAnalysisRegionSize_ = std::max(0, getIntParam("auxiliary_analysis_region_size", 0));
+    localContrastRadius_ = std::max(0, getIntParam("local_contrast_radius", 0));
+    localContrastStrength_ = std::max(0.0, getDoubleParam("local_contrast_strength", 1.0));
     cornerMinDeltaDeg_ = std::clamp(getDoubleParam("corner_min_delta_deg", 45.0), 0.0, 180.0);
     cornerMaxDeltaDeg_ = std::clamp(getDoubleParam("corner_max_delta_deg", 110.0), 0.0, 180.0);
     curveMinDeltaDeg_ = std::clamp(getDoubleParam("curve_min_delta_deg", 10.0), 0.0, 180.0);
@@ -1144,6 +1148,56 @@ RetinaAdapter::Image RetinaAdapter::applyViewTransform(const Image& image) const
     }
 
     return transformed;
+}
+
+RetinaAdapter::Image RetinaAdapter::applyLocalContrastNormalization(const Image& image) const {
+    if (localContrastRadius_ <= 0 || localContrastStrength_ <= 0.0) {
+        return image;
+    }
+
+    Image normalized = image;
+    const int channels = std::max(1, image.channels);
+    const int radius = std::max(1, localContrastRadius_);
+    const double strength = localContrastStrength_;
+
+    for (int channel = 0; channel < channels; ++channel) {
+        for (int row = 0; row < image.rows; ++row) {
+            for (int col = 0; col < image.cols; ++col) {
+                double sum = 0.0;
+                double sumSq = 0.0;
+                int count = 0;
+                for (int dr = -radius; dr <= radius; ++dr) {
+                    const int srcRow = clampIndex(row + dr, 0, image.rows - 1);
+                    for (int dc = -radius; dc <= radius; ++dc) {
+                        const int srcCol = clampIndex(col + dc, 0, image.cols - 1);
+                        const double value =
+                            static_cast<double>(image.getPixel(srcRow, srcCol, channel));
+                        sum += value;
+                        sumSq += value * value;
+                        count++;
+                    }
+                }
+
+                if (count <= 0) {
+                    continue;
+                }
+
+                const double mean = sum / static_cast<double>(count);
+                const double variance = std::max(
+                    0.0, (sumSq / static_cast<double>(count)) - (mean * mean));
+                const double stddev = std::sqrt(variance);
+                const double pixel = static_cast<double>(image.getPixel(row, col, channel));
+                const double z = (pixel - mean) / std::max(1.0, stddev);
+                const double scaled = 128.0 + strength * 48.0 * z;
+                normalized.pixels[(static_cast<size_t>(row * image.cols + col) *
+                                   static_cast<size_t>(channels)) +
+                                  static_cast<size_t>(channel)] =
+                    static_cast<uint8_t>(std::clamp(std::lround(scaled), 0L, 255L));
+            }
+        }
+    }
+
+    return normalized;
 }
 
 /**
@@ -1595,6 +1649,7 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
     image.cols = (data.cols > 0 ? data.cols : imageCols_);
     image.channels = std::max(1, data.channels > 0 ? data.channels : imageChannels_);
     image = applyViewTransform(image);
+    image = applyLocalContrastNormalization(image);
 
     std::vector<Image> bandImages;
     bandImages.reserve(std::max<size_t>(1, getFrequencyBandCount()));

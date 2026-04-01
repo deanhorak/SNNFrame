@@ -153,7 +153,7 @@ Current bilateral Retina structure:
 
 ```mermaid
 flowchart TD
-    IMG[Visual stimulus<br/>EMNIST or MNIST]
+    IMG[Visual stimulus<br/>EMNIST, MNIST, or CIFAR-10]
 
     subgraph LH[Left Hemisphere]
         LVIEW[Transformed left view]
@@ -249,7 +249,7 @@ Verified Retina examples:
   - config: `configs/mnist_retina_bilateral_experimental.sonata.json`
   - full dataset result: `96.88%` (`9688/10000`)
 
-Experimental Retina example:
+Experimental Retina examples:
 
 - CIFAR-10
   - runner: `./scripts/run_cifar10_retina_bilateral.sh`
@@ -257,11 +257,17 @@ Experimental Retina example:
   - sampled result: `15.20%` (`152/1000`) on the color-aware Retina path
   - log: `build/cifar10_retina_color_200_1000.log`
 - CIFAR-10 natural-image Retina
-  - runner: `./scripts/run_cifar10_retina_bilateral_natural.sh`
+  - runner: `CONFIG_PATH=configs/cifar10_retina_bilateral_natural_experimental.sonata.json ./scripts/run_cifar10_retina_bilateral_natural.sh`
   - config: `configs/cifar10_retina_bilateral_natural_experimental.sonata.json`
-  - sampled result: `19.30%` (`193/1000`)
+  - sampled result: `19.30%` (`193/1000`) on `200/class`, `1000` test
   - log: `build/cifar10_retina_natural_200_1000.log`
-  - note: this is still experimental, but it is the current best CIFAR-10 Retina reading on the bilateral path
+- CIFAR-10 natural-image Retina, feature representation
+  - runner: `./scripts/run_cifar10_retina_bilateral_natural.sh`
+  - config: `configs/cifar10_retina_bilateral_natural_features_experimental.sonata.json`
+  - sampled result: `26.20%` (`262/1000`) on `200/class`, `1000` test
+  - larger sampled result: `30.18%` (`1509/5000`) on `1000/class`, `5000` test
+  - logs: `build/cifar10_retina_natural_features_200_1000.log`, `build/cifar10_retina_natural_features_1000_5000.log`
+  - note: this is the current best CIFAR-10 Retina reading on the bilateral path
 
 Minimal hierarchy-driven Retina pattern:
 ```json
