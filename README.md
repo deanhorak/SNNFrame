@@ -145,6 +145,7 @@ The bilateral configs use two transformed hemisphere views and corpus-callosum-s
 The Retina experiment now consumes a domain adapter instead of being hardwired to EMNIST letters. Current built-in domain adapters are:
 - `emnist` with variants `letters|digits|balanced|byclass|bymerge`
 - `mnist` with digits
+- `cifar10` as experimental support through grayscale conversion of CIFAR-10 binary batches
 
 Retina declarative configs can now also declare a real `brain` hierarchy. In that mode, each Retina adapter binds to a declared layer path with `string_params.attach_path`, and the bilateral fusion layer is declared with `classification.string_params.fusion_path` instead of relying only on free-form hemisphere tags.
 
@@ -152,7 +153,7 @@ Current bilateral Retina structure:
 
 ```mermaid
 flowchart TD
-    IMG[EMNIST image]
+    IMG[Visual stimulus<br/>EMNIST or MNIST]
 
     subgraph LH[Left Hemisphere]
         LVIEW[Transformed left view]
@@ -237,6 +238,25 @@ Full-dataset static runs:
 
 These full-dataset readings use the same bilateral Retina architecture without additional framework changes; only the config and dataset source differ.
 
+Verified Retina examples:
+
+- EMNIST letters
+  - runner: `./scripts/run_emnist_retina_bilateral.sh`
+  - config: `configs/emnist_retina_bilateral_experimental.sonata.json`
+  - full dataset result: `88.51%` (`18410/20800`)
+- MNIST digits
+  - runner: `./scripts/run_mnist_retina_bilateral.sh`
+  - config: `configs/mnist_retina_bilateral_experimental.sonata.json`
+  - full dataset result: `96.88%` (`9688/10000`)
+
+Experimental Retina example:
+
+- CIFAR-10
+  - runner: `./scripts/run_cifar10_retina_bilateral.sh`
+  - config: `configs/cifar10_retina_bilateral_experimental.sonata.json`
+  - sampled result: `10.40%` (`104/1000`) on the current grayscale Retina path
+  - note: this validates domain-adapter support, but CIFAR-10 needs color-aware Retina channels before the benchmark is meaningful
+
 Minimal hierarchy-driven Retina pattern:
 ```json
 {
@@ -311,7 +331,13 @@ Expected logs:
 - `build/emnist_retina_bilateral_experimental.log`
 - `build/emnist_retina_bilateral_continuous.log`
 
-**Performance**: The framework achieves approximately **90% accuracy** on EMNIST letters classification (26 classes) using:
+**Performance**: The current Retina path is verified on two handwritten-vision tasks:
+- EMNIST letters: `88.51%` static bilateral, `88.85%` continuous bilateral
+- MNIST digits: `96.88%` static bilateral
+
+These readings come from the same bilateral Retina architecture, with the input domain selected through the config file.
+
+The system uses:
 - Cosine similarity-based pattern matching
 - STDP frozen during testing to prevent weight drift
 - Multi-column architecture with 8 orientations and 2 frequencies
@@ -534,16 +560,18 @@ auto network = loader.loadNetwork("configs/my_network.snnf.json");
 
 ## Performance Characteristics
 
-### EMNIST Letters Classification
-- **Accuracy**: ~90% on 26-letter classification task
-- **Network Size**: Multi-column architecture with 8 orientations × 2 frequencies
-- **Training**: ~60 minutes on full training set (5,200 images, 200 per letter)
-- **Testing**: ~22 minutes on full test set (20,800 images)
-- **Key Features**:
-  - Cosine similarity-based pattern matching
-  - STDP frozen during testing to prevent weight drift
-  - Saccade-based attention mechanism for sequential processing
-  - 6-layer canonical cortical microcircuit
+### Verified Retina Tasks
+- **EMNIST Letters**
+  - Static bilateral: `88.51%` (`18410/20800`)
+  - Continuous bilateral: `87.50% -> 88.85%`
+  - Full static run log: `build/emnist_retina_bilateral_full_all.log`
+- **MNIST Digits**
+  - Static bilateral: `96.88%` (`9688/10000`)
+  - Full static run log: `build/mnist_retina_bilateral_full_all.log`
+- **Shared architecture**
+  - Same bilateral Retina pipeline
+  - Same hemisphere split and corpus-callosum fusion structure
+  - Domain selected by config through the visual domain adapter layer
 
 ### Scaling
 - Tested up to 24 cortical columns
