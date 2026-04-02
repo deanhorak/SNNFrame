@@ -14,9 +14,11 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <random>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -1133,6 +1135,11 @@ struct EvaluationResult {
         double ownScoreSum = 0.0;
         double otherScoreSum = 0.0;
         double marginSum = 0.0;
+        IntMatrix centroidConfusion;
+        int hemisphereWrongSamples = 0;
+        int branchSupportsHemisphereWrong = 0;
+        int branchSupportsTruth = 0;
+        std::vector<int> hemisphereWrongTargetCounts;
     };
     std::vector<SeparabilityStats> separabilityStats;
     double seconds = 0.0;
@@ -1142,12 +1149,14 @@ struct PatternSlice {
     std::string name;
     size_t offset = 0;
     size_t size = 0;
+    std::vector<size_t> indices;
 };
 
 struct SeparabilityDiagnosticsRuntime {
     bool enabled = false;
     int sampleLimit = 0;
     int recordedSamples = 0;
+    int numClasses = 0;
     std::vector<std::vector<PatternSlice>> hemisphereSlices;
     std::vector<std::vector<std::vector<double>>> hemisphereCentroids;
     std::vector<std::vector<std::vector<std::vector<double>>>> branchCentroids;
@@ -2547,6 +2556,9 @@ std::vector<double> extractRetinaPartPattern(RetinaAdapter& retina,
     return part;
 }
 
+std::vector<PatternSlice> buildRetinaProjectionSlices(const RetinaAdapter& retina,
+                                                      const PatternSlice& branchSlice);
+
 std::vector<PatternSlice> buildPatternSlices(std::vector<std::unique_ptr<RetinaAdapter>>& retinas,
                                              const VisualStimulus& image,
                                              bool useFeatures) {
@@ -2555,13 +2567,34 @@ std::vector<PatternSlice> buildPatternSlices(std::vector<std::unique_ptr<RetinaA
     slices.reserve(retinas.size());
     for (auto& retina : retinas) {
         const auto part = extractRetinaPartPattern(*retina, image, useFeatures);
-        slices.push_back({retina->getName(), offset, part.size()});
+        PatternSlice branchSlice;
+        branchSlice.name = retina->getName();
+        branchSlice.offset = offset;
+        branchSlice.size = part.size();
+        slices.push_back(branchSlice);
+        if (useFeatures) {
+            auto projections = buildRetinaProjectionSlices(*retina, branchSlice);
+            slices.insert(slices.end(),
+                          std::make_move_iterator(projections.begin()),
+                          std::make_move_iterator(projections.end()));
+        }
         offset += part.size();
     }
     return slices;
 }
 
 std::vector<double> slicePattern(const std::vector<double>& pattern, const PatternSlice& slice) {
+    if (!slice.indices.empty()) {
+        std::vector<double> result;
+        result.reserve(slice.indices.size());
+        for (size_t index : slice.indices) {
+            if (index < pattern.size()) {
+                result.push_back(pattern[index]);
+            }
+        }
+        normalizeL2(result);
+        return result;
+    }
     if (slice.offset >= pattern.size()) {
         return {};
     }
@@ -2573,6 +2606,132 @@ std::vector<double> slicePattern(const std::vector<double>& pattern, const Patte
                                pattern.begin() + static_cast<std::ptrdiff_t>(end));
     normalizeL2(result);
     return result;
+}
+
+size_t inferAuxiliaryChannelCount(const RetinaAdapter& retina) {
+    const std::string mode = toLower(retina.getStringParam("auxiliary_feature_mode", "none"));
+    if (mode == "none") {
+        return 0u;
+    }
+    if (mode == "closure_bank") {
+        return 3u;
+    }
+    if (mode == "gap_bank") {
+        return 4u;
+    }
+    if (mode == "topology_maps") {
+        return 8u;
+    }
+    if (mode == "contour_graph") {
+        return 8u;
+    }
+    if (mode == "contour_sequence") {
+        return 8u;
+    }
+    if (mode == "color_opponent") {
+        return 3u;
+    }
+    if (mode == "appearance_bank") {
+        return 6u;
+    }
+    return 1u;
+}
+
+size_t inferFrequencyBandCount(const RetinaAdapter& retina) {
+    const std::string csv = retina.getStringParam("frequency_values", "");
+    if (csv.empty()) {
+        return 1u;
+    }
+    std::set<double> values;
+    std::stringstream ss(csv);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        if (token.empty()) {
+            continue;
+        }
+        try {
+            values.insert(std::stod(token));
+        } catch (...) {
+        }
+    }
+    return std::max<size_t>(1u, values.size());
+}
+
+std::vector<PatternSlice> buildRetinaProjectionSlices(const RetinaAdapter& retina,
+                                                      const PatternSlice& branchSlice) {
+    std::vector<PatternSlice> projections;
+    const size_t totalSize = branchSlice.size;
+    if (totalSize == 0) {
+        return projections;
+    }
+
+    const size_t gridSize = static_cast<size_t>(std::max(1, retina.getIntParam("grid_size", 1)));
+    const size_t regionCount = gridSize * gridSize;
+    const size_t numOrientations =
+        static_cast<size_t>(std::max(1, retina.getIntParam("num_orientations", 8)));
+    const int subfieldGridSize = std::max(1, retina.getIntParam("subfield_grid_size", 1));
+    const bool subfieldIncludePooled = retina.getIntParam("subfield_include_pooled", 1) != 0;
+    const size_t subfieldCount =
+        subfieldGridSize <= 1 ? 0u : static_cast<size_t>(subfieldGridSize * subfieldGridSize);
+    const size_t orientationBlocks =
+        subfieldCount == 0 ? 1u : (subfieldIncludePooled ? 1u + subfieldCount : subfieldCount);
+    const size_t colorEdgeChannels =
+        toLower(retina.getStringParam("color_edge_mode", "none")) == "opponent" ? 3u : 1u;
+    const size_t auxiliaryChannels = inferAuxiliaryChannelCount(retina);
+    const size_t frequencyBandCount = inferFrequencyBandCount(retina);
+    const size_t orientationFeatureCount =
+        numOrientations * orientationBlocks * colorEdgeChannels;
+    const size_t perRegionOrientationEntries = orientationFeatureCount * frequencyBandCount;
+    const size_t perRegionAuxEntries = auxiliaryChannels * frequencyBandCount;
+    const size_t perRegionEntries = perRegionOrientationEntries + perRegionAuxEntries;
+    if (perRegionEntries == 0 || regionCount * perRegionEntries != totalSize) {
+        return projections;
+    }
+
+    PatternSlice orientationSlice;
+    orientationSlice.name = branchSlice.name + "/orientation";
+    PatternSlice auxiliarySlice;
+    auxiliarySlice.name = branchSlice.name + "/auxiliary";
+    PatternSlice lowBandSlice;
+    lowBandSlice.name = branchSlice.name + "/low_band";
+    PatternSlice highBandSlice;
+    highBandSlice.name = branchSlice.name + "/high_band";
+
+    orientationSlice.indices.reserve(regionCount * perRegionOrientationEntries);
+    auxiliarySlice.indices.reserve(regionCount * perRegionAuxEntries);
+    lowBandSlice.indices.reserve(regionCount * (orientationFeatureCount + auxiliaryChannels));
+    highBandSlice.indices.reserve(regionCount * (orientationFeatureCount + auxiliaryChannels));
+
+    for (size_t region = 0; region < regionCount; ++region) {
+        const size_t regionBase = branchSlice.offset + region * perRegionEntries;
+        for (size_t orientChannel = 0; orientChannel < orientationFeatureCount; ++orientChannel) {
+            const size_t orientBase = regionBase + orientChannel * frequencyBandCount;
+            for (size_t band = 0; band < frequencyBandCount; ++band) {
+                orientationSlice.indices.push_back(orientBase + band);
+            }
+            lowBandSlice.indices.push_back(orientBase);
+            highBandSlice.indices.push_back(orientBase + (frequencyBandCount - 1));
+        }
+        for (size_t auxChannel = 0; auxChannel < auxiliaryChannels; ++auxChannel) {
+            const size_t auxBase =
+                regionBase + perRegionOrientationEntries + auxChannel * frequencyBandCount;
+            for (size_t band = 0; band < frequencyBandCount; ++band) {
+                auxiliarySlice.indices.push_back(auxBase + band);
+            }
+            lowBandSlice.indices.push_back(auxBase);
+            highBandSlice.indices.push_back(auxBase + (frequencyBandCount - 1));
+        }
+    }
+
+    projections.push_back(std::move(orientationSlice));
+    if (auxiliaryChannels > 0) {
+        projections.push_back(std::move(auxiliarySlice));
+    }
+    if (frequencyBandCount > 1) {
+        projections.push_back(std::move(lowBandSlice));
+        projections.push_back(std::move(highBandSlice));
+    }
+    return projections;
 }
 
 std::vector<std::vector<double>> computeClassCentroids(
@@ -2692,9 +2851,35 @@ void updateSeparabilityStats(EvaluationResult::SeparabilityStats& stats,
     stats.ownScoreSum += ownScore;
     stats.otherScoreSum += std::max(0.0, bestOther);
     stats.marginSum += ownScore - std::max(0.0, bestOther);
+    if (truth >= 0 &&
+        static_cast<size_t>(truth) < stats.centroidConfusion.size() &&
+        bestLabel >= 0 &&
+        static_cast<size_t>(bestLabel) < stats.centroidConfusion[static_cast<size_t>(truth)].size()) {
+        stats.centroidConfusion[static_cast<size_t>(truth)][static_cast<size_t>(bestLabel)]++;
+    }
     if (bestLabel == truth) {
         stats.centroidCorrect++;
     }
+}
+
+int classifyByCentroid(const std::vector<double>& pattern,
+                       const std::vector<std::vector<double>>& centroids) {
+    if (pattern.empty()) {
+        return -1;
+    }
+    double bestScore = -std::numeric_limits<double>::infinity();
+    int bestLabel = -1;
+    for (size_t label = 0; label < centroids.size(); ++label) {
+        if (centroids[label].empty()) {
+            continue;
+        }
+        const double score = cosineSimilarity(pattern, centroids[label]);
+        if (score > bestScore) {
+            bestScore = score;
+            bestLabel = static_cast<int>(label);
+        }
+    }
+    return bestLabel;
 }
 
 SeparabilityDiagnosticsRuntime buildSeparabilityDiagnosticsRuntime(
@@ -2706,6 +2891,7 @@ SeparabilityDiagnosticsRuntime buildSeparabilityDiagnosticsRuntime(
     SeparabilityDiagnosticsRuntime runtime;
     runtime.enabled = config.separabilityDiagnostics;
     runtime.sampleLimit = config.separabilitySampleLimit;
+    runtime.numClasses = config.numClasses;
     if (!runtime.enabled || hemispheres.empty()) {
         return runtime;
     }
@@ -2766,12 +2952,23 @@ void initializeSeparabilityStats(EvaluationResult& result,
     result.separabilityStats.clear();
     for (size_t hemisphereIndex = 0; hemisphereIndex < runtime.hemisphereSlices.size(); ++hemisphereIndex) {
         for (const auto& slice : runtime.hemisphereSlices[hemisphereIndex]) {
-            result.separabilityStats.push_back(
-                {hemispheres[hemisphereIndex].name + "/" + slice.name});
+            EvaluationResult::SeparabilityStats stats;
+            stats.name = hemispheres[hemisphereIndex].name + "/" + slice.name;
+            stats.centroidConfusion = makeClassMatrix<int>(runtime.numClasses, 0);
+            stats.hemisphereWrongTargetCounts.assign(static_cast<size_t>(runtime.numClasses), 0);
+            result.separabilityStats.push_back(std::move(stats));
         }
-        result.separabilityStats.push_back({hemispheres[hemisphereIndex].name + "/combined"});
+        EvaluationResult::SeparabilityStats combined;
+        combined.name = hemispheres[hemisphereIndex].name + "/combined";
+        combined.centroidConfusion = makeClassMatrix<int>(runtime.numClasses, 0);
+        combined.hemisphereWrongTargetCounts.assign(static_cast<size_t>(runtime.numClasses), 0);
+        result.separabilityStats.push_back(std::move(combined));
     }
-    result.separabilityStats.push_back({"fusion"});
+    EvaluationResult::SeparabilityStats fusion;
+    fusion.name = "fusion";
+    fusion.centroidConfusion = makeClassMatrix<int>(runtime.numClasses, 0);
+    fusion.hemisphereWrongTargetCounts.assign(static_cast<size_t>(runtime.numClasses), 0);
+    result.separabilityStats.push_back(std::move(fusion));
 }
 
 void recordSeparabilityDiagnostics(EvaluationResult& result,
@@ -2793,12 +2990,29 @@ void recordSeparabilityDiagnostics(EvaluationResult& result,
          ++hemisphereIndex) {
         const auto& pattern = decision.hemisphereTraces[hemisphereIndex].pattern;
         const auto& slices = runtime.hemisphereSlices[hemisphereIndex];
+        const int hemispherePredicted = decision.hemisphereTraces[hemisphereIndex].predicted;
         for (size_t sliceIndex = 0; sliceIndex < slices.size(); ++sliceIndex) {
             auto part = slicePattern(pattern, slices[sliceIndex]);
             updateSeparabilityStats(result.separabilityStats[statIndex],
                                     part,
                                     truth,
                                     runtime.branchCentroids[hemisphereIndex][sliceIndex]);
+            if (hemispherePredicted >= 0 && hemispherePredicted != truth) {
+                auto& stats = result.separabilityStats[statIndex];
+                stats.hemisphereWrongSamples++;
+                const int branchPredicted = classifyByCentroid(
+                    part, runtime.branchCentroids[hemisphereIndex][sliceIndex]);
+                if (branchPredicted >= 0 &&
+                    static_cast<size_t>(branchPredicted) < stats.hemisphereWrongTargetCounts.size()) {
+                    stats.hemisphereWrongTargetCounts[static_cast<size_t>(branchPredicted)]++;
+                    if (branchPredicted == hemispherePredicted) {
+                        stats.branchSupportsHemisphereWrong++;
+                    }
+                    if (branchPredicted == truth) {
+                        stats.branchSupportsTruth++;
+                    }
+                }
+            }
             statIndex++;
         }
         updateSeparabilityStats(result.separabilityStats[statIndex],
@@ -3497,7 +3711,7 @@ void printHemisphereStage1Summary(const EvaluationResult& result, const Config& 
     }
 }
 
-void printSeparabilitySummary(const EvaluationResult& result) {
+void printSeparabilitySummary(const EvaluationResult& result, const Config& config) {
     if (result.separabilityStats.empty()) {
         return;
     }
@@ -3520,7 +3734,64 @@ void printSeparabilitySummary(const EvaluationResult& result) {
                   << ": centroid_acc=" << std::fixed << std::setprecision(2)
                   << centroidAccuracy << "%, own=" << ownScore
                   << ", other=" << otherScore
-                  << ", margin=" << margin << std::endl;
+                  << ", margin=" << margin;
+
+        int dominantTarget = -1;
+        int dominantTargetCount = 0;
+        int topTruth = -1;
+        int topPredicted = -1;
+        int topPairCount = 0;
+        for (size_t truth = 0; truth < stats.centroidConfusion.size(); ++truth) {
+            for (size_t predicted = 0; predicted < stats.centroidConfusion[truth].size(); ++predicted) {
+                const int count = stats.centroidConfusion[truth][predicted];
+                if (count <= 0 || truth == predicted) {
+                    continue;
+                }
+                if (count > topPairCount) {
+                    topPairCount = count;
+                    topTruth = static_cast<int>(truth);
+                    topPredicted = static_cast<int>(predicted);
+                }
+                int incoming = 0;
+                for (size_t sourceTruth = 0; sourceTruth < stats.centroidConfusion.size(); ++sourceTruth) {
+                    if (sourceTruth == predicted) {
+                        continue;
+                    }
+                    incoming += stats.centroidConfusion[sourceTruth][predicted];
+                }
+                if (incoming > dominantTargetCount) {
+                    dominantTargetCount = incoming;
+                    dominantTarget = static_cast<int>(predicted);
+                }
+            }
+        }
+        if (dominantTarget >= 0 && dominantTargetCount > 0) {
+            std::cout << ", collapse_target=" << classLabel(config, dominantTarget)
+                      << " (" << dominantTargetCount << ")";
+        }
+        if (topTruth >= 0 && topPredicted >= 0 && topPairCount > 0) {
+            std::cout << ", top_pair=" << classLabel(config, topTruth) << "->"
+                      << classLabel(config, topPredicted) << " (" << topPairCount << ")";
+        }
+        if (stats.hemisphereWrongSamples > 0) {
+            int dominantWrongTarget = -1;
+            int dominantWrongCount = 0;
+            for (size_t label = 0; label < stats.hemisphereWrongTargetCounts.size(); ++label) {
+                if (stats.hemisphereWrongTargetCounts[label] > dominantWrongCount) {
+                    dominantWrongCount = stats.hemisphereWrongTargetCounts[label];
+                    dominantWrongTarget = static_cast<int>(label);
+                }
+            }
+            std::cout << ", hemi_wrong_agree=" << stats.branchSupportsHemisphereWrong
+                      << "/" << stats.hemisphereWrongSamples
+                      << ", hemi_wrong_truth=" << stats.branchSupportsTruth
+                      << "/" << stats.hemisphereWrongSamples;
+            if (dominantWrongTarget >= 0 && dominantWrongCount > 0) {
+                std::cout << ", hemi_wrong_target=" << classLabel(config, dominantWrongTarget)
+                          << " (" << dominantWrongCount << ")";
+            }
+        }
+        std::cout << std::endl;
     }
 }
 
@@ -4243,7 +4514,7 @@ int main(int argc, char* argv[]) {
                 printBilateralAttributionSummary(eval, config);
                 printFocusAdjustmentSummary(eval);
                 printOnlineCorrectionSummary(eval);
-                printSeparabilitySummary(eval);
+                printSeparabilitySummary(eval, config);
 
                 printPerClassAccuracy(eval.confusion, config);
                 printTopConfusions(eval.confusion, config);
@@ -4276,7 +4547,7 @@ int main(int argc, char* argv[]) {
                 printBilateralAttributionSummary(focusedEval, config);
                 printFocusAdjustmentSummary(focusedEval);
                 printOnlineCorrectionSummary(focusedEval);
-                printSeparabilitySummary(focusedEval);
+                printSeparabilitySummary(focusedEval, config);
 
                 printPerClassAccuracy(focusedEval.confusion, config);
                 printTopConfusions(focusedEval.confusion, config);

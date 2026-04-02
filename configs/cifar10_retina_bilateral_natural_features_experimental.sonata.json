@@ -233,7 +233,7 @@
           "neuron_threshold": 0.68,
           "rotation_deg": -0.8,
           "shift_x_px": -0.18,
-          "auxiliary_feature_gain": 1.25,
+          "auxiliary_feature_gain": 0.85,
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
@@ -245,7 +245,7 @@
           "activation_mode": "binary",
           "hemisphere": "left",
           "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9",
-          "auxiliary_feature_mode": "color_opponent",
+          "auxiliary_feature_mode": "appearance_bank",
           "color_edge_mode": "opponent",
           "frequency_values": "1.0,2.0"
         }
@@ -269,7 +269,7 @@
           "neuron_threshold": 0.68,
           "rotation_deg": -0.4,
           "shift_x_px": -0.1,
-          "auxiliary_feature_gain": 1.25,
+          "auxiliary_feature_gain": 0.85,
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
@@ -281,7 +281,7 @@
           "activation_mode": "binary",
           "hemisphere": "left",
           "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10",
-          "auxiliary_feature_mode": "color_opponent",
+          "auxiliary_feature_mode": "appearance_bank",
           "color_edge_mode": "opponent",
           "frequency_values": "1.0,2.0"
         }
@@ -308,7 +308,7 @@
           "sigma2": 1.6,
           "rotation_deg": -0.6,
           "shift_x_px": -0.14,
-          "auxiliary_feature_gain": 1.25,
+          "auxiliary_feature_gain": 0.85,
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85
@@ -319,7 +319,7 @@
           "activation_mode": "binary",
           "hemisphere": "left",
           "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/DogG9",
-          "auxiliary_feature_mode": "color_opponent",
+          "auxiliary_feature_mode": "appearance_bank",
           "color_edge_mode": "opponent",
           "frequency_values": "1.0,2.0"
         }
@@ -343,7 +343,7 @@
           "neuron_threshold": 0.68,
           "rotation_deg": 0.8,
           "shift_x_px": 0.18,
-          "auxiliary_feature_gain": 1.25,
+          "auxiliary_feature_gain": 0.85,
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
@@ -355,7 +355,7 @@
           "activation_mode": "binary",
           "hemisphere": "right",
           "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9",
-          "auxiliary_feature_mode": "color_opponent",
+          "auxiliary_feature_mode": "appearance_bank",
           "color_edge_mode": "opponent",
           "frequency_values": "1.0,2.0"
         }
@@ -379,7 +379,7 @@
           "neuron_threshold": 0.68,
           "rotation_deg": 0.4,
           "shift_x_px": 0.1,
-          "auxiliary_feature_gain": 1.25,
+          "auxiliary_feature_gain": 0.85,
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
@@ -391,7 +391,7 @@
           "activation_mode": "binary",
           "hemisphere": "right",
           "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10",
-          "auxiliary_feature_mode": "color_opponent",
+          "auxiliary_feature_mode": "appearance_bank",
           "color_edge_mode": "opponent",
           "frequency_values": "1.0,2.0"
         }
@@ -418,7 +418,7 @@
           "sigma2": 1.6,
           "rotation_deg": 0.6,
           "shift_x_px": 0.14,
-          "auxiliary_feature_gain": 1.25,
+          "auxiliary_feature_gain": 0.85,
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85
@@ -429,7 +429,7 @@
           "activation_mode": "binary",
           "hemisphere": "right",
           "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/DogG9",
-          "auxiliary_feature_mode": "color_opponent",
+          "auxiliary_feature_mode": "appearance_bank",
           "color_edge_mode": "opponent",
           "frequency_values": "1.0,2.0"
         }

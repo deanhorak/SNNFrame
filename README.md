@@ -264,9 +264,10 @@ Experimental Retina examples:
 - CIFAR-10 natural-image Retina, feature representation
   - runner: `./scripts/run_cifar10_retina_bilateral_natural.sh`
   - config: `configs/cifar10_retina_bilateral_natural_features_experimental.sonata.json`
-  - sampled result: `26.20%` (`262/1000`) on `200/class`, `1000` test
-  - larger sampled result: `30.18%` (`1509/5000`) on `1000/class`, `5000` test
-  - logs: `build/cifar10_retina_natural_features_200_1000.log`, `build/cifar10_retina_natural_features_1000_5000.log`
+  - front end: color-opponent plus appearance-bank auxiliary channels
+  - sampled result: `27.50%` (`275/1000`) on `200/class`, `1000` test
+  - larger sampled result: `34.28%` (`1714/5000`) on `1000/class`, `5000` test
+  - logs: `build/cifar10_retina_natural_features_appearance_bank_g085_200_1000.log`, `build/cifar10_retina_natural_features_appearance_bank_g085_1000_5000.log`
   - note: this is the current best CIFAR-10 Retina reading on the bilateral path
 
 Minimal hierarchy-driven Retina pattern:

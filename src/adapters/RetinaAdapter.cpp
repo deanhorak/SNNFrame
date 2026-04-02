@@ -1009,6 +1009,9 @@ size_t RetinaAdapter::getAuxiliaryChannelCount() const {
     if (auxiliaryFeatureMode_ == "color_opponent") {
         return 3u;
     }
+    if (auxiliaryFeatureMode_ == "appearance_bank") {
+        return 6u;
+    }
     return 1u;
 }
 
@@ -1260,7 +1263,9 @@ std::vector<double> RetinaAdapter::computeColorOpponentFeatures(const Image& ima
                                                                 int regionCol,
                                                                 int targetSize) const {
     std::vector<double> auxiliary(getAuxiliaryChannelCount(), 0.0);
-    if (auxiliaryFeatureMode_ != "color_opponent" || image.channels < 3 || auxiliary.empty()) {
+    const bool colorOpponentMode =
+        auxiliaryFeatureMode_ == "color_opponent" || auxiliaryFeatureMode_ == "appearance_bank";
+    if (!colorOpponentMode || auxiliary.empty()) {
         return auxiliary;
     }
 
@@ -1275,6 +1280,9 @@ std::vector<double> RetinaAdapter::computeColorOpponentFeatures(const Image& ima
     double redSum = 0.0;
     double greenSum = 0.0;
     double blueSum = 0.0;
+    double luminanceSum = 0.0;
+    double luminanceSqSum = 0.0;
+    double gradientSum = 0.0;
     const double sampleCount = static_cast<double>(effectiveSize * effectiveSize);
 
     for (int r = 0; r < effectiveSize; ++r) {
@@ -1289,16 +1297,48 @@ std::vector<double> RetinaAdapter::computeColorOpponentFeatures(const Image& ima
                 0, sourceWidth - 1);
             const int imgRow = startRow + localRow;
             const int imgCol = startCol + localCol;
+            const double red = image.channels >= 3 ? image.getNormalizedPixel(imgRow, imgCol, 0)
+                                                   : image.getNormalizedPixel(imgRow, imgCol);
+            const double green = image.channels >= 3 ? image.getNormalizedPixel(imgRow, imgCol, 1)
+                                                     : red;
+            const double blue = image.channels >= 3 ? image.getNormalizedPixel(imgRow, imgCol, 2)
+                                                    : red;
+            const double luminance = 0.299 * red + 0.587 * green + 0.114 * blue;
 
-            redSum += image.getNormalizedPixel(imgRow, imgCol, 0);
-            greenSum += image.getNormalizedPixel(imgRow, imgCol, 1);
-            blueSum += image.getNormalizedPixel(imgRow, imgCol, 2);
+            redSum += red;
+            greenSum += green;
+            blueSum += blue;
+            luminanceSum += luminance;
+            luminanceSqSum += luminance * luminance;
+
+            const int rightCol = std::min(image.cols - 1, imgCol + 1);
+            const int downRow = std::min(image.rows - 1, imgRow + 1);
+            const double rightRed = image.channels >= 3 ? image.getNormalizedPixel(imgRow, rightCol, 0)
+                                                        : image.getNormalizedPixel(imgRow, rightCol);
+            const double rightGreen = image.channels >= 3 ? image.getNormalizedPixel(imgRow, rightCol, 1)
+                                                          : rightRed;
+            const double rightBlue = image.channels >= 3 ? image.getNormalizedPixel(imgRow, rightCol, 2)
+                                                         : rightRed;
+            const double downRed = image.channels >= 3 ? image.getNormalizedPixel(downRow, imgCol, 0)
+                                                       : image.getNormalizedPixel(downRow, imgCol);
+            const double downGreen = image.channels >= 3 ? image.getNormalizedPixel(downRow, imgCol, 1)
+                                                         : downRed;
+            const double downBlue = image.channels >= 3 ? image.getNormalizedPixel(downRow, imgCol, 2)
+                                                        : downRed;
+            const double rightLum = 0.299 * rightRed + 0.587 * rightGreen + 0.114 * rightBlue;
+            const double downLum = 0.299 * downRed + 0.587 * downGreen + 0.114 * downBlue;
+            gradientSum += 0.5 * (std::abs(rightLum - luminance) + std::abs(downLum - luminance));
         }
     }
 
     const double redMean = redSum / sampleCount;
     const double greenMean = greenSum / sampleCount;
     const double blueMean = blueSum / sampleCount;
+    const double luminanceMean = luminanceSum / sampleCount;
+    const double luminanceVar = std::max(0.0, (luminanceSqSum / sampleCount) -
+                                                  (luminanceMean * luminanceMean));
+    const double luminanceStd = std::sqrt(luminanceVar);
+    const double gradientMean = gradientSum / sampleCount;
     const double yellowMean = 0.5 * (redMean + greenMean);
     const double rgOpponent = std::clamp(0.5 + 0.5 * (redMean - greenMean), 0.0, 1.0);
     const double byOpponent = std::clamp(0.5 + 0.5 * (blueMean - yellowMean), 0.0, 1.0);
@@ -1306,8 +1346,17 @@ std::vector<double> RetinaAdapter::computeColorOpponentFeatures(const Image& ima
         0.5 * (std::abs(redMean - greenMean) + std::abs(blueMean - yellowMean)), 0.0, 1.0);
 
     auxiliary[0] = std::clamp(rgOpponent * auxiliaryFeatureGain_, 0.0, 1.0);
-    auxiliary[1] = std::clamp(byOpponent * auxiliaryFeatureGain_, 0.0, 1.0);
-    auxiliary[2] = std::clamp(chroma * auxiliaryFeatureGain_, 0.0, 1.0);
+    if (auxiliary.size() > 1) {
+        auxiliary[1] = std::clamp(byOpponent * auxiliaryFeatureGain_, 0.0, 1.0);
+    }
+    if (auxiliary.size() > 2) {
+        auxiliary[2] = std::clamp(chroma * auxiliaryFeatureGain_, 0.0, 1.0);
+    }
+    if (auxiliaryFeatureMode_ == "appearance_bank" && auxiliary.size() >= 6) {
+        auxiliary[3] = std::clamp(luminanceMean * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[4] = std::clamp(2.0 * luminanceStd * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[5] = std::clamp(4.0 * gradientMean * auxiliaryFeatureGain_, 0.0, 1.0);
+    }
     return auxiliary;
 }
 
@@ -1812,7 +1861,8 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
                     auxiliaryFeatures[bandIdx] =
                         poolContourSequenceFeatures(contourSequenceMaps[bandIdx], gridSize_,
                                                     row, col, auxiliaryFeatureGain_);
-                } else if (auxiliaryFeatureMode_ == "color_opponent") {
+                } else if (auxiliaryFeatureMode_ == "color_opponent" ||
+                           auxiliaryFeatureMode_ == "appearance_bank") {
                     auxiliaryFeatures[bandIdx] =
                         computeColorOpponentFeatures(bandImages[bandIdx], row, col,
                                                      auxiliaryAnalysisRegionSize_ > regionSize_
