@@ -1135,6 +1135,9 @@ struct EvaluationResult {
         double ownScoreSum = 0.0;
         double otherScoreSum = 0.0;
         double marginSum = 0.0;
+        double rawL1Sum = 0.0;
+        double rawL2Sum = 0.0;
+        double rawActiveFractionSum = 0.0;
         IntMatrix centroidConfusion;
         int hemisphereWrongSamples = 0;
         int branchSupportsHemisphereWrong = 0;
@@ -2584,8 +2587,8 @@ std::vector<PatternSlice> buildPatternSlices(std::vector<std::unique_ptr<RetinaA
 }
 
 std::vector<double> slicePattern(const std::vector<double>& pattern, const PatternSlice& slice) {
+    std::vector<double> result;
     if (!slice.indices.empty()) {
-        std::vector<double> result;
         result.reserve(slice.indices.size());
         for (size_t index : slice.indices) {
             if (index < pattern.size()) {
@@ -2602,10 +2605,32 @@ std::vector<double> slicePattern(const std::vector<double>& pattern, const Patte
     if (end <= slice.offset) {
         return {};
     }
-    std::vector<double> result(pattern.begin() + static_cast<std::ptrdiff_t>(slice.offset),
-                               pattern.begin() + static_cast<std::ptrdiff_t>(end));
+    result.assign(pattern.begin() + static_cast<std::ptrdiff_t>(slice.offset),
+                  pattern.begin() + static_cast<std::ptrdiff_t>(end));
     normalizeL2(result);
     return result;
+}
+
+std::vector<double> slicePatternRaw(const std::vector<double>& pattern, const PatternSlice& slice) {
+    if (!slice.indices.empty()) {
+        std::vector<double> result;
+        result.reserve(slice.indices.size());
+        for (size_t index : slice.indices) {
+            if (index < pattern.size()) {
+                result.push_back(pattern[index]);
+            }
+        }
+        return result;
+    }
+    if (slice.offset >= pattern.size()) {
+        return {};
+    }
+    const size_t end = std::min(pattern.size(), slice.offset + slice.size);
+    if (end <= slice.offset) {
+        return {};
+    }
+    return std::vector<double>(pattern.begin() + static_cast<std::ptrdiff_t>(slice.offset),
+                               pattern.begin() + static_cast<std::ptrdiff_t>(end));
 }
 
 size_t inferAuxiliaryChannelCount(const RetinaAdapter& retina) {
@@ -2819,6 +2844,7 @@ std::vector<std::vector<std::vector<double>>> computeBranchCentroids(
 
 void updateSeparabilityStats(EvaluationResult::SeparabilityStats& stats,
                              const std::vector<double>& pattern,
+                             const std::vector<double>& rawPattern,
                              int truth,
                              const std::vector<std::vector<double>>& centroids) {
     if (truth < 0 || static_cast<size_t>(truth) >= centroids.size() || pattern.empty()) {
@@ -2851,6 +2877,23 @@ void updateSeparabilityStats(EvaluationResult::SeparabilityStats& stats,
     stats.ownScoreSum += ownScore;
     stats.otherScoreSum += std::max(0.0, bestOther);
     stats.marginSum += ownScore - std::max(0.0, bestOther);
+    if (!rawPattern.empty()) {
+        double l1 = 0.0;
+        double l2 = 0.0;
+        int active = 0;
+        for (double value : rawPattern) {
+            const double absValue = std::abs(value);
+            l1 += absValue;
+            l2 += value * value;
+            if (absValue > 1e-6) {
+                active++;
+            }
+        }
+        stats.rawL1Sum += l1 / static_cast<double>(rawPattern.size());
+        stats.rawL2Sum += std::sqrt(l2);
+        stats.rawActiveFractionSum +=
+            static_cast<double>(active) / static_cast<double>(rawPattern.size());
+    }
     if (truth >= 0 &&
         static_cast<size_t>(truth) < stats.centroidConfusion.size() &&
         bestLabel >= 0 &&
@@ -2992,9 +3035,12 @@ void recordSeparabilityDiagnostics(EvaluationResult& result,
         const auto& slices = runtime.hemisphereSlices[hemisphereIndex];
         const int hemispherePredicted = decision.hemisphereTraces[hemisphereIndex].predicted;
         for (size_t sliceIndex = 0; sliceIndex < slices.size(); ++sliceIndex) {
-            auto part = slicePattern(pattern, slices[sliceIndex]);
+            auto rawPart = slicePatternRaw(pattern, slices[sliceIndex]);
+            auto part = rawPart;
+            normalizeL2(part);
             updateSeparabilityStats(result.separabilityStats[statIndex],
                                     part,
+                                    rawPart,
                                     truth,
                                     runtime.branchCentroids[hemisphereIndex][sliceIndex]);
             if (hemispherePredicted >= 0 && hemispherePredicted != truth) {
@@ -3017,6 +3063,7 @@ void recordSeparabilityDiagnostics(EvaluationResult& result,
         }
         updateSeparabilityStats(result.separabilityStats[statIndex],
                                 pattern,
+                                pattern,
                                 truth,
                                 runtime.hemisphereCentroids[hemisphereIndex]);
         statIndex++;
@@ -3024,6 +3071,7 @@ void recordSeparabilityDiagnostics(EvaluationResult& result,
 
     if (statIndex < result.separabilityStats.size()) {
         updateSeparabilityStats(result.separabilityStats[statIndex],
+                                decision.fusionPattern,
                                 decision.fusionPattern,
                                 truth,
                                 runtime.fusionCentroids);
@@ -3730,11 +3778,20 @@ void printSeparabilitySummary(const EvaluationResult& result, const Config& conf
             stats.otherScoreSum / static_cast<double>(std::max(1, stats.samples));
         const double margin =
             stats.marginSum / static_cast<double>(std::max(1, stats.samples));
+        const double rawL1 =
+            stats.rawL1Sum / static_cast<double>(std::max(1, stats.samples));
+        const double rawL2 =
+            stats.rawL2Sum / static_cast<double>(std::max(1, stats.samples));
+        const double rawActiveFraction =
+            stats.rawActiveFractionSum / static_cast<double>(std::max(1, stats.samples));
         std::cout << "    " << stats.name
                   << ": centroid_acc=" << std::fixed << std::setprecision(2)
                   << centroidAccuracy << "%, own=" << ownScore
                   << ", other=" << otherScore
-                  << ", margin=" << margin;
+                  << ", margin=" << margin
+                  << ", raw_l1=" << rawL1
+                  << ", raw_l2=" << rawL2
+                  << ", raw_active=" << (100.0 * rawActiveFraction) << "%";
 
         int dominantTarget = -1;
         int dominantTargetCount = 0;
@@ -3792,6 +3849,80 @@ void printSeparabilitySummary(const EvaluationResult& result, const Config& conf
             }
         }
         std::cout << std::endl;
+    }
+}
+
+void resetOrientationFlowDiagnostics(std::vector<HemisphereRuntime>& hemispheres) {
+    for (auto& hemisphere : hemispheres) {
+        for (auto& retina : hemisphere.retinas) {
+            retina->resetOrientationFlowDiagnostics();
+            retina->resetPatchInputDiagnostics();
+        }
+    }
+}
+
+void printOrientationFlowSummary(const std::vector<HemisphereRuntime>& hemispheres) {
+    bool printedHeader = false;
+    for (const auto& hemisphere : hemispheres) {
+        for (const auto& retina : hemisphere.retinas) {
+            const auto stats = retina->getOrientationFlowDiagnostics();
+            if (stats.samples == 0) {
+                continue;
+            }
+            if (!printedHeader) {
+                std::cout << "  Orientation flow diagnostics:" << std::endl;
+                printedHeader = true;
+            }
+            const double samples = static_cast<double>(stats.samples);
+            std::cout << "    " << retina->getName()
+                      << ": manual_l2=" << (stats.manualL2Sum / samples)
+                      << ", manual_active="
+                      << (100.0 * stats.manualActiveFractionSum / samples) << "%"
+                      << ", manual_max=" << (stats.manualMaxSum / samples)
+                      << ", pre_l2=" << (stats.preThresholdL2Sum / samples)
+                      << ", pre_active="
+                      << (100.0 * stats.preThresholdActiveFractionSum / samples) << "%"
+                      << ", pre_max=" << (stats.preThresholdMaxSum / samples)
+                      << ", thresh_l2=" << (stats.thresholdedL2Sum / samples)
+                      << ", thresh_active="
+                      << (100.0 * stats.thresholdedActiveFractionSum / samples) << "%"
+                      << ", thresh_max=" << (stats.thresholdedMaxSum / samples)
+                      << ", post_l2=" << (stats.postCompetitionL2Sum / samples)
+                      << ", post_active="
+                      << (100.0 * stats.postCompetitionActiveFractionSum / samples) << "%"
+                      << ", post_max=" << (stats.postCompetitionMaxSum / samples)
+                      << ", zero_manual=" << stats.allZeroManual << "/" << stats.samples
+                      << ", zero_pre=" << stats.allZeroBeforeThreshold << "/" << stats.samples
+                      << ", zero_thresh=" << stats.allZeroAfterThreshold << "/" << stats.samples
+                      << ", zero_post=" << stats.allZeroAfterCompetition << "/" << stats.samples
+                      << std::endl;
+        }
+    }
+}
+
+void printPatchInputSummary(const std::vector<HemisphereRuntime>& hemispheres) {
+    bool printedHeader = false;
+    for (const auto& hemisphere : hemispheres) {
+        for (const auto& retina : hemisphere.retinas) {
+            const auto stats = retina->getPatchInputDiagnostics();
+            if (stats.samples == 0) {
+                continue;
+            }
+            if (!printedHeader) {
+                std::cout << "  Patch input diagnostics:" << std::endl;
+                printedHeader = true;
+            }
+            const double samples = static_cast<double>(stats.samples);
+            std::cout << "    " << retina->getName()
+                      << ": mean_min=" << (stats.minValueSum / samples)
+                      << ", mean_max=" << (stats.maxValueSum / samples)
+                      << ", mean_range=" << (stats.rangeSum / samples)
+                      << ", mean_std=" << (stats.stddevSum / samples)
+                      << ", mean_grad=" << (stats.gradientEnergySum / samples)
+                      << ", flat_range=" << stats.nearFlatRangeCount << "/" << stats.samples
+                      << ", flat_grad=" << stats.nearFlatGradientCount << "/" << stats.samples
+                      << std::endl;
+        }
     }
 }
 
@@ -4490,6 +4621,7 @@ int main(int argc, char* argv[]) {
 
             if (!config.focusOnly) {
                 auto separabilityRuntime = baseSeparabilityRuntime;
+                resetOrientationFlowDiagnostics(hemispheres);
                 const auto eval = useCorpusCallosumFusion(config)
                     ? evaluateCorpusCallosumPatterns(
                           hemispheres, *testLoader, selectedTestIndices, config,
@@ -4515,6 +4647,8 @@ int main(int argc, char* argv[]) {
                 printFocusAdjustmentSummary(eval);
                 printOnlineCorrectionSummary(eval);
                 printSeparabilitySummary(eval, config);
+                printOrientationFlowSummary(hemispheres);
+                printPatchInputSummary(hemispheres);
 
                 printPerClassAccuracy(eval.confusion, config);
                 printTopConfusions(eval.confusion, config);
@@ -4522,6 +4656,7 @@ int main(int argc, char* argv[]) {
 
             if (!config.focusGroups.empty()) {
                 auto separabilityRuntime = baseSeparabilityRuntime;
+                resetOrientationFlowDiagnostics(hemispheres);
                 const auto focusedEval = useCorpusCallosumFusion(config)
                     ? evaluateCorpusCallosumPatterns(
                           hemispheres, *testLoader, focusedTestIndices, config,
@@ -4548,6 +4683,8 @@ int main(int argc, char* argv[]) {
                 printFocusAdjustmentSummary(focusedEval);
                 printOnlineCorrectionSummary(focusedEval);
                 printSeparabilitySummary(focusedEval, config);
+                printOrientationFlowSummary(hemispheres);
+                printPatchInputSummary(hemispheres);
 
                 printPerClassAccuracy(focusedEval.confusion, config);
                 printTopConfusions(focusedEval.confusion, config);

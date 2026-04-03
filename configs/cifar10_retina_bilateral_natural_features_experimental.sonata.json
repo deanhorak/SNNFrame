@@ -261,7 +261,9 @@
           "subfield_grid_size": 2,
           "subfield_include_pooled": 1,
           "max_frequency_bands_per_feature": 2,
-          "minimum_region_size": 2
+          "minimum_region_size": 2,
+          "edge_patch_normalization": 1,
+          "edge_analysis_region_size": 5
         },
         "double_params": {
           "edge_threshold": 0.14,
@@ -273,7 +275,10 @@
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
-          "fusion_weight": 1.0
+          "fusion_weight": 1.0,
+          "edge_patch_contrast_strength": 1.0,
+          "edge_patch_min_std": 6.0,
+          "orientation_feature_gain": 0.35
         },
         "string_params": {
           "edge_operator": "sobel",
@@ -371,7 +376,9 @@
           "subfield_grid_size": 2,
           "subfield_include_pooled": 1,
           "max_frequency_bands_per_feature": 2,
-          "minimum_region_size": 2
+          "minimum_region_size": 2,
+          "edge_patch_normalization": 1,
+          "edge_analysis_region_size": 5
         },
         "double_params": {
           "edge_threshold": 0.14,
@@ -383,7 +390,10 @@
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
-          "fusion_weight": 1.0
+          "fusion_weight": 1.0,
+          "edge_patch_contrast_strength": 1.0,
+          "edge_patch_min_std": 6.0,
+          "orientation_feature_gain": 0.35
         },
         "string_params": {
           "edge_operator": "sobel",

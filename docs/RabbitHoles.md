@@ -9,12 +9,14 @@ These are the benchmark paths worth keeping as the active reference surface:
 - Unilateral Retina static: `86.17%`
 - Bilateral Retina static: `87.29%`
 - Bilateral Retina continuous: `87.50%` initial, `88.85%` post-correction
+- CIFAR-10 bilateral natural-features experimental reference: `36.60%` on `1000/class, 5000` test
 
 These live in:
 
 - `configs/emnist_retina_experimental.sonata.json`
 - `configs/emnist_retina_bilateral_experimental.sonata.json`
 - `configs/emnist_retina_bilateral_continuous.sonata.json`
+- `configs/cifar10_retina_bilateral_natural_features_experimental.sonata.json`
 - `experiments/emnist_retina_letters.cpp`
 
 Any new experimental vision path should be compared against these, not treated as a replacement by default.
@@ -159,6 +161,90 @@ Lesson:
   - post-synaptic drive is nonzero
   - class separation improves at that boundary
 
+### 8. Treating CIFAR Fusion Tuning As The Main Bottleneck
+
+What we tried:
+
+- stronger disagreement arbitration
+- margin-preference fusion tweaks
+- corpus weighting variants on the CIFAR natural-image path
+
+Why it was not productive:
+
+- CIFAR errors were mostly cases where both hemispheres were already wrong
+- fusion had limited headroom relative to the upstream representation problem
+- the benchmark stayed flat while complexity increased
+
+Lesson:
+
+- do not spend time on fusion tuning when branch and hemisphere separability are already weak
+- first measure how many errors are even recoverable by better arbitration
+
+### 9. Tuning CIFAR Branch Aggregation When All Branches Are Already Collapsing The Same Way
+
+What we tried:
+
+- branch-level vote attribution
+- checking whether one branch was dominating the wrong hemisphere label
+
+Why it was not productive:
+
+- all three branches in each hemisphere were usually biased toward the same wrong basin
+- changing aggregation logic would not fix a branch representation that is already collapsed upstream
+
+Lesson:
+
+- if branch diagnostics show the same wrong target across all branches, stop tuning hemisphere aggregation
+- fix the front-end representation instead
+
+### 10. Repeated Natural-Image Front-End Tweaks Without Reviving The Edge Path
+
+What we tried:
+
+- chromaticity-only color opponency
+- chromaticity plus gray-world color adaptation
+- local contrast normalization on top of that path
+- retinotopic and patchbank CIFAR variants
+- luminance-only edge variants
+- weaker thresholds and orientation reweighting
+- small-kernel Gabor swaps
+- overlapping edge receptive fields
+- a separate coarser edge-analysis grid
+
+Why it was not productive:
+
+- some small-sample gates moved, but large-sample results did not hold
+- several variants regressed sharply despite looking more biologically shaped
+- the key diagnostic never changed: orientation slices stayed effectively dead (`raw_l2=0`, `raw_active=0%`)
+- in that phase, the only CIFAR gains that generalized came from richer low-frequency appearance channels, not from the edge/orientation tweaks we were testing
+
+Lesson:
+
+- do not keep swapping edge operators or receptive-field geometry when orientation diagnostics remain zero
+- before claiming a front-end improvement, verify that the orientation slice actually carries nonzero energy
+- if the edge path is still zero, treat appearance-bank features as the real signal and stop tuning edge operators
+
+### 11. Reviving The Entire CIFAR Edge Path At Once
+
+What we tried:
+
+- patch-local edge normalization on every branch
+- larger edge-analysis patches on every branch
+- reviving orientation signal globally once diagnostics showed the operator scale mismatch
+
+Why it was not productive:
+
+- it solved the wrong subproblem too aggressively
+- orientation signal came alive, but overall accuracy regressed sharply
+- the classifier collapsed toward a new wrong basin instead of improving (`ship` became dominant on the all-branch edge revival run)
+- this showed that a globally revived coarse edge path can overpower the appearance path rather than complement it
+
+Lesson:
+
+- do not turn on coarse normalized edge analysis everywhere at once
+- treat revived natural-image edge signal as a supplemental branch-level cue, not the main code path
+- the only edge revival that held was the constrained hybrid on the `g10` branches, with reduced `orientation_feature_gain`
+
 ## Reusable Work Worth Keeping
 
 Not everything from the failed path was wasted. These pieces are reusable and should be retained:
@@ -191,4 +277,5 @@ If we do revisit it, the order should be:
 For current vision work:
 
 - use the bilateral Retina static and continuous paths as the mainline benchmark
+- use the CIFAR natural-features path as the current natural-image reference, not as proof that the edge path is solved
 - treat graph-native cortical vision as experimental research, not the default execution path

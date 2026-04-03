@@ -81,6 +81,37 @@ namespace adapters {
  */
 class RetinaAdapter : public SensoryAdapter {
 public:
+    struct OrientationFlowDiagnostics {
+        size_t samples = 0;
+        double manualL2Sum = 0.0;
+        double manualActiveFractionSum = 0.0;
+        double manualMaxSum = 0.0;
+        double preThresholdL2Sum = 0.0;
+        double preThresholdActiveFractionSum = 0.0;
+        double preThresholdMaxSum = 0.0;
+        double thresholdedL2Sum = 0.0;
+        double thresholdedActiveFractionSum = 0.0;
+        double thresholdedMaxSum = 0.0;
+        double postCompetitionL2Sum = 0.0;
+        double postCompetitionActiveFractionSum = 0.0;
+        double postCompetitionMaxSum = 0.0;
+        size_t allZeroBeforeThreshold = 0;
+        size_t allZeroAfterThreshold = 0;
+        size_t allZeroAfterCompetition = 0;
+        size_t allZeroManual = 0;
+    };
+
+    struct PatchInputDiagnostics {
+        size_t samples = 0;
+        double minValueSum = 0.0;
+        double maxValueSum = 0.0;
+        double rangeSum = 0.0;
+        double stddevSum = 0.0;
+        double gradientEnergySum = 0.0;
+        size_t nearFlatRangeCount = 0;
+        size_t nearFlatGradientCount = 0;
+    };
+
     /**
      * @brief Image structure for visual input
      */
@@ -205,6 +236,19 @@ public:
      */
     std::vector<double> processImage(const Image& image);
 
+    OrientationFlowDiagnostics getOrientationFlowDiagnostics() const {
+        return orientationFlowDiagnostics_;
+    }
+    void resetOrientationFlowDiagnostics() {
+        orientationFlowDiagnostics_ = OrientationFlowDiagnostics{};
+    }
+    PatchInputDiagnostics getPatchInputDiagnostics() const {
+        return patchInputDiagnostics_;
+    }
+    void resetPatchInputDiagnostics() {
+        patchInputDiagnostics_ = PatchInputDiagnostics{};
+    }
+
 private:
     size_t getFrequencyBandCount() const {
         return frequencyBands_.empty() ? 1 : frequencyBands_.size();
@@ -243,6 +287,7 @@ private:
     double neuronThreshold_;    ///< Neuron similarity threshold
     int neuronMaxPatterns_;     ///< Max patterns per neuron
     int minimumRegionSize_;     ///< Minimum patch size needed by the edge operator
+    int edgeAnalysisRegionSize_; ///< Optional larger sampled patch size used for edge extraction
     int maxFrequencyBandsPerFeature_; ///< Max active frequency bands per region/orientation
     double frequencyBlurBaseSigma_;   ///< Base blur sigma for low-frequency channels
     double orientationLateralInhibition_; ///< Suppress diffuse orientation responses per region
@@ -251,6 +296,9 @@ private:
     int auxiliaryAnalysisRegionSize_;     ///< Optional higher-resolution patch for auxiliary features
     int localContrastRadius_;             ///< Local contrast normalization radius in pixels
     double localContrastStrength_;        ///< Strength of local contrast normalization
+    bool edgePatchNormalizationEnabled_;  ///< Normalize each edge-analysis patch before filtering
+    double edgePatchContrastStrength_;    ///< Strength of edge patch contrast normalization
+    double edgePatchMinStd_;              ///< Floor on patch stddev during edge normalization
     double cornerMinDeltaDeg_;            ///< Minimum orientation separation for corner responses
     double cornerMaxDeltaDeg_;            ///< Maximum orientation separation for corner responses
     double curveMinDeltaDeg_;             ///< Minimum orientation separation for curve responses
@@ -264,9 +312,12 @@ private:
     double shiftYPx_;                     ///< Optional per-adapter vertical shift
     bool mirrorX_;                        ///< Optional horizontal mirror
     bool mirrorY_;                        ///< Optional vertical mirror
+    bool orientationFlowDiagnosticsEnabled_; ///< Collect pre/post threshold orientation stats
+    int orientationFlowDiagnosticsSampleLimit_; ///< Max response groups to sample for diagnostics
 
     // Pluggable strategies
     std::unique_ptr<features::EdgeOperator> edgeOperator_;      ///< Edge detection strategy
+    std::unique_ptr<features::EdgeOperator> diagnosticEdgeOperator_; ///< Edge operator with threshold disabled
     std::unique_ptr<encoding::EncodingStrategy> encodingStrategy_; ///< Spike encoding strategy
 
     // Neuron population
@@ -306,6 +357,7 @@ private:
     Image blurImage(const Image& image, double sigma) const;
     Image applyViewTransform(const Image& image) const;
     Image applyLocalContrastNormalization(const Image& image) const;
+    std::vector<uint8_t> normalizeEdgeRegion(const std::vector<uint8_t>& region) const;
     void applyOrientationCompetition(std::vector<double>& responses) const;
     std::vector<double> computeColorOpponentFeatures(const Image& image,
                                                      int regionRow,
@@ -314,6 +366,11 @@ private:
     std::vector<double> computeAuxiliaryFeatures(const std::vector<double>& orientationResponses,
                                                  const std::vector<uint8_t>& region,
                                                  int regionSize) const;
+    void recordOrientationFlowDiagnostics(const std::vector<uint8_t>& operatorInputRegion,
+                                          const std::vector<double>& preThreshold,
+                                          const std::vector<double>& thresholded,
+                                          const std::vector<double>& postCompetition);
+    void recordPatchInputDiagnostics(const std::vector<uint8_t>& region);
 
     /**
      * @brief Convert feature values to spike times
@@ -326,6 +383,9 @@ private:
      * @brief Create neuron population
      */
     void createNeurons();
+
+    OrientationFlowDiagnostics orientationFlowDiagnostics_;
+    PatchInputDiagnostics patchInputDiagnostics_;
 };
 
 } // namespace adapters

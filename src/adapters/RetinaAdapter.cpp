@@ -780,6 +780,7 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , neuronThreshold_(0.7)
     , neuronMaxPatterns_(100)
     , minimumRegionSize_(1)
+    , edgeAnalysisRegionSize_(0)
     , maxFrequencyBandsPerFeature_(1)
     , frequencyBlurBaseSigma_(0.6)
     , orientationLateralInhibition_(0.0)
@@ -788,6 +789,9 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , auxiliaryAnalysisRegionSize_(0)
     , localContrastRadius_(0)
     , localContrastStrength_(1.0)
+    , edgePatchNormalizationEnabled_(false)
+    , edgePatchContrastStrength_(1.0)
+    , edgePatchMinStd_(1.0)
     , cornerMinDeltaDeg_(45.0)
     , cornerMaxDeltaDeg_(110.0)
     , curveMinDeltaDeg_(10.0)
@@ -801,6 +805,8 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , shiftYPx_(0.0)
     , mirrorX_(false)
     , mirrorY_(false)
+    , orientationFlowDiagnosticsEnabled_(false)
+    , orientationFlowDiagnosticsSampleLimit_(0)
     , imageRows_(0)
     , imageCols_(0)
     , imageChannels_(1)
@@ -824,6 +830,7 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     minimumRegionSize_ = getIntParam(
         "minimum_region_size",
         edgeOperatorType_ == "sobel" ? 3 : 1);
+    edgeAnalysisRegionSize_ = std::max(0, getIntParam("edge_analysis_region_size", 0));
     maxFrequencyBandsPerFeature_ = std::max(1, getIntParam("max_frequency_bands_per_feature", 1));
     frequencyBlurBaseSigma_ = std::max(0.0, getDoubleParam("frequency_blur_base_sigma", 0.6));
     orientationLateralInhibition_ =
@@ -833,6 +840,10 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     auxiliaryAnalysisRegionSize_ = std::max(0, getIntParam("auxiliary_analysis_region_size", 0));
     localContrastRadius_ = std::max(0, getIntParam("local_contrast_radius", 0));
     localContrastStrength_ = std::max(0.0, getDoubleParam("local_contrast_strength", 1.0));
+    edgePatchNormalizationEnabled_ = getIntParam("edge_patch_normalization", 0) != 0;
+    edgePatchContrastStrength_ =
+        std::max(0.0, getDoubleParam("edge_patch_contrast_strength", 1.0));
+    edgePatchMinStd_ = std::max(1e-6, getDoubleParam("edge_patch_min_std", 1.0));
     cornerMinDeltaDeg_ = std::clamp(getDoubleParam("corner_min_delta_deg", 45.0), 0.0, 180.0);
     cornerMaxDeltaDeg_ = std::clamp(getDoubleParam("corner_max_delta_deg", 110.0), 0.0, 180.0);
     curveMinDeltaDeg_ = std::clamp(getDoubleParam("curve_min_delta_deg", 10.0), 0.0, 180.0);
@@ -847,6 +858,9 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     shiftYPx_ = getDoubleParam("shift_y_px", 0.0);
     mirrorX_ = getIntParam("mirror_x", 0) != 0;
     mirrorY_ = getIntParam("mirror_y", 0) != 0;
+    orientationFlowDiagnosticsEnabled_ = getIntParam("orientation_flow_diagnostics", 0) != 0;
+    orientationFlowDiagnosticsSampleLimit_ =
+        std::max(0, getIntParam("orientation_flow_sample_limit", 0));
     frequencyBands_ = parseFrequencyBands(getStringParam("frequency_values", ""));
     configureFrequencyBands();
 
@@ -869,6 +883,12 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     edgeConfig.intParams["kernel_size"] = getIntParam("kernel_size", 5);
 
     edgeOperator_ = features::EdgeOperatorFactory::create(edgeOperatorType_, edgeConfig);
+    if (orientationFlowDiagnosticsEnabled_) {
+        auto diagnosticConfig = edgeConfig;
+        diagnosticConfig.edgeThreshold = 0.0;
+        diagnosticEdgeOperator_ =
+            features::EdgeOperatorFactory::create(edgeOperatorType_, diagnosticConfig);
+    }
 
     // Create encoding strategy
     std::string encodingType = getStringParam("encoding_strategy", "rate");
@@ -1203,6 +1223,35 @@ RetinaAdapter::Image RetinaAdapter::applyLocalContrastNormalization(const Image&
     return normalized;
 }
 
+std::vector<uint8_t> RetinaAdapter::normalizeEdgeRegion(const std::vector<uint8_t>& region) const {
+    if (!edgePatchNormalizationEnabled_ || edgePatchContrastStrength_ <= 0.0 || region.empty()) {
+        return region;
+    }
+
+    double sum = 0.0;
+    double sumSq = 0.0;
+    for (uint8_t pixel : region) {
+        const double value = static_cast<double>(pixel);
+        sum += value;
+        sumSq += value * value;
+    }
+
+    const double mean = sum / static_cast<double>(region.size());
+    const double variance =
+        std::max(0.0, (sumSq / static_cast<double>(region.size())) - (mean * mean));
+    const double stddev = std::sqrt(variance);
+    const double denom = std::max(edgePatchMinStd_, stddev);
+
+    std::vector<uint8_t> normalized(region.size(), 128);
+    for (size_t i = 0; i < region.size(); ++i) {
+        const double z = (static_cast<double>(region[i]) - mean) / denom;
+        const double scaled = 128.0 + edgePatchContrastStrength_ * 48.0 * z;
+        normalized[i] = static_cast<uint8_t>(std::clamp(std::lround(scaled), 0L, 255L));
+    }
+
+    return normalized;
+}
+
 /**
  * @brief Extract a rectangular region from the image
  *
@@ -1405,6 +1454,215 @@ void RetinaAdapter::applyOrientationCompetition(std::vector<double>& responses) 
         for (double& response : responses) {
             response = std::pow(std::max(0.0, response), orientationResponseGamma_);
         }
+    }
+}
+
+void RetinaAdapter::recordOrientationFlowDiagnostics(const std::vector<uint8_t>& operatorInputRegion,
+                                                     const std::vector<double>& preThreshold,
+                                                     const std::vector<double>& thresholded,
+                                                     const std::vector<double>& postCompetition) {
+    if (!orientationFlowDiagnosticsEnabled_) {
+        return;
+    }
+    if (orientationFlowDiagnosticsSampleLimit_ > 0 &&
+        static_cast<int>(orientationFlowDiagnostics_.samples) >=
+            orientationFlowDiagnosticsSampleLimit_) {
+        return;
+    }
+
+    auto summarize = [](const std::vector<double>& values,
+                        double& l2Out,
+                        double& activeFractionOut,
+                        double& maxOut,
+                        bool& allZeroOut) {
+        double l2 = 0.0;
+        int active = 0;
+        double maxValue = 0.0;
+        for (double value : values) {
+            l2 += value * value;
+            if (std::abs(value) > 1e-6) {
+                active++;
+            }
+            maxValue = std::max(maxValue, std::abs(value));
+        }
+        l2Out = std::sqrt(l2);
+        activeFractionOut =
+            values.empty() ? 0.0 : static_cast<double>(active) / static_cast<double>(values.size());
+        maxOut = maxValue;
+        allZeroOut = active == 0;
+    };
+
+    std::vector<double> manualResponses;
+    const size_t regionSide =
+        static_cast<size_t>(std::llround(std::sqrt(static_cast<double>(operatorInputRegion.size()))));
+    if (regionSide >= 2 && regionSide * regionSide == operatorInputRegion.size()) {
+        double horizontal = 0.0;
+        double vertical = 0.0;
+        double diagDown = 0.0;
+        double diagUp = 0.0;
+        int hCount = 0;
+        int vCount = 0;
+        int dCount = 0;
+        for (size_t r = 0; r < regionSide; ++r) {
+            for (size_t c = 0; c < regionSide; ++c) {
+                const double center =
+                    static_cast<double>(operatorInputRegion[r * regionSide + c]) / 255.0;
+                if (c + 1 < regionSide) {
+                    const double right =
+                        static_cast<double>(operatorInputRegion[r * regionSide + (c + 1)]) / 255.0;
+                    horizontal += std::abs(right - center);
+                    hCount++;
+                }
+                if (r + 1 < regionSide) {
+                    const double down =
+                        static_cast<double>(operatorInputRegion[(r + 1) * regionSide + c]) / 255.0;
+                    vertical += std::abs(down - center);
+                    vCount++;
+                }
+                if (r + 1 < regionSide && c + 1 < regionSide) {
+                    const double downRight = static_cast<double>(
+                                                 operatorInputRegion[(r + 1) * regionSide + (c + 1)]) /
+                                             255.0;
+                    diagDown += std::abs(downRight - center);
+                    dCount++;
+                }
+                if (r > 0 && c + 1 < regionSide) {
+                    const double upRight =
+                        static_cast<double>(operatorInputRegion[(r - 1) * regionSide + (c + 1)]) /
+                        255.0;
+                    diagUp += std::abs(upRight - center);
+                }
+            }
+        }
+        manualResponses = {
+            hCount > 0 ? horizontal / static_cast<double>(hCount) : 0.0,
+            vCount > 0 ? vertical / static_cast<double>(vCount) : 0.0,
+            dCount > 0 ? diagDown / static_cast<double>(dCount) : 0.0,
+            dCount > 0 ? diagUp / static_cast<double>(dCount) : 0.0};
+    }
+
+    double manualL2 = 0.0;
+    double manualActive = 0.0;
+    double manualMax = 0.0;
+    bool manualZero = true;
+    summarize(manualResponses, manualL2, manualActive, manualMax, manualZero);
+
+    double preL2 = 0.0;
+    double preActive = 0.0;
+    double preMax = 0.0;
+    bool preZero = true;
+    summarize(preThreshold, preL2, preActive, preMax, preZero);
+
+    double thresholdedL2 = 0.0;
+    double thresholdedActive = 0.0;
+    double thresholdedMax = 0.0;
+    bool thresholdedZero = true;
+    summarize(thresholded, thresholdedL2, thresholdedActive, thresholdedMax, thresholdedZero);
+
+    double postL2 = 0.0;
+    double postActive = 0.0;
+    double postMax = 0.0;
+    bool postZero = true;
+    summarize(postCompetition, postL2, postActive, postMax, postZero);
+
+    auto& stats = orientationFlowDiagnostics_;
+    stats.samples++;
+    stats.manualL2Sum += manualL2;
+    stats.manualActiveFractionSum += manualActive;
+    stats.manualMaxSum += manualMax;
+    stats.preThresholdL2Sum += preL2;
+    stats.preThresholdActiveFractionSum += preActive;
+    stats.preThresholdMaxSum += preMax;
+    stats.thresholdedL2Sum += thresholdedL2;
+    stats.thresholdedActiveFractionSum += thresholdedActive;
+    stats.thresholdedMaxSum += thresholdedMax;
+    stats.postCompetitionL2Sum += postL2;
+    stats.postCompetitionActiveFractionSum += postActive;
+    stats.postCompetitionMaxSum += postMax;
+    if (preZero) {
+        stats.allZeroBeforeThreshold++;
+    }
+    if (thresholdedZero) {
+        stats.allZeroAfterThreshold++;
+    }
+    if (postZero) {
+        stats.allZeroAfterCompetition++;
+    }
+    if (manualZero) {
+        stats.allZeroManual++;
+    }
+}
+
+void RetinaAdapter::recordPatchInputDiagnostics(const std::vector<uint8_t>& region) {
+    if (!orientationFlowDiagnosticsEnabled_) {
+        return;
+    }
+    if (orientationFlowDiagnosticsSampleLimit_ > 0 &&
+        static_cast<int>(patchInputDiagnostics_.samples) >=
+            orientationFlowDiagnosticsSampleLimit_) {
+        return;
+    }
+    if (region.empty()) {
+        return;
+    }
+
+    double minValue = 1.0;
+    double maxValue = 0.0;
+    double sum = 0.0;
+    double sumSq = 0.0;
+    double gradientSum = 0.0;
+    int gradientCount = 0;
+    const size_t size = static_cast<size_t>(std::sqrt(static_cast<double>(region.size())));
+
+    for (size_t i = 0; i < region.size(); ++i) {
+        const double value = static_cast<double>(region[i]) / 255.0;
+        minValue = std::min(minValue, value);
+        maxValue = std::max(maxValue, value);
+        sum += value;
+        sumSq += value * value;
+    }
+
+    if (size > 1 && size * size == region.size()) {
+        for (size_t r = 0; r < size; ++r) {
+            for (size_t c = 0; c < size; ++c) {
+                const double center =
+                    static_cast<double>(region[r * size + c]) / 255.0;
+                if (c + 1 < size) {
+                    const double right =
+                        static_cast<double>(region[r * size + (c + 1)]) / 255.0;
+                    gradientSum += std::abs(right - center);
+                    gradientCount++;
+                }
+                if (r + 1 < size) {
+                    const double down =
+                        static_cast<double>(region[(r + 1) * size + c]) / 255.0;
+                    gradientSum += std::abs(down - center);
+                    gradientCount++;
+                }
+            }
+        }
+    }
+
+    const double mean = sum / static_cast<double>(region.size());
+    const double variance =
+        std::max(0.0, (sumSq / static_cast<double>(region.size())) - (mean * mean));
+    const double stddev = std::sqrt(variance);
+    const double range = maxValue - minValue;
+    const double gradientEnergy =
+        gradientCount > 0 ? gradientSum / static_cast<double>(gradientCount) : 0.0;
+
+    auto& stats = patchInputDiagnostics_;
+    stats.samples++;
+    stats.minValueSum += minValue;
+    stats.maxValueSum += maxValue;
+    stats.rangeSum += range;
+    stats.stddevSum += stddev;
+    stats.gradientEnergySum += gradientEnergy;
+    if (range <= 0.02) {
+        stats.nearFlatRangeCount++;
+    }
+    if (gradientEnergy <= 0.01) {
+        stats.nearFlatGradientCount++;
     }
 }
 
@@ -1738,9 +1996,13 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
                 computeContourSequenceMaps(bandImage, endstopPixelThreshold_, 8));
         }
     }
-    int analysisRegionSize = regionSize_;
+    const int pooledEdgeRegionSize =
+        std::max(regionSize_, edgeAnalysisRegionSize_ > 0 ? edgeAnalysisRegionSize_ : regionSize_);
+    int analysisRegionSize = pooledEdgeRegionSize;
     if (subfieldCount > 0) {
-        analysisRegionSize = std::max(regionSize_, minimumRegionSize_ * subfieldGridSize_);
+        analysisRegionSize =
+            std::max(analysisRegionSize, pooledEdgeRegionSize * subfieldGridSize_);
+        analysisRegionSize = std::max(analysisRegionSize, minimumRegionSize_ * subfieldGridSize_);
         if (analysisRegionSize % subfieldGridSize_ != 0) {
             analysisRegionSize += subfieldGridSize_ - (analysisRegionSize % subfieldGridSize_);
         }
@@ -1798,19 +2060,51 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
             std::vector<std::vector<double>> auxiliaryFeatures(
                 frequencyBandCount, std::vector<double>(auxiliaryChannels, 0.0));
             for (size_t bandIdx = 0; bandIdx < frequencyBandCount; ++bandIdx) {
-                const auto pooledRegions = buildColorEdgeRegions(bandImages[bandIdx], row, col, regionSize_);
-                const auto& pooledRegion = pooledRegions[0];
-                auto pooledResponses = extractEdgeFeatures(pooledRegion, regionSize_);
+                const auto pooledRegions =
+                    buildColorEdgeRegions(bandImages[bandIdx], row, col, pooledEdgeRegionSize);
+                const auto& pooledRegionRaw = pooledRegions[0];
+                recordPatchInputDiagnostics(pooledRegionRaw);
+                const auto pooledRegion = normalizeEdgeRegion(pooledRegionRaw);
+                auto pooledResponses = extractEdgeFeatures(pooledRegion, pooledEdgeRegionSize);
+                auto thresholdedResponses = pooledResponses;
+                std::vector<double> preThresholdResponses;
+                if (diagnosticEdgeOperator_) {
+                    preThresholdResponses =
+                        diagnosticEdgeOperator_->extractEdges(pooledRegion, pooledEdgeRegionSize);
+                }
                 applyOrientationCompetition(pooledResponses);
+                if (!preThresholdResponses.empty()) {
+                    recordOrientationFlowDiagnostics(
+                        pooledRegion, preThresholdResponses, thresholdedResponses, pooledResponses);
+                }
                 size_t writeOffset = 0;
 
                 if (subfieldCount == 0 || subfieldIncludePooled_) {
                     for (size_t colorIdx = 0; colorIdx < colorEdgeChannels; ++colorIdx) {
+                        std::vector<uint8_t> normalizedColorRegion;
+                        if (colorIdx != 0) {
+                            recordPatchInputDiagnostics(pooledRegions[colorIdx]);
+                            normalizedColorRegion = normalizeEdgeRegion(pooledRegions[colorIdx]);
+                        }
                         std::vector<double> responses =
                             (colorIdx == 0) ? pooledResponses
-                                            : extractEdgeFeatures(pooledRegions[colorIdx], regionSize_);
+                                            : extractEdgeFeatures(normalizedColorRegion, pooledEdgeRegionSize);
                         if (colorIdx != 0) {
+                            auto colorThresholdedResponses = responses;
+                            std::vector<double> colorPreThresholdResponses;
+                            if (diagnosticEdgeOperator_) {
+                                colorPreThresholdResponses =
+                                    diagnosticEdgeOperator_->extractEdges(
+                                        normalizedColorRegion, pooledEdgeRegionSize);
+                            }
                             applyOrientationCompetition(responses);
+                            if (!colorPreThresholdResponses.empty()) {
+                                recordOrientationFlowDiagnostics(
+                                    normalizedColorRegion,
+                                    colorPreThresholdResponses,
+                                    colorThresholdedResponses,
+                                    responses);
+                            }
                         }
                         std::copy(responses.begin(), responses.end(),
                                   bandFeatures[bandIdx].begin() +
@@ -1837,8 +2131,24 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
                                                 srcRow * analysisRegionSize + srcCol)];
                                     }
                                 }
-                                auto subResponses = extractEdgeFeatures(subRegion, subfieldSize);
+                                recordPatchInputDiagnostics(subRegion);
+                                auto normalizedSubRegion = normalizeEdgeRegion(subRegion);
+                                auto subResponses = extractEdgeFeatures(normalizedSubRegion, subfieldSize);
+                                auto subThresholdedResponses = subResponses;
+                                std::vector<double> subPreThresholdResponses;
+                                if (diagnosticEdgeOperator_) {
+                                    subPreThresholdResponses =
+                                        diagnosticEdgeOperator_->extractEdges(
+                                            normalizedSubRegion, subfieldSize);
+                                }
                                 applyOrientationCompetition(subResponses);
+                                if (!subPreThresholdResponses.empty()) {
+                                    recordOrientationFlowDiagnostics(
+                                        normalizedSubRegion,
+                                        subPreThresholdResponses,
+                                        subThresholdedResponses,
+                                        subResponses);
+                                }
                                 std::copy(subResponses.begin(), subResponses.end(),
                                           bandFeatures[bandIdx].begin() +
                                               static_cast<std::ptrdiff_t>(writeOffset));
@@ -1847,7 +2157,7 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
                         }
                     }
                 }
-                auto auxiliaryRegion = pooledRegion;
+                auto auxiliaryRegion = pooledRegionRaw;
                 int auxiliaryRegionSize = regionSize_;
                 if (auxiliaryFeatureMode_ == "topology_maps") {
                     auxiliaryFeatures[bandIdx] =
