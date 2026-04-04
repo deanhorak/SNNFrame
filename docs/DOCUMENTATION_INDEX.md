@@ -26,6 +26,7 @@ Complete guide to all SNNFrame documentation and resources.
 3. **[STDP_GUIDE.md](STDP_GUIDE.md)** - STDP learning guide
 4. **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common issues and solutions
 5. **[RabbitHoles.md](RabbitHoles.md)** - Abandoned or unproductive experiment paths and why they failed
+6. **[PROJECT_STATE.md](PROJECT_STATE.md)** - Detailed current-state handoff for resuming active work
 
 ---
 

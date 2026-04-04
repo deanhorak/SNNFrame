@@ -245,6 +245,99 @@ Lesson:
 - treat revived natural-image edge signal as a supplemental branch-level cue, not the main code path
 - the only edge revival that held was the constrained hybrid on the `g10` branches, with reduced `orientation_feature_gain`
 
+### 12. Temporal Coarse-To-Fine Inference Before The Coarse Cue Proved Useful
+
+What we tried:
+
+- a two-pass CIFAR inference path that masked deferred branch orientation slices on an initial coarse pass
+- blending coarse and fine classifier confidence with explicit weights
+- a narrower variant that deferred only the supplemental `g10` coarse-edge branches
+
+Why it was not productive:
+
+- even the narrower selective version regressed on the controlled CIFAR gate
+- the coarse pass shifted confidence toward the wrong appearance-heavy basin instead of improving the final decision
+- the branch representation was not yet stable enough for temporal staging to help; it just reweighted the same weak evidence
+
+Lesson:
+
+- do not add temporal coarse-to-fine arbitration until the supplemental coarse branch is already improving the representation by itself
+- when testing temporal staging, start with a proven branch-level gain and verify that the coarse pass helps the same classes rather than just amplifying existing collapse
+
+### 13. Broad Feature-Group Divisive Normalization On The CIFAR Hybrid Path
+
+What we tried:
+
+- per-region divisive normalization over orientation, chromatic, and appearance feature groups
+- weak cross-group coupling so dominant appearance channels would be compressed before hemisphere classification
+
+Why it was not productive:
+
+- the controlled CIFAR gate regressed slightly instead of improving
+- it changed class balance, but did not improve the underlying fusion or hemisphere separability enough to matter
+- the current hybrid path appears to benefit more from preserving the existing appearance-plus-supplemental-edge balance than from globally re-scaling feature groups
+
+Lesson:
+
+- do not apply broad group-wise divisive normalization across all CIFAR branches without evidence that one group is truly saturating the classifier
+- if divisive normalization is revisited, test it only on the active supplemental branch first, not on the whole natural-features path
+
+### 14. Weak Local Contour Integration On The Active `g10` Branch
+
+What we tried:
+
+- a minimal branch-local contour facilitation step on the CIFAR hybrid path
+- support applied only to neighboring `g10` subfields
+- orientation-specific lateral support kept weak and branch-local
+
+Why it was not productive:
+
+- the controlled CIFAR gate still regressed slightly instead of improving
+- it moved some class balances but did not improve the underlying representation enough to beat the current hybrid baseline
+- the existing `g10` supplemental edge branch already appears close to the useful signal limit under the current classifier
+
+Lesson:
+
+- do not keep tuning branch-local contour support on the current CIFAR hybrid path without a larger representational change
+- local contour integration is not the next lever if it cannot beat the gate even when constrained to the one branch that already carries live orientation signal
+
+### 15. Stage-1 Branch Support Banks On The CIFAR Hybrid Path
+
+What we tried:
+
+- appended branch-local similarity features derived from multiple per-class support prototypes
+- kept the bilateral scaffold and fusion path unchanged
+- tested a minimal bank size (`2` support sets per class per branch) before any larger sweep
+
+Why it was not productive:
+
+- the small CIFAR gate improved only marginally
+- the larger CIFAR run ended at exactly the same accuracy as the current promoted baseline (`36.60%`)
+- that means the added representation complexity did not buy a real gain on the benchmark that matters
+
+Lesson:
+
+- do not add extra stage-1 branch-bank machinery unless it clears the larger natural-image benchmark, not just the small gate
+- if a representation change ties the baseline at full scale, treat it as a dead end and keep the simpler path
+
+### 16. Broad Mid-Scale Appearance Pyramids On Every CIFAR Branch
+
+What we tried:
+
+- replaced the pooled `appearance_bank` auxiliary path with a larger quadrant-aware appearance pyramid on every branch
+- kept the bilateral scaffold and the hybrid `g10` edge branch unchanged
+
+Why it was not productive:
+
+- the controlled CIFAR gate collapsed sharply instead of improving
+- the broader auxiliary vector distorted the working balance between appearance and the supplemental `g10` edge path
+- adding mid-scale appearance detail everywhere at once overwhelmed the current classifier rather than preserving useful structure
+
+Lesson:
+
+- do not expand the auxiliary appearance code globally across all CIFAR branches in one step
+- if mid-scale appearance is revisited, it needs to be branch-selective or classifier-aware from the start, not a blanket replacement of the current appearance bank
+
 ## Reusable Work Worth Keeping
 
 Not everything from the failed path was wasted. These pieces are reusable and should be retained:

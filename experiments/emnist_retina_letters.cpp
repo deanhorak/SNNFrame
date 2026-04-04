@@ -120,13 +120,19 @@ struct Config {
     std::string fusionPath;
     bool separabilityDiagnostics = false;
     int separabilitySampleLimit = 0;
+    std::string stage1StreamSplitMode = "off";
+    double stage1ShapeStreamWeight = 0.45;
+    double stage1SurfaceStreamWeight = 0.55;
 };
 
 struct HemisphereRuntime {
     std::string name;
     std::vector<std::unique_ptr<RetinaAdapter>> retinas;
+    std::vector<ClassificationStrategy::LabeledPattern> rawTrainingPatterns;
     std::vector<ClassificationStrategy::LabeledPattern> trainingPatterns;
     std::vector<size_t> trainingSourceIndices;
+    std::vector<size_t> shapePatternIndices;
+    std::vector<size_t> surfacePatternIndices;
     std::unique_ptr<ClassificationStrategy> classifier;
     double overallWeight = 1.0;
     std::vector<double> classWeights;
@@ -147,6 +153,7 @@ struct LabelTrace {
 
 struct HemisphereDecisionTrace {
     std::vector<double> pattern;
+    std::vector<double> classifierPattern;
     std::vector<double> confidence;
     std::vector<LabelTrace> topHypotheses;
     int predicted = -1;
@@ -695,6 +702,11 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     if (fusionPathIt != irConfig.stringParams.end()) {
         config.fusionPath = normalizeHierarchyPath(fusionPathIt->second);
     }
+    const auto stage1StreamSplitModeIt =
+        irConfig.stringParams.find("stage1_stream_split_mode");
+    if (stage1StreamSplitModeIt != irConfig.stringParams.end()) {
+        config.stage1StreamSplitMode = toLower(stage1StreamSplitModeIt->second);
+    }
     const auto stage1KIt = irConfig.intParams.find("stage1_k");
     if (stage1KIt != irConfig.intParams.end()) {
         config.stage1K = stage1KIt->second;
@@ -735,6 +747,16 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
         irConfig.doubleParams.find("corpus_disagreement_gain");
     if (corpusDisagreementGainIt != irConfig.doubleParams.end()) {
         config.corpusDisagreementGain = corpusDisagreementGainIt->second;
+    }
+    const auto stage1ShapeStreamWeightIt =
+        irConfig.doubleParams.find("stage1_shape_stream_weight");
+    if (stage1ShapeStreamWeightIt != irConfig.doubleParams.end()) {
+        config.stage1ShapeStreamWeight = std::max(0.0, stage1ShapeStreamWeightIt->second);
+    }
+    const auto stage1SurfaceStreamWeightIt =
+        irConfig.doubleParams.find("stage1_surface_stream_weight");
+    if (stage1SurfaceStreamWeightIt != irConfig.doubleParams.end()) {
+        config.stage1SurfaceStreamWeight = std::max(0.0, stage1SurfaceStreamWeightIt->second);
     }
     const auto onlineRepeatsIt = irConfig.intParams.find("online_correction_repeats");
     if (onlineRepeatsIt != irConfig.intParams.end()) {
@@ -1257,6 +1279,81 @@ std::vector<ClassificationStrategy::LabeledPattern> buildSupportPatterns(
     return supportPatterns;
 }
 
+bool useStage1ShapeSurfaceSplit(const Config& config) {
+    return config.useFeatures && toLower(config.stage1StreamSplitMode) == "shape_surface";
+}
+
+std::pair<std::vector<size_t>, std::vector<size_t>> buildStage1StreamIndices(
+    const std::vector<PatternSlice>& slices) {
+    std::vector<size_t> shapeIndices;
+    std::vector<size_t> surfaceIndices;
+    for (const auto& slice : slices) {
+        const bool surface = slice.name.find("/auxiliary") != std::string::npos;
+        auto& target = surface ? surfaceIndices : shapeIndices;
+        if (!slice.indices.empty()) {
+            target.insert(target.end(), slice.indices.begin(), slice.indices.end());
+            continue;
+        }
+        const size_t end = slice.offset + slice.size;
+        for (size_t index = slice.offset; index < end; ++index) {
+            target.push_back(index);
+        }
+    }
+    return {shapeIndices, surfaceIndices};
+}
+
+std::vector<double> buildStage1StreamPattern(const std::vector<double>& rawPattern,
+                                             const HemisphereRuntime& hemisphere,
+                                             const Config& config) {
+    if (!useStage1ShapeSurfaceSplit(config)) {
+        return rawPattern;
+    }
+
+    auto gather = [&](const std::vector<size_t>& indices) {
+        std::vector<double> values;
+        values.reserve(indices.size());
+        for (size_t index : indices) {
+            if (index < rawPattern.size()) {
+                values.push_back(rawPattern[index]);
+            }
+        }
+        normalizeL2(values);
+        return values;
+    };
+
+    auto shape = gather(hemisphere.shapePatternIndices);
+    auto surface = gather(hemisphere.surfacePatternIndices);
+    const double shapeWeight = std::max(0.0, config.stage1ShapeStreamWeight);
+    const double surfaceWeight = std::max(0.0, config.stage1SurfaceStreamWeight);
+    std::vector<double> combined;
+    combined.reserve(shape.size() + surface.size());
+    for (double value : shape) {
+        combined.push_back(value * shapeWeight);
+    }
+    for (double value : surface) {
+        combined.push_back(value * surfaceWeight);
+    }
+    return combined;
+}
+
+std::vector<ClassificationStrategy::LabeledPattern> buildStage1TrainingPatterns(
+    const std::vector<ClassificationStrategy::LabeledPattern>& rawTrainingPatterns,
+    const HemisphereRuntime& hemisphere,
+    const Config& config) {
+    if (!useStage1ShapeSurfaceSplit(config)) {
+        return rawTrainingPatterns;
+    }
+
+    std::vector<ClassificationStrategy::LabeledPattern> transformed;
+    transformed.reserve(rawTrainingPatterns.size());
+    for (const auto& labeledPattern : rawTrainingPatterns) {
+        transformed.emplace_back(
+            buildStage1StreamPattern(labeledPattern.pattern, hemisphere, config),
+            labeledPattern.label);
+    }
+    return transformed;
+}
+
 bool useOnlineCorrection(const Config& config) {
     return config.onlineCorrectionRepeats > 0;
 }
@@ -1691,8 +1788,9 @@ HemisphereDecisionTrace inferHemisphereDecision(HemisphereRuntime& hemisphere,
                                                 const Config& config) {
     HemisphereDecisionTrace trace;
     trace.pattern = extractPattern(hemisphere.retinas, image, config.useFeatures, false);
+    trace.classifierPattern = buildStage1StreamPattern(trace.pattern, hemisphere, config);
     trace.confidence = hemisphere.classifier->classifyWithConfidence(
-        trace.pattern, hemisphere.trainingPatterns, cosineSimilarity);
+        trace.classifierPattern, hemisphere.trainingPatterns, cosineSimilarity);
     normalizeSum(trace.confidence);
     trace.topHypotheses = collectTopHypotheses(trace.confidence, onlineTraceTopK(config));
     if (!trace.topHypotheses.empty()) {
@@ -1968,14 +2066,17 @@ BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime
     for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
         auto& hemisphere = hemispheres[hemisphereIndex];
         const auto& hemisphereTrace = trace.hemisphereTraces[hemisphereIndex];
+        const auto& classifierPattern =
+            hemisphereTrace.classifierPattern.empty() ? hemisphereTrace.pattern
+                                                      : hemisphereTrace.classifierPattern;
         std::vector<double> centroidEvidence;
         if (config.corpusCentroidGain > 0.0) {
-            centroidEvidence = computeCentroidEvidence(hemisphere, hemisphereTrace.pattern);
+            centroidEvidence = computeCentroidEvidence(hemisphere, classifierPattern);
         }
         std::vector<double> neighborSignature;
         if (config.corpusNeighborGain > 0.0) {
             const int neighborK = config.stage1K > 0 ? config.stage1K : config.knnK;
-            neighborSignature = computeNeighborSignature(hemisphere, hemisphereTrace.pattern, neighborK);
+            neighborSignature = computeNeighborSignature(hemisphere, classifierPattern, neighborK);
         }
 
         for (size_t label = 0;
@@ -2228,6 +2329,8 @@ void applyRewardToHemisphere(HemisphereRuntime& hemisphere,
         if (rewardedTrace == nullptr) {
             return;
         }
+        const auto& classifierPattern =
+            trace.classifierPattern.empty() ? trace.pattern : trace.classifierPattern;
         const double rewardGain =
             std::clamp(config.onlinePositiveRewardGain * rewardMagnitude, 0.05, 2.5);
         const double baseLr =
@@ -2245,12 +2348,12 @@ void applyRewardToHemisphere(HemisphereRuntime& hemisphere,
                          0.5, 1.5);
         }
         updateCentroid(hemisphere.classCentroids[static_cast<size_t>(rewardedLabel)],
-                       trace.pattern,
+                       classifierPattern,
                        std::clamp(config.onlineCentroidLr * support * rewardGain, 0.05, 0.45));
         insertOrReplaceOnlinePattern(hemisphere.trainingPatterns,
                                      &hemisphere.trainingSourceIndices,
                                      hemisphere.onlinePatternIndices,
-                                     trace.pattern,
+                                     classifierPattern,
                                      rewardedLabel,
                                      config.onlineExemplarBudgetPerClass);
         return;
@@ -2958,10 +3061,13 @@ SeparabilityDiagnosticsRuntime buildSeparabilityDiagnosticsRuntime(
 
     for (auto& hemisphere : hemispheres) {
         auto slices = buildPatternSlices(hemisphere.retinas, sampleImage, config.useFeatures);
+        const auto& diagnosticPatterns =
+            hemisphere.rawTrainingPatterns.empty() ? hemisphere.trainingPatterns
+                                                   : hemisphere.rawTrainingPatterns;
         runtime.branchCentroids.push_back(
-            computeBranchCentroids(hemisphere.trainingPatterns, slices, config.numClasses));
+            computeBranchCentroids(diagnosticPatterns, slices, config.numClasses));
         runtime.hemisphereCentroids.push_back(
-            computeClassCentroids(hemisphere.trainingPatterns, config.numClasses));
+            computeClassCentroids(diagnosticPatterns, config.numClasses));
         runtime.hemisphereSlices.push_back(std::move(slices));
     }
 
@@ -4360,6 +4466,9 @@ int main(int argc, char* argv[]) {
                       << ", context_disagreement_gain=" << config.onlineContextDisagreementGain
                       << ", confusion_cluster_gain=" << config.onlineConfusionClusterGain
                       << ", confusion_cluster_decay=" << config.onlineConfusionClusterDecay
+                      << ", stage1_stream_split=" << config.stage1StreamSplitMode
+                      << ", stage1_shape_weight=" << config.stage1ShapeStreamWeight
+                      << ", stage1_surface_weight=" << config.stage1SurfaceStreamWeight
                       << ", focus_adjustment=" << (config.focusAdjustmentEnabled ? "on" : "off")
                       << ", focus_margin_threshold=" << config.focusAdjustmentMarginThreshold
                       << ", focus_zoom=" << config.focusAdjustmentZoom
@@ -4559,9 +4668,28 @@ int main(int argc, char* argv[]) {
                 });
             for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
                 auto& hemisphere = hemispheres[hemisphereIndex];
-                hemisphere.trainingPatterns = trainingArtifacts[hemisphereIndex].trainingPatterns;
+                hemisphere.rawTrainingPatterns = trainingArtifacts[hemisphereIndex].trainingPatterns;
                 hemisphere.trainingSourceIndices =
                     trainingArtifacts[hemisphereIndex].trainingSourceIndices;
+                hemisphere.trainingPatterns = hemisphere.rawTrainingPatterns;
+                hemisphere.shapePatternIndices.clear();
+                hemisphere.surfacePatternIndices.clear();
+                if (useStage1ShapeSurfaceSplit(config) && !hemisphere.rawTrainingPatterns.empty()) {
+                    size_t sliceSampleIndex = 0;
+                    if (!split.stage1Indices.empty()) {
+                        sliceSampleIndex = split.stage1Indices.front();
+                    } else if (trainLoader->size() > 0) {
+                        sliceSampleIndex = 0;
+                    }
+                    const auto& sampleImage = trainLoader->getStimulus(sliceSampleIndex);
+                    const auto slices =
+                        buildPatternSlices(hemisphere.retinas, sampleImage, config.useFeatures);
+                    auto [shapeIndices, surfaceIndices] = buildStage1StreamIndices(slices);
+                    hemisphere.shapePatternIndices = std::move(shapeIndices);
+                    hemisphere.surfacePatternIndices = std::move(surfaceIndices);
+                    hemisphere.trainingPatterns = buildStage1TrainingPatterns(
+                        hemisphere.rawTrainingPatterns, hemisphere, config);
+                }
                 hemisphere.classifier = makeClassifierStrategy(
                     config.stage1Classifier, stage1K, config.stage1Exponent, config);
                 buildHemisphereClassCentroids(hemisphere);
