@@ -1,6 +1,8 @@
 #include "snnfw/features/EdgeOperator.h"
 #include "snnfw/features/SobelOperator.h"
 #include "snnfw/features/GaborOperator.h"
+#include "snnfw/features/QuadratureGaborOperator.h"
+#include "snnfw/features/OrientationEnergyOperator.h"
 #include "snnfw/features/DoGOperator.h"
 #include <stdexcept>
 #include <algorithm>
@@ -20,6 +22,10 @@ std::unique_ptr<EdgeOperator> EdgeOperatorFactory::create(
         return std::make_unique<SobelOperator>(config);
     } else if (lowerType == "gabor") {
         return std::make_unique<GaborOperator>(config);
+    } else if (lowerType == "quadrature_gabor" || lowerType == "gabor_energy") {
+        return std::make_unique<QuadratureGaborOperator>(config);
+    } else if (lowerType == "orientation_energy" || lowerType == "oriented_energy") {
+        return std::make_unique<OrientationEnergyOperator>(config);
     } else if (lowerType == "dog" || lowerType == "difference_of_gaussians") {
         return std::make_unique<DoGOperator>(config);
     } else {
@@ -31,6 +37,10 @@ std::vector<std::string> EdgeOperatorFactory::getAvailableOperators() {
     return {
         "sobel",
         "gabor",
+        "quadrature_gabor",
+        "gabor_energy",
+        "orientation_energy",
+        "oriented_energy",
         "dog",
         "difference_of_gaussians"
     };
@@ -38,4 +48,3 @@ std::vector<std::string> EdgeOperatorFactory::getAvailableOperators() {
 
 } // namespace features
 } // namespace snnfw
-

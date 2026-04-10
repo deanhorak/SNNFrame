@@ -9,7 +9,7 @@ These are the benchmark paths worth keeping as the active reference surface:
 - Unilateral Retina static: `86.17%`
 - Bilateral Retina static: `87.29%`
 - Bilateral Retina continuous: `87.50%` initial, `88.85%` post-correction
-- CIFAR-10 bilateral natural-features experimental reference: `36.60%` on `1000/class, 5000` test
+- CIFAR-10 bilateral natural-features experimental reference: `38.16%` on `1000/class, 5000` test
 
 These live in:
 
@@ -312,7 +312,7 @@ What we tried:
 Why it was not productive:
 
 - the small CIFAR gate improved only marginally
-- the larger CIFAR run ended at exactly the same accuracy as the current promoted baseline (`36.60%`)
+- the larger CIFAR run ended at exactly the same accuracy as the then-protected baseline (`36.60%`)
 - that means the added representation complexity did not buy a real gain on the benchmark that matters
 
 Lesson:
@@ -337,6 +337,795 @@ Lesson:
 
 - do not expand the auxiliary appearance code globally across all CIFAR branches in one step
 - if mid-scale appearance is revisited, it needs to be branch-selective or classifier-aware from the start, not a blanket replacement of the current appearance bank
+
+### 17. Stage-1 Shape/Surface Stream Splitting On The CIFAR Hybrid Path
+
+What we tried:
+
+- split the stage-1 hemisphere classifier input into a `shape` stream and a `surface` stream
+- keep the bilateral scaffold unchanged while separately normalizing and reweighting the two streams
+- validate the idea first on the small CIFAR gate, then on the protected `1000/class, 5000` benchmark
+
+Why it was not productive:
+
+- the small gate improved slightly (`30.70%` vs `30.00%`), but the full benchmark finished lower than the protected baseline
+- after debugging the large-run failure mode, the completed result was `35.80%`, still below the then-protected `36.60%`
+- the extra classifier-space split added complexity around stage-1 preparation and calibration without fixing the real upstream representation weakness
+- the orientation-dead branches stayed dead; this mostly reweighted existing evidence instead of creating a better code
+
+Lesson:
+
+- do not promote classifier-space stream splitting based on a small-sample gate
+- if the full CIFAR benchmark loses to the protected baseline, treat the stream split as a closed dead end even if the sampled gate moved up
+- upstream Retina and pre-cortical representation remain the more plausible next levers than more stage-1 reweighting
+
+Status:
+
+- closed and documented
+- removed from the active benchmark harness
+
+### 18. Inference-Time Active Vision Before Multi-Fixation Evidence Helped
+
+What we tried:
+
+- added inference-time multi-fixation support on top of the promoted CIFAR baseline
+- tested a wider `3`-fixation probe with remapping and a more conservative `2`-fixation probe without remapping
+- replaced the original ring-offset targeting with a tile-saliency fixation policy
+
+Why it was not productive:
+
+- the protected baseline at `20/class, 200` was `29.50%`
+- the wider active-inference probe dropped to `27.00%`
+- the conservative active-inference probe still only reached `27.50%`
+- the tile-saliency policy also stayed at `27.00%`
+- this added sequential inference complexity without producing a sampled win over the already-promoted `training-time saccades + g10-only LGN` surface
+
+Lesson:
+
+- do not scale inference-time active vision without a clear sampled gain over the protected baseline
+- changing fixation policy or remapping is not enough if the extra fixations only re-sample the same weak evidence
+- the next justified work remains upstream of fusion and readout, where representation quality can improve before arbitration
+
+Status:
+
+- implemented and documented
+- not promotable on the current CIFAR path
+
+### 19. Promoting A Tiny Full-Benchmark Stream-Bank Gain Without Confirmation
+
+What we tried:
+
+- added `appearance_stream_bank` back only on `left_retina_g10` and `right_retina_g10`
+- kept the winning `training-time saccades + g10-only LGN` surface unchanged otherwise
+- advanced the path because the first full benchmark finished at `38.24%`, just above the protected `38.16%`
+
+Why it was not productive:
+
+- the first full-benchmark win was only `0.08` points
+- the confirmatory rerun with a fresh seed finished at `37.68%`, below the protected `38.16%` reference
+- that means the added stream-bank complexity did not demonstrate a stable mainline gain
+- the mixed result is consistent with a marginal sampled fluctuation, not a robust new surface
+
+Lesson:
+
+- do not promote CIFAR changes that win by only a few test images without a confirmatory rerun
+- a narrow single-run edge is not enough reason to replace a protected baseline
+- on the current CIFAR path, `g10` stream-bank augmentation should stay secondary to stronger upstream ideas like explicit transient/sustained `ON/OFF` plus luminance channels
+
+Status:
+
+- documented and closed for promotion purposes
+- keep `training-time saccades + g10-only LGN` as the protected reference
+
+### 20. Another Static `g10` Auxiliary Bank Shuffle Without A Larger-Gate Win
+
+What we tried:
+
+- added a dedicated `luminance_stream_bank` mode for `left_retina_g10` and `right_retina_g10`
+- kept the protected `training-time saccades + g10-only LGN` surface unchanged otherwise
+- used only luminance, achromatic edge energy, and sustained/transient `ON/OFF` features instead of the broader appearance stream bundle
+
+Why it was not productive:
+
+- the first smoke exposed a real wiring bug where the new auxiliary slice stayed all zeros; that was fixed locally
+- after the fix, the standard `50/class, 500 test` gate edged up only slightly to `28.80%` versus the protected `28.40%`
+- the decisive `200/class, 1000 test` gate then finished at `32.10%`, below the protected `32.30%`
+- that means a cleaner luminance plus `ON/OFF` code still did not produce a robust enough gain to justify scaling the benchmark
+
+Lesson:
+
+- do not keep reshuffling static `g10` auxiliary banks once the larger sampled gate stops improving
+- a biologically cleaner auxiliary code is not enough by itself if it cannot beat the protected `200/1000` gate
+- the next justified CIFAR work should move away from more static front-end bank variants and toward low-risk training protocol changes on the protected surface
+
+Status:
+
+- documented and closed for promotion purposes
+- do not scale this path to `1000/class, 5000` without a materially new reason
+
+### 21. Stacking More Training-Time Augmentation On Top Of The Already-Saccadic CIFAR Surface
+
+What we tried:
+
+- implemented training-only spike-domain augmentation on top of the protected `training-time saccades + g10-only LGN` baseline
+- added deterministic extra training variants with small translations, slight rotations, and mild photon-like noise before the existing `4`-fixation training path
+- tested both a default `2`-variant configuration and a milder `1`-variant override before spending the required `50/class, 500 test` gate
+
+Why it was not productive:
+
+- the protected baseline smoke at `20/class, 200 test` was already `29.50%`
+- the default `2`-variant augmentation probe dropped to `27.00%`
+- the milder `1`-variant probe regressed further to `24.50%`
+- that means the current CIFAR surface is not simply under-augmented; extra training-time jitter beyond the promoted saccade path diluted useful evidence instead of improving invariance
+
+Lesson:
+
+- do not assume more training-time image perturbation helps once the baseline already includes multi-fixation saccadic sampling
+- if a low-risk training protocol change cannot even clear the bounded smoke gate, do not advance it to `50/500`
+- the next justified CIFAR work should move to a materially different low-risk protocol change, such as curriculum or review scheduling, rather than more image-space jitter on the same surface
+
+Status:
+
+- documented and closed for promotion purposes
+- keep the augmentation code available for future controlled studies, but do not spend larger CIFAR budget on this policy as currently defined
+
+### 22. Curriculum And Review Scheduling Without A Protected-Gate Win
+
+What we tried:
+
+- added declarative curriculum scheduling for stage-1 training order, using easier CIFAR groups first and harder classes later
+- added an optional low-rate second review pass on top of the same protected `training-time saccades + g10-only LGN` baseline
+- tested the default curriculum plus `10%` review pass, a milder `5%` review pass, and a curriculum-only ablation before spending the larger gate budget
+
+Why it was not productive:
+
+- the full curriculum plus `10%` review smoke dropped to `26.00%`
+- reducing the review pass to `5%` still only reached `27.00%`
+- removing the review pass entirely recovered to the protected smoke reference at `29.50%`, but the decisive curriculum-only `50/class, 500 test` gate only tied the protected `28.40%` instead of beating it
+- that means the review pass is actively harmful on the current CIFAR surface, and curriculum ordering alone is not strong enough to justify a larger benchmark
+
+Lesson:
+
+- do not assume training-order tweaks will rescue the current CIFAR path once the upstream representation and fusion surface are already tightly constrained
+- if the only surviving ablation can do no better than tie the protected small gate, stop before `200/1000`
+- the next justified work should move away from more CIFAR schedule-order tweaks and toward a different class of bounded change, such as replay/eligibility behavior in the existing continuous-learning pipeline
+
+Status:
+
+- documented and closed for promotion purposes
+- keep the curriculum schedule code available, but do not spend larger CIFAR budget on this track as currently defined
+
+### 23. Delayed Replay On The CIFAR Continuous-Learning Path
+
+What we tried:
+
+- took the protected CIFAR `training-time saccades + g10-only LGN` surface and added the existing continuous-learning replay machinery
+- swept replay delay on the bounded `20/class, 200 test` screen before spending larger gate budget
+- compared immediate replay (`delay=0`) against delayed replay at `2`, `4`, and `8` steps
+
+Why the delayed variants were not productive:
+
+- immediate replay won the smoke at `32.50%`
+- `delay=2` slipped to `32.00%`
+- `delay=4` and `delay=8` both dropped to `31.50%`
+- the replay summaries showed the expected mechanism: average eligibility decayed as delay increased, so the delayed variants were applying weaker corrections without any compensating accuracy gain
+
+Lesson:
+
+- on the current CIFAR surface, replay helps only when it stays close to the original uncertain error
+- do not assume a more biologically delayed eligibility trace is automatically better if the current correction target is already sparse and recent
+- treat replay delay as fixed at `0` unless there is a materially different replay-priority or reward-trace design to justify reopening it
+
+Status:
+
+- delayed replay variants are documented and closed on the current CIFAR path
+- immediate replay is worth keeping and is now part of the promoted local baseline
+
+### 24. First-Order Replay Scalar Sweeps Around The Promoted Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR immediate-replay surface fixed and only nudged first-order replay scalars
+- ran a bounded queue-capacity sweep at `50/class, 500 test`
+- then ran a bounded reward-gain sweep around the promoted `online_positive_reward_gain = 0.5` and `online_negative_reward_gain = 1.1`
+
+Why it was not productive:
+
+- queue capacity `128` regressed to `31.40%`
+- queue capacities `256` and `512` both only tied the protected `31.60%` gate
+- lowering positive reward gain to `0.35` and raising it to `0.65` both only tied `31.60%`
+- lowering negative reward gain to `0.95` and raising it to `1.25` also only tied `31.60%`
+- that means the promoted immediate-replay surface is robust to these simple scalar nudges, but there is no evidence that any of them improve the decisive small gate
+
+Lesson:
+
+- do not keep spending CIFAR budget on first-order queue-capacity or scalar reward-gain tuning once they show a flat protected-gate response
+- the next justified work has to be a materially different plasticity rule, not more scalar replay parameter nudging
+- if replay tuning is revisited later, it should be because a new interaction exists, not because these first-order sweeps were inconclusive
+
+Status:
+
+- documented and closed on the current CIFAR surface
+- keep the promoted immediate-replay settings as the protected baseline and move on to a different plasticity mechanism
+
+### 25. First-Order Reward-Gated STDP Prototype Evidence On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in reward-gated STDP-style prototype evidence bank in classifier space for hemisphere and fusion decisions
+- used the existing online reward signal as the neuromodulatory gate
+- screened the bounded follow-up at smoke, then advanced the best surviving setting through the protected `50/class, 500 test` and `200/class, 1000 test` gates
+
+Why it was not productive enough:
+
+- the default setting only reached `31.00%` at smoke
+- the best tuned setting (`online_reward_stdp_gain = 0.06`, `online_reward_stdp_ltp = 0.12`, `online_reward_stdp_ltd = 0.06`) improved smoke to `32.00%`
+- that tuned setting also beat the protected `50/500` gate at `32.00%` versus `31.60%`
+- but it still missed the decisive `200/1000` gate at `33.60%`, below the protected `33.80%`
+- the mechanism appears to help short-horizon online correction without scaling enough to move the more stable gate
+
+Lesson:
+
+- a first-order reward-gated prototype-evidence path is not enough by itself to beat the protected CIFAR baseline
+- do not promote a new plasticity rule just because it wins smoke or the small gate if it still misses the decisive `200/1000` comparison
+- the next justified move has to be a materially different local plasticity rule, such as triplet or voltage-dependent plasticity, not more mild tuning of this prototype-gated path
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the experimental code/config as reference, but do not spend more CIFAR budget on simple nudges of this reward-STDP prototype path
+
+### 26. Classifier-Space Triplet-STDP Traces On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in triplet-STDP-style trace/prototype path in classifier space for hemisphere and fusion decisions
+- screened two bounded settings at smoke:
+  - `online_triplet_stdp_gain = 0.08`, `online_triplet_stdp_ltp = 0.12`, `online_triplet_stdp_ltd = 0.06`, `online_triplet_stdp_fast_decay = 0.88`, `online_triplet_stdp_slow_decay = 0.97`
+  - `online_triplet_stdp_gain = 0.05`, `online_triplet_stdp_ltp = 0.10`, `online_triplet_stdp_ltd = 0.05`, `online_triplet_stdp_fast_decay = 0.90`, `online_triplet_stdp_slow_decay = 0.98`
+- advanced both bounded settings to the protected `50/class, 500 test` gate because both smoke runs landed at the same score
+
+Why it was not productive enough:
+
+- both bounded triplet settings reached `32.00%` at smoke, so there was no clear winner even at the tiny gate
+- at the protected `50/500` gate, both settings only reached `31.60%`, exactly tying the promoted immediate-replay baseline instead of beating it
+- one stronger setting dipped to `30.60%` on the raw running test line before online correction recovered the final score back to `31.60%`, which reinforces that the extra triplet path was not adding stable net value
+- because no triplet setting produced a protected-gate win, spending `200/1000` budget on this exact design would have been unjustified
+
+Lesson:
+
+- this classifier-space triplet-trace path is not adding enough usable signal on top of the promoted immediate-replay baseline; at best it reproduces the same corrected `50/500` result
+- do not advance a new plasticity rule past smoke on parity alone; it needs an actual protected-gate win before taking more CIFAR budget
+- the next justified move has to be a materially different local plasticity rule, such as a voltage-dependent path, not more gain/decay tuning of this triplet-trace design
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the code path only as reference; do not spend more CIFAR budget on this exact triplet-STDP formulation
+
+### 27. Classifier-Space Voltage-Gated Prototype Plasticity On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in voltage-dependent local-plasticity path in classifier space for hemisphere and fusion decisions
+- screened three bounded settings at smoke:
+  - `online_voltage_plasticity_gain = 0.06`, `online_voltage_plasticity_ltp = 0.14`, `online_voltage_plasticity_ltd = 0.08`, `online_voltage_plasticity_decay = 0.94`, `online_voltage_plasticity_threshold = 0.30`
+  - `online_voltage_plasticity_gain = 0.04`, `online_voltage_plasticity_ltp = 0.10`, `online_voltage_plasticity_ltd = 0.05`, `online_voltage_plasticity_decay = 0.96`, `online_voltage_plasticity_threshold = 0.24`
+  - `online_voltage_plasticity_gain = 0.08`, `online_voltage_plasticity_ltp = 0.12`, `online_voltage_plasticity_ltd = 0.03`, `online_voltage_plasticity_decay = 0.92`, `online_voltage_plasticity_threshold = 0.22`
+
+Why it was not productive enough:
+
+- the three bounded settings only reached `31.00%`, `31.50%`, and `31.00%` at smoke
+- the protected immediate-replay smoke on the same CIFAR surface is `32.50%`, so this path never even earned a `50/500` gate
+- the best surviving voltage setting was still `1.00` point below the protected smoke reference, which is worse than the earlier reward-STDP and triplet probes
+- lowering the threshold and softening LTD did not recover the gap, which suggests the issue is the classifier-space prototype formulation itself, not just one bad voltage hyperparameter choice
+
+Lesson:
+
+- a depolarization-gated classifier-space prototype path is still not enough to improve the promoted immediate-replay baseline
+- do not spend protected CIFAR gate budget on a new local-plasticity add-on that cannot at least clear the protected smoke reference
+- the next justified move has to be materially different from these reward-, triplet-, and voltage-gated prototype/evidence-bank paths
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the code path as reference if needed, but do not spend more CIFAR budget on this exact voltage-dependent formulation
+
+### 28. BCM-Style Metaplastic Gating On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- avoided another inference-time evidence bank and instead added an opt-in BCM-style metaplastic gate on the existing reward-driven centroid/weight/exemplar updates
+- screened three bounded settings at smoke:
+  - `online_bcm_metaplasticity_ltp = 0.45`, `online_bcm_metaplasticity_ltd = 0.35`, `online_bcm_metaplasticity_decay = 0.96`, `online_bcm_metaplasticity_target = 0.28`
+  - `online_bcm_metaplasticity_ltp = 0.65`, `online_bcm_metaplasticity_ltd = 0.20`, `online_bcm_metaplasticity_decay = 0.94`, `online_bcm_metaplasticity_target = 0.24`
+  - `online_bcm_metaplasticity_ltp = 0.55`, `online_bcm_metaplasticity_ltd = 0.25`, `online_bcm_metaplasticity_decay = 0.97`, `online_bcm_metaplasticity_target = 0.26`
+
+Why it was not productive enough:
+
+- the best and third settings both only tied the protected immediate-replay smoke at `32.50%`
+- the second setting slipped to `32.00%`
+- the best settings did improve replay corrections versus the protected smoke run, but they still did not produce the one thing that matters for advancement: an actual smoke win
+- by the repo's own rule, spending a protected `50/500` gate on parity alone would have repeated the same mistake already documented for earlier plasticity branches
+
+Lesson:
+
+- a BCM-style metaplastic gate on the current centroid/exemplar correction path is not enough by itself to justify more CIFAR budget on this surface
+- tying the protected smoke is not a promotion signal and not enough to advance a new plasticity rule to the next gate
+- the next justified move has to be materially different from the existing reward-, triplet-, voltage-, and BCM-gated classifier-space adaptations
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- the opt-in code path has been removed after evaluation; do not spend more CIFAR budget on this exact BCM-style metaplastic formulation
+
+### 29. Same-Dimensional Contextual Grouping On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in, per-retina contextual grouping stage in `experiments/emnist_retina_letters.cpp`
+- applied it only to the two `g10` branches so the protected `g9` and `dog_g9` paths stayed unchanged
+- the grouping stage used bounded local contour support, internal border-ownership competition, surround suppression, divisive normalization, and a mild coarse-to-fine bias before the usual per-branch L2 normalization
+- screened two bounded smoke settings:
+  - `configs/cifar10_retina_bilateral_natural_features_contextual_grouping_experimental.sonata.json`
+  - `configs/cifar10_retina_bilateral_natural_features_contextual_grouping_tune1_experimental.sonata.json`
+
+Why it was not productive enough:
+
+- the default bounded setting finished at `30.50%` (`61/200`)
+- the milder retune finished at `30.00%` (`60/200`)
+- both lost clearly to the protected immediate-replay smoke of `32.50%`
+- the failure mode was not a crash or dead branch; the `g10` branches stayed active, but their class-separability collapsed
+- on the default run, `left_retina_g10` centroid accuracy fell to `19.00%` and `right_retina_g10` to `17.00%`, which means the modulation degraded the branch representation instead of building a useful proto-object stage
+
+Lesson:
+
+- a same-dimensional modulation of the existing `g10` feature map is not enough to recover the figure-ground and contextual grouping that biological vision gets from V2-like circuitry
+- if this area is revisited, it needs a materially different representation, not another small retune of contour gain, suppression, or ownership bias on the current map
+- the next justified upstream move is more likely eccentricity-dependent retinal sampling / cortical magnification, or a truly explicit figure-ground representation, not another mild contextual rescaling pass
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the code/config path as reference if needed, but do not spend more CIFAR budget on this exact contextual-grouping formulation
+
+### 30. Same-Dimensional Eccentricity Sampling / Cortical Magnification On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in nonuniform receptive-field sampler in `src/adapters/RetinaAdapter.cpp`
+- enabled it only on the two `g10` branches so the protected `g9` and `dog_g9` paths stayed unchanged
+- used a bounded symmetric foveal warp with a mixed strength knob and gamma exponent to compress central source patches and enlarge peripheral ones while keeping the branch dimensionality fixed
+- screened two bounded smoke settings:
+  - `configs/cifar10_retina_bilateral_natural_features_eccentricity_sampling_experimental.sonata.json` with `eccentricity_sampling_strength = 0.70`, `eccentricity_sampling_gamma = 1.80`
+  - `configs/cifar10_retina_bilateral_natural_features_eccentricity_sampling_tune1_experimental.sonata.json` with `eccentricity_sampling_strength = 0.35`, `eccentricity_sampling_gamma = 1.40`
+
+Why it was not productive enough:
+
+- both bounded settings finished at `28.50%` (`57/200`)
+- both lost clearly to the protected immediate-replay smoke of `32.50%`
+- the failure mode was again branch-specific rather than a broken run: the untouched branches stayed near their prior behavior while the `g10` branches lost separability
+- on the default run, `left_retina_g10` centroid accuracy was `19.00%` and `right_retina_g10` was `18.50%`
+- the milder retune did not recover the gap; it only nudged `left_retina_g10` to `21.00%` while keeping the total smoke result flat at `28.50%`
+
+Lesson:
+
+- a same-dimensional cortical-magnification remap of the current `g10` branch is not enough to recover the foveal specialization that biological vision gets from a deeper retinal and cortical organization
+- the current `g10` representation is fragile to geometry-only spatial remapping
+- if this area is revisited, it needs a materially different representation, such as a temporal coarse-to-fine transient/sustained path or a more explicit multi-stream foveal/peripheral code, not another small retune of this remap
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the code/config path as reference if needed, but do not spend more CIFAR budget on this exact eccentricity-sampling formulation
+
+### 31. Same-Dimensional Temporal Coarse-To-Fine Arbitration On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in temporal dual-pass path in `src/adapters/RetinaAdapter.cpp`
+- enabled it only on the two `g10` branches so the protected `g9` and `dog_g9` paths stayed unchanged
+- switched those `g10` branches to `appearance_stream_bank` and used the auxiliary transient/sustained channels to bias low-frequency coarse support first, then fine-detail support, while keeping the branch dimensionality fixed
+- screened one bounded smoke setting:
+  - `configs/cifar10_retina_bilateral_natural_features_temporal_coarse_fine_experimental.sonata.json`
+  - `temporal_coarse_bias = 0.10`
+  - `temporal_transient_gain = 0.55`
+  - `temporal_sustained_gain = 0.40`
+  - `temporal_cross_band_gain = 0.25`
+
+Why it was not productive enough:
+
+- the bounded smoke finished at `31.00%` (`62/200`)
+- the corrected final smoke only tied the protected immediate-replay smoke at `32.50%`, which is not enough to justify a protected `50/500` gate
+- the raw testing line still slipped to `31.00%`, so the added temporal arbitration was not producing a stronger pre-correction classifier state
+- the failure mode was again branch-specific rather than a broken run: the `g10` branches stayed active, but their class-separability did not improve enough to matter
+- `left_retina_g10` centroid accuracy fell to `21.50%` and `right_retina_g10` to `18.00%`
+- the low/high split itself was not rescuing the branch: `left_retina_g10/low_band` fell to `17.50%`, `left_retina_g10/high_band` to `20.50%`, `right_retina_g10/low_band` to `17.00%`, and `right_retina_g10/high_band` to `19.00%`
+
+Lesson:
+
+- a same-dimensional temporal coarse-to-fine arbitration of the current `g10` map is not enough to recover the transient/sustained stream advantages that biological vision gets from genuinely distinct pathways
+- the current `g10` representation can stay active under this gate while still failing to beat the protected smoke, so activity alone is not a promotion signal
+- if this area is revisited, it needs a materially different representation, such as explicit foveal/peripheral sub-branches or truly separate transient/sustained populations with their own late fusion path, not another bounded rescaling pass inside the same map
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the code/config path as reference if needed, but do not spend more CIFAR budget on this exact same-dimensional temporal-arbitration formulation
+
+### 32. Explicit `g10` Foveal/Peripheral Branch Split On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added opt-in region-masking support in `src/adapters/RetinaAdapter.cpp`
+- replaced each baseline `g10` adapter with explicit `g10_foveal` and `g10_peripheral` adapters that attach to separate hierarchy paths and fuse late through the existing bilateral classifier stack
+- screened two bounded smoke settings:
+  - `configs/cifar10_retina_bilateral_natural_features_foveal_peripheral_experimental.sonata.json`
+    - foveal weight `0.65`, peripheral weight `0.45`
+    - mask radius `0.26`, softness `0.08`
+  - `configs/cifar10_retina_bilateral_natural_features_foveal_peripheral_tune1_experimental.sonata.json`
+    - foveal weight `0.80`, peripheral weight `0.25`
+    - mask radius `0.36`, softness `0.14`
+
+Why it was not productive enough:
+
+- the default split finished at `32.00%` (`64/200`)
+- the milder retune finished at `31.00%` (`62/200`)
+- both stayed below the protected immediate-replay corrected smoke of `32.50%`
+- the default run showed the split was alive but weak: `left_retina_g10_foveal` fell to `13.50%` centroid accuracy and `left_retina_g10_peripheral` to `19.00%`; the right side was similarly weak at `15.50%` and `16.00%`
+- the milder retune did not rescue it enough: `left_retina_g10_foveal` only reached `15.50%`, `left_retina_g10_peripheral` `20.00%`, `right_retina_g10_foveal` `17.00%`, and `right_retina_g10_peripheral` `17.00%`
+
+Lesson:
+
+- an explicit central/peripheral split of the current `g10` branch is still not enough to recover the kind of foveal/peripheral specialization biological vision gets from deeper retinal and cortical organization
+- even with true late fusion and independent branch paths, the current `g10` code loses too much separability when split by geography
+- if this area is revisited, it needs a materially different branch axis, such as explicit transient/sustained or `ON/OFF` populations with their own late fusion path, not another retune of this geography-only split
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the code/config path as reference if needed, but do not spend more CIFAR budget on this exact foveal/peripheral split formulation
+
+### 33. Explicit Transient/Sustained `g10` Branch Split On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added opt-in temporal-stream branch gating in `src/adapters/RetinaAdapter.cpp`
+- replaced each baseline `g10` adapter with explicit `g10_transient` and `g10_sustained` adapters that attach to separate hierarchy paths and fuse late through the existing bilateral classifier stack
+- switched those new `g10` branches to `appearance_stream_bank` so the split used the real transient/sustained auxiliary channels already produced by the retina code
+- screened one bounded smoke setting:
+  - `configs/cifar10_retina_bilateral_natural_features_transient_sustained_experimental.sonata.json`
+  - transient branch weight `0.55`, sustained branch weight `0.65`
+  - transient floor `0.22`, sustained floor `0.28`
+  - preferred-stream gain `0.90`
+  - opposing-stream suppression `0.15` transient / `0.12` sustained
+
+Why it was not productive enough:
+
+- the bounded smoke finished at `29.50%` (`59/200`)
+- it lost clearly to the protected immediate-replay corrected smoke of `32.50%`
+- both temporal branches stayed active, but neither became strong enough to justify the split:
+  - left: `left_retina_g10_transient` reached `20.50%`, `left_retina_g10_sustained` `20.00%`
+  - right: `right_retina_g10_transient` reached `18.00%`, `right_retina_g10_sustained` `18.00%`
+- the hemispheres were not the main issue by themselves: `Left Hemisphere/combined` still reached `34.50%` centroid accuracy and `Right Hemisphere/combined` `31.50%`
+- the actual collapse was at fusion: `fusion` centroid accuracy fell to `22.50%`, so the late-fused representation was worse than the protected surface even though the new branches were alive
+
+Lesson:
+
+- an explicit transient/sustained split of the current `g10` branch is still not enough to recover the temporal-stream advantages biological vision gets from deeper retinal and thalamocortical specialization
+- simply splitting the branch and late-fusing it is not sufficient when the resulting stream-specific evidence remains weak and poorly aligned for fusion
+- if this area is revisited, it needs a materially different parallel code, such as explicit `ON/OFF` plus achromatic luminance branches with their own late fusion path, not another retune of this transient/sustained split
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the code/config path as reference if needed, but do not spend more CIFAR budget on this exact transient/sustained branch-split formulation
+
+### 34. Explicit Late-Fused `ON/OFF + Luminance` `g10` Branch Split On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added opt-in luminance-branch gating in `src/adapters/RetinaAdapter.cpp`
+- replaced each baseline `g10` adapter with explicit `g10_on`, `g10_off`, and `g10_luminance` adapters that attach to separate hierarchy paths and fuse late through the existing bilateral classifier stack
+- switched those new `g10` branches to `luminance_stream_bank` so the split used the real luminance and transient/sustained `ON/OFF` auxiliary channels already produced by the retina code
+- screened one bounded smoke setting:
+  - `configs/cifar10_retina_bilateral_natural_features_onoff_luminance_experimental.sonata.json`
+  - `ON` / `OFF` branch weight `0.35`
+  - luminance branch weight `0.50`
+  - preferred-drive gain around `0.90-0.95`
+  - opponent suppression around `0.08-0.18`
+
+Why it was not productive enough:
+
+- the clean smoke rerun finished at only `27.50%` (`55/200`)
+- it lost clearly to the protected immediate-replay corrected smoke of `32.50%`
+- all six explicit `g10` sub-branches stayed alive, but none were strong enough to justify the split:
+  - left: `left_retina_g10_on` reached `22.50%`, `left_retina_g10_off` `21.50%`, `left_retina_g10_luminance` `21.00%`
+  - right: `right_retina_g10_on` reached `18.50%`, `right_retina_g10_off` `19.00%`, `right_retina_g10_luminance` `18.00%`
+- the hemispheres were not completely dead by themselves: `Left Hemisphere/combined` still reached `35.00%` centroid accuracy and `Right Hemisphere/combined` `32.00%`
+- the actual collapse was again at fusion: `fusion` centroid accuracy fell to `22.50%`, so the late-fused representation was materially worse than the protected surface even though the new sub-branches were active
+- replay correction did almost nothing for it: only `2` of `147` correction events succeeded
+
+Lesson:
+
+- an explicit late-fused `ON/OFF + luminance` split of the current `g10` branch is still not enough to recover the parallel-stream advantages biological vision gets from deeper retinal and thalamic specialization
+- simply adding more biologically named late-fused sub-branches is not sufficient when the resulting stream-specific evidence remains weak and poorly aligned for fusion
+- if this area is revisited, it needs materially different pre-cortical dynamics, such as stream-specific LGN relay timing or gain structure feeding the existing cortical branch, not another split of the current `g10` map into more late-fused sub-branches
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the code/config path as reference if needed, but do not spend more CIFAR budget on this exact `ON/OFF + luminance` branch-split formulation
+
+### 35. `g10`-Only Fixation-Aware Stage-1 Memory On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- reran the protected `200/1000` gate with `flow_audit` enabled to establish a fresh control on the current binary:
+  - `build/flow_audit_baseline_gate_200_1000_rerun.log`
+  - `build/flow_audit_baseline_gate_200_1000_rerun_testing_summary.json`
+- added opt-in stage-1 fixation-memory aggregation in `experiments/emnist_retina_letters.cpp`
+- enabled it only on `left_retina_g10` and `right_retina_g10` through `stage1_fixation_memory_mode = mean_max_summary`
+- left `g9`, `dog_g9`, replay, and corpus-callosum fusion unchanged
+- screened one bounded `200/1000` audited gate:
+  - `configs/cifar10_retina_bilateral_natural_features_g10_fixation_memory_experimental.sonata.json`
+  - `build/flow_audit_g10_fixation_memory_gate_200_1000.log`
+  - `build/flow_audit_g10_fixation_memory_gate_200_1000_testing_summary.json`
+
+Why it was not productive enough:
+
+- the fresh protected control finished at `33.70%` (`337/1000`); the fixation-aware probe only nudged that to `33.80%` (`338/1000`)
+- the probe did improve hemisphere neighborhood purity:
+  - left `mean_topk_purity`: `0.237889 -> 0.275667`
+  - right `mean_topk_purity`: `0.239556 -> 0.274000`
+- but it failed the actual gating requirement because both `g10` post-normalization margins got slightly worse:
+  - left `mean_post_margin`: `-0.00387905 -> -0.00389373`
+  - right `mean_post_margin`: `-0.00376781 -> -0.00378284`
+- the offline fusion proxies also moved the wrong way:
+  - `interaction` centroid accuracy: `35.9 -> 33.3`
+  - `confidence-concat` centroid accuracy: `35.7 -> 33.4`
+  - `hemisphere-concat` stayed flat at `29.8`
+- the representation change shifted stage-1 view balance instead of cleanly strengthening both hemispheres: left view accuracy improved to `31.50%`, right view accuracy fell to `29.70%`
+- because it missed the margin gate even with the purity gain, it did not justify a `1000/5000` run
+
+Lesson:
+
+- changing how the current `g10` fixation set is summarized can improve local neighborhood purity without improving the underlying `g10` discriminative margin
+- on this CIFAR surface, the remaining ceiling no longer looks like a pure fixation-aggregation problem
+- if this area is revisited, it should be through materially different raw `g10` feature code or pre-cortical relay dynamics, not another `mean` vs `summary` reshuffle of the same fixations
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code/config as reference if needed, but do not spend more CIFAR budget on more fixation-memory retunes of the current `g10` map
+
+### 36. Band-Mixed Magnocellular/Parvocellular-Like LGN Relay On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added opt-in dual-relay band-image construction in `src/adapters/RetinaAdapter.cpp`
+- enabled it only on `left_retina_g10` and `right_retina_g10` through `lgn_parallel_relay_enabled`
+- used a coarse achromatic magno-like relay, a finer parvo-like relay, and blended them back into the existing `g10` branch instead of creating more late-fused cortical branches
+- screened a fresh same-build protected smoke plus two bounded probes:
+  - protected smoke: `build/cifar10_retina_baseline_smoke_20_200_rerun_for_magno_parvo.log`
+  - default relay split: `configs/cifar10_retina_bilateral_natural_features_magno_parvo_lgn_experimental.sonata.json`
+  - conservative retune: `configs/cifar10_retina_bilateral_natural_features_magno_parvo_lgn_tune1_experimental.sonata.json`
+
+Why it was not productive enough:
+
+- the protected smoke on the same build finished at `32.00%` (`64/200`)
+- the default relay split collapsed to `23.50%` (`47/200`)
+- the conservative retune only recovered to `27.00%` (`54/200`)
+- both probes lost clearly enough that there was no justified `50/500` gate
+- the failure was branch-local and upstream:
+  - default split stage-1 view accuracy fell to `19.00%` left and `21.50%` right
+  - conservative retune only recovered to `21.00%` on both views
+  - `g10` stayed active, but the default split pushed `raw_active` down into the mid-`50%` range and kept `g10` centroid accuracy around `20-20.5%`
+  - even the conservative retune only moved `left_retina_g10` to `23.00%` and `right_retina_g10` to `21.00%`
+- replay correction did not rescue it: only `2` corrections on the default run and `3` on the conservative retune succeeded
+
+Lesson:
+
+- a band-mixed coarse/fine LGN relay on the current `g10` map is not enough to recover the benefits of true magnocellular/parvocellular specialization
+- the coarse/fine blend weakened the usable `g10` representation instead of strengthening it
+- if this area is revisited, it needs materially different pre-cortical computation or a different raw `g10` feature code, not another retune of this relay-mixing formulation
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code/config as reference if needed, but do not spend more CIFAR budget on more band-mixed magno/parvo relay retunes of the current `g10` map
+
+### 37. Raw `g10` Orientation-Energy Feature Code On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in `orientation_energy` edge operator in `src/features/OrientationEnergyOperator.cpp`
+- enabled it only on `left_retina_g10` and `right_retina_g10`
+- used a gradient-histogram orientation code with structure-tensor sharpening instead of the existing Sobel-style directional differences
+- screened a fresh same-build protected smoke plus two bounded probes:
+  - protected smoke: `build/cifar10_retina_baseline_smoke_20_200_rerun_for_orientation_energy.log`
+  - default raw-feature probe: `configs/cifar10_retina_bilateral_natural_features_orientation_energy_experimental.sonata.json`
+  - sharper retune: `configs/cifar10_retina_bilateral_natural_features_orientation_energy_tune1_experimental.sonata.json`
+
+Why it was not productive enough:
+
+- the protected smoke on the same build finished at `32.00%` (`64/200`)
+- both bounded raw-feature probes finished at only `30.00%` (`60/200`)
+- that was not close enough to justify a `50/500` gate
+- the result was mixed rather than uniformly bad:
+  - the default probe materially improved raw `g10` branch separability
+  - `left_retina_g10` centroid accuracy moved from `21.00%` to `26.00%`
+  - `right_retina_g10` centroid accuracy moved from `18.00%` to `27.00%`
+  - the hemisphere combined centroid proxies rose from `30.00%` and `27.00%` to `37.50%` and `37.00%`
+- but that upstream gain did not survive the current end-to-end surface:
+  - stage-1 view accuracy only rose from `26.50%`/`25.00%` to `27.50%`/`27.50%`
+  - fusion centroid accuracy only reached `30.00%`
+  - replay still corrected only `6` cases on the default probe
+  - final post-correction accuracy stayed below the protected smoke
+- the sharper retune pushed `g10` centroid accuracy a little further to `27.50%`/`27.50%`, but task accuracy still stayed flat at `30.00%`
+
+Lesson:
+
+- a materially different raw `g10` code can improve branch-local separability without improving the protected CIFAR objective
+- on this surface, a better `g10` branch alone is not enough if the new code is not aligned with the current fusion/readout surface
+- if this area is revisited, it should be through a materially different raw feature family, such as a phase-sensitive or quadrature simple-cell code, or through a raw `g10` auxiliary representation designed to match the new edge code, not another small retune of the current orientation-energy/tensor-histogram formulation
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in operator/configs as reference if needed, but do not spend more CIFAR budget on more small orientation-energy/tensor retunes of the current `g10` map
+
+### 38. Raw `g10` Quadrature-Gabor Feature Code On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in `quadrature_gabor` edge operator in `src/features/QuadratureGaborOperator.cpp`
+- enabled it only on `left_retina_g10` and `right_retina_g10`
+- used phase-invariant even/odd Gabor energy with patch mean-centering instead of the current Sobel-style or tensor-histogram raw code
+- screened a fresh same-build protected smoke plus two bounded probes:
+  - protected smoke: `build/cifar10_retina_baseline_smoke_20_200_rerun_for_quadrature_gabor.log`
+  - default raw-feature probe: `configs/cifar10_retina_bilateral_natural_features_quadrature_gabor_experimental.sonata.json`
+  - permissive retune: `configs/cifar10_retina_bilateral_natural_features_quadrature_gabor_tune1_experimental.sonata.json`
+
+Why it was not productive enough:
+
+- the protected smoke on the same build finished at `32.00%` (`64/200`)
+- both bounded quadrature-Gabor probes collapsed to `22.50%` (`45/200`)
+- that was far below the bar for a `50/500` gate
+- this was not the same kind of failure as orientation-energy:
+  - `g10` orientation support effectively vanished
+  - `left_retina_g10/orientation` and `right_retina_g10/orientation` both reported `raw_active=0.00%`
+  - the surviving `g10` branch was almost entirely the existing auxiliary appearance bank
+  - stage-1 view accuracy fell to `18.50%` left and `21.00%` right
+  - fusion centroid accuracy collapsed to `20.00%`
+- the permissive retune did not change the outcome at all on this surface, which is a strong sign that the problem is geometric rather than scalar
+
+Lesson:
+
+- a direct quadrature-Gabor/simple-cell swap is too weak on the current `5x5` `g10` edge-analysis patches
+- the current patch support and thresholded feature path do not sustain usable phase-sensitive orientation energy here
+- if this family is revisited, it needs materially different spatial support or a different stage boundary, not another scalar retune of the same direct replacement
+- given the orientation-energy result immediately before it, the more defensible next move is now an operator-matched raw `g10` auxiliary representation on top of the stronger orientation-energy base, not another direct Gabor-family swap
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in operator/configs as reference if needed, but do not spend more CIFAR budget on more direct quadrature-Gabor retunes of the current `g10` patch geometry
+
+### 39. `g10` Complex-Cell Pooling Plus Divisive Normalization On The Immediate-Replay Baseline
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in same-dimensional `complex_cell_enabled` stage in `src/adapters/RetinaAdapter.cpp` and `include/snnfw/adapters/RetinaAdapter.h`
+- pooled `g10` orientation responses across the pooled-region and subfield blocks, then applied orientation-wise divisive normalization before the existing band-selection/output path
+- enabled the new stage only on `left_retina_g10` and `right_retina_g10`
+- paired it with the stronger `orientation_energy` raw `g10` carrier, because the earlier direct orientation-energy follow-up improved branch-local separability without enough task lift
+- screened a fresh same-build protected smoke, two bounded probes, and one audited rerun of the best probe:
+  - protected smoke: `build/cifar10_retina_baseline_smoke_20_200_rerun_for_complex_cell.log`
+  - default probe: `configs/cifar10_retina_bilateral_natural_features_complex_cell_experimental.sonata.json`
+  - milder retune: `configs/cifar10_retina_bilateral_natural_features_complex_cell_tune1_experimental.sonata.json`
+  - audit rerun: `build/cifar10_retina_complex_cell_flow_audit_smoke_20_200.log`
+
+Why it was not productive enough:
+
+- the protected smoke on the same build finished at `32.00%` (`64/200`)
+- the default complex-cell probe finished at `31.50%` (`63/200`)
+- the milder retune fell to `29.50%` (`59/200`)
+- the best probe therefore did not justify a `50/500` gate
+- this was again not a pure upstream collapse:
+  - on the best probe, `left_retina_g10/orientation` rose to `25.50%` centroid accuracy and `right_retina_g10/orientation` reached `22.00%`
+  - the hemisphere combined centroid proxies improved to `36.00%` left and `33.50%` right
+  - the audited `g10` margins improved relative to the protected audited smoke:
+    - left `mean_post_margin`: `-0.00469` vs `-0.00592`
+    - right `mean_post_margin`: `-0.00492` vs `-0.00594`
+  - `g10` stayed strongly active rather than collapsing: audited post active fraction stayed around `75-76%`
+- but the current end-to-end surface still got worse where it mattered:
+  - stage-1 view accuracy dropped to `23.50%` left and `23.00%` right
+  - the audited fusion alternatives degraded instead of improving:
+    - `interaction_centroid_accuracy`: `27.5%` vs protected `29.0%`
+    - `confidence_concat_centroid_accuracy`: `27.0%` vs protected `30.0%`
+    - `hemisphere_concat_centroid_accuracy`: `19.5%` vs protected `18.5%`
+  - replay correction remained small, with only `6` successful corrections on the audited best probe
+- the milder retune pushed branch-local `g10` centroid accuracy a bit further on some slices, but task accuracy still moved in the wrong direction
+
+Lesson:
+
+- a biologically motivated complex-cell style pooling and divisive-normalization stage can improve local `g10` separability on this surface
+- that still is not enough by itself, because the current benchmark has no object-part or border-assignment stage that can exploit the improved local code
+- the missing function is no longer best described as “more edge energy”; it is contour/border organization on top of the improved local orientation support
+- if this family is revisited, it should be through an operator-matched contour continuation, end-stopping, or border-ownership representation on top of the stronger local `g10` code, not another same-dimensional scalar retune of pooling or divisive normalization
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code/configs as reference if needed, but do not spend more CIFAR budget on more same-dimensional complex-cell pooling or divisive-normalization retunes of the current `g10` map
+
+### 40. `g10` Contour-Support Auxiliary Bank On Top Of Orientation-Energy Plus Complex-Cell
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in `contour_support_bank` auxiliary mode in `src/adapters/RetinaAdapter.cpp` and `include/snnfw/adapters/RetinaAdapter.h`
+- derived six same-dimensional `g10` auxiliary channels from the post-complex-cell orientation map:
+  - collinear continuation
+  - cocircular / curvature support
+  - end-stopping
+  - junctionness
+  - border-owner-left
+  - border-owner-right
+- enabled it only on `left_retina_g10` and `right_retina_g10` in `configs/cifar10_retina_bilateral_natural_features_contour_support_experimental.sonata.json`
+- evaluated it under the strict audited smoke gate against a same-build protected control:
+  - protected audit: `build/cifar10_retina_baseline_flow_audit_for_contour_support_20_200.log`
+  - protected summary: `build/flow_audit_baseline_contour_support_smoke_testing_summary.json`
+  - valid strict probe: `build/cifar10_retina_contour_support_flow_audit_fix2_20_200.log`
+  - valid strict summary: `build/flow_audit_contour_support_smoke_fix2_testing_summary.json`
+
+Why it was not productive enough:
+
+- the protected same-build audit finished at `32.00%` (`64/200`)
+- the valid strict probe finished at only `30.00%` (`60/200`)
+- so it failed the headline gate immediately and did not justify a `50/500` follow-up
+- importantly, this was not a pure local-feature collapse:
+  - both hemisphere `mean_topk_purity` scores improved:
+    - left: `0.186111` vs protected `0.184444`
+    - right: `0.187778` vs protected `0.185556`
+  - both audited `g10` post-margins moved materially toward zero:
+    - left: `-0.00287558` vs protected `-0.00592188`
+    - right: `-0.00301946` vs protected `-0.00593531`
+  - `confidence_concat_centroid_accuracy` held the protected line at `30.0%`
+- but the experiment still failed where the strict criteria actually demanded a win:
+  - `interaction_centroid_accuracy` slipped to `28.5%` vs the protected `29.0%`
+  - final smoke stayed well below the required `>32.0%`
+  - stage-1 accuracy by view remained weak at only `23.00%` left and `24.00%` right
+  - replay stayed small, correcting only `5` of `145` correction events
+
+Lesson:
+
+- this surface can respond to contour/border-style local evidence in a measurable way; the `g10` local code and hemisphere neighborhood purity both improved
+- that still is not enough if the added contour evidence stays same-dimensional and gets pushed through the current hemisphere-level matcher/fusion surface unchanged
+- the problem is no longer “there is no contour signal at all”; it is that the current pipeline cannot cash out that better local contour signal into a better hemisphere-level object representation
+- if this area is revisited, it must be through a materially different intermediate stage boundary or grouping/readout representation, not more same-dimensional `contour_support_bank` retunes on the current `g10` map
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- do not spend more CIFAR budget on more same-dimensional `contour_support_bank` retunes of the current `g10` surface
+- keep the opt-in code/config as reference only
 
 ## Reusable Work Worth Keeping
 

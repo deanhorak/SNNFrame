@@ -282,6 +282,7 @@
           "edge_patch_normalization": 1,
           "edge_analysis_region_size": 5,
           "lgn_relay_enabled": 1,
+          "lgn_parallel_relay_enabled": 1,
           "local_contrast_radius": 2
         },
         "double_params": {
@@ -301,7 +302,18 @@
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
           "lgn_surround_sigma": 1.5,
-          "lgn_center_surround_strength": 0.25
+          "lgn_center_surround_strength": 0.25,
+          "lgn_magno_center_sigma": 0.4,
+          "lgn_magno_surround_sigma": 1.5,
+          "lgn_magno_center_surround_strength": 0.22,
+          "lgn_magno_achromatic_mix": 0.6,
+          "lgn_magno_extra_blur": 0.1,
+          "lgn_parvo_center_sigma": 0.3,
+          "lgn_parvo_surround_sigma": 0.95,
+          "lgn_parvo_center_surround_strength": 0.04,
+          "lgn_parvo_original_mix": 0.8,
+          "lgn_band_magno_floor": 0.08,
+          "lgn_auxiliary_magno_mix": 0.0
         },
         "string_params": {
           "edge_operator": "sobel",
@@ -403,6 +415,7 @@
           "edge_patch_normalization": 1,
           "edge_analysis_region_size": 5,
           "lgn_relay_enabled": 1,
+          "lgn_parallel_relay_enabled": 1,
           "local_contrast_radius": 2
         },
         "double_params": {
@@ -422,7 +435,18 @@
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
           "lgn_surround_sigma": 1.5,
-          "lgn_center_surround_strength": 0.25
+          "lgn_center_surround_strength": 0.25,
+          "lgn_magno_center_sigma": 0.4,
+          "lgn_magno_surround_sigma": 1.5,
+          "lgn_magno_center_surround_strength": 0.22,
+          "lgn_magno_achromatic_mix": 0.6,
+          "lgn_magno_extra_blur": 0.1,
+          "lgn_parvo_center_sigma": 0.3,
+          "lgn_parvo_surround_sigma": 0.95,
+          "lgn_parvo_center_surround_strength": 0.04,
+          "lgn_parvo_original_mix": 0.8,
+          "lgn_band_magno_floor": 0.08,
+          "lgn_auxiliary_magno_mix": 0.0
         },
         "string_params": {
           "edge_operator": "sobel",

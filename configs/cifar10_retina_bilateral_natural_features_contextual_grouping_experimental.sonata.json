@@ -282,7 +282,9 @@
           "edge_patch_normalization": 1,
           "edge_analysis_region_size": 5,
           "lgn_relay_enabled": 1,
-          "local_contrast_radius": 2
+          "local_contrast_radius": 2,
+          "contextual_grouping_enabled": 1,
+          "contextual_grouping_iterations": 3
         },
         "double_params": {
           "edge_threshold": 0.14,
@@ -301,7 +303,12 @@
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
           "lgn_surround_sigma": 1.5,
-          "lgn_center_surround_strength": 0.25
+          "lgn_center_surround_strength": 0.25,
+          "contextual_grouping_contour_gain": 0.35,
+          "contextual_grouping_surround_gain": 0.12,
+          "contextual_grouping_divisive_gain": 0.40,
+          "contextual_grouping_ownership_gain": 0.35,
+          "contextual_grouping_coarse_bias": 0.60
         },
         "string_params": {
           "edge_operator": "sobel",
@@ -403,7 +410,9 @@
           "edge_patch_normalization": 1,
           "edge_analysis_region_size": 5,
           "lgn_relay_enabled": 1,
-          "local_contrast_radius": 2
+          "local_contrast_radius": 2,
+          "contextual_grouping_enabled": 1,
+          "contextual_grouping_iterations": 3
         },
         "double_params": {
           "edge_threshold": 0.14,
@@ -422,7 +431,12 @@
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
           "lgn_surround_sigma": 1.5,
-          "lgn_center_surround_strength": 0.25
+          "lgn_center_surround_strength": 0.25,
+          "contextual_grouping_contour_gain": 0.35,
+          "contextual_grouping_surround_gain": 0.12,
+          "contextual_grouping_divisive_gain": 0.40,
+          "contextual_grouping_ownership_gain": 0.35,
+          "contextual_grouping_coarse_bias": 0.60
         },
         "string_params": {
           "edge_operator": "sobel",

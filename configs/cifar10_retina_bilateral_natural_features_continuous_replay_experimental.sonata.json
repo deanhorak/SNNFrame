@@ -1,5 +1,5 @@
 {
-  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesExperimental",
+  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesContinuousReplayExperimental",
   "snnframe": {
     "classification": {
       "type": "weighted_distance",

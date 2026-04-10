@@ -1,5 +1,5 @@
 {
-  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesExperimental",
+  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesTrainingAugmentationExperimental",
   "snnframe": {
     "classification": {
       "type": "weighted_distance",
@@ -22,14 +22,9 @@
         "input_apply_transform": 0,
         "separability_diagnostics": 1,
         "separability_sample_limit": 500,
-        "online_correction_repeats": 3,
-        "online_exemplar_budget_per_class": 16,
-        "online_replay_queue_capacity": 384,
-        "online_replay_delay_steps": 0,
-        "online_replay_pause_interval": 4,
-        "online_replay_batch_size": 1,
         "saccade_fixations": 4,
-        "saccade_training_only": 1
+        "saccade_training_only": 1,
+        "training_augmentation_variants": 2
       },
       "double_params": {
         "stage1_distance_exponent": 1.0,
@@ -38,15 +33,11 @@
         "corpus_margin_gain": 0.6,
         "corpus_centroid_gain": 0.12,
         "corpus_disagreement_gain": 0.15,
-        "online_centroid_lr": 0.25,
-        "online_positive_reward_gain": 0.5,
-        "online_negative_reward_gain": 1.1,
-        "online_replay_uncertainty_threshold": 0.35,
-        "online_eligibility_trace_decay": 0.88,
-        "online_context_uncertainty_gain": 1.0,
-        "online_context_disagreement_gain": 0.75,
         "saccade_jitter_px": 0.45,
-        "saccade_zoom": 1.03
+        "saccade_zoom": 1.03,
+        "training_augmentation_shift_px": 0.55,
+        "training_augmentation_rotation_deg": 2.25,
+        "training_augmentation_noise_std": 0.018
       }
     },
     "brain": {

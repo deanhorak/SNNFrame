@@ -44,6 +44,10 @@ CMD=(
   --seed "${SEED}"
 )
 
+if [[ "$#" -gt 0 ]]; then
+  CMD+=("$@")
+fi
+
 if [[ "${TIMEOUT_SECONDS}" != "0" ]]; then
   CMD=(timeout "${TIMEOUT_SECONDS}" "${CMD[@]}")
 fi

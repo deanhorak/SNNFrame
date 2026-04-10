@@ -1,5 +1,5 @@
 {
-  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesExperimental",
+  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesComplexCellTune1Experimental",
   "snnframe": {
     "classification": {
       "type": "weighted_distance",
@@ -282,10 +282,11 @@
           "edge_patch_normalization": 1,
           "edge_analysis_region_size": 5,
           "lgn_relay_enabled": 1,
+          "complex_cell_enabled": 1,
           "local_contrast_radius": 2
         },
         "double_params": {
-          "edge_threshold": 0.14,
+          "edge_threshold": 0.16,
           "neuron_window_size": 200.0,
           "neuron_threshold": 0.68,
           "rotation_deg": -0.4,
@@ -301,10 +302,20 @@
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
           "lgn_surround_sigma": 1.5,
-          "lgn_center_surround_strength": 0.25
+          "lgn_center_surround_strength": 0.25,
+          "orientation_energy_sharpness": 8.0,
+          "orientation_energy_magnitude_gamma": 0.9,
+          "orientation_energy_tensor_mix": 0.65,
+          "orientation_energy_tensor_sharpness": 12.0,
+          "orientation_energy_tensor_floor": 0.15,
+          "complex_cell_pool_blend": 0.4,
+          "complex_cell_max_mix": 0.3,
+          "complex_cell_divisive_gain": 0.35,
+          "complex_cell_divisive_floor": 0.05,
+          "complex_cell_neighbor_mix": 0.55
         },
         "string_params": {
-          "edge_operator": "sobel",
+          "edge_operator": "orientation_energy",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
           "hemisphere": "left",
@@ -403,10 +414,11 @@
           "edge_patch_normalization": 1,
           "edge_analysis_region_size": 5,
           "lgn_relay_enabled": 1,
+          "complex_cell_enabled": 1,
           "local_contrast_radius": 2
         },
         "double_params": {
-          "edge_threshold": 0.14,
+          "edge_threshold": 0.16,
           "neuron_window_size": 200.0,
           "neuron_threshold": 0.68,
           "rotation_deg": 0.4,
@@ -422,10 +434,20 @@
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
           "lgn_surround_sigma": 1.5,
-          "lgn_center_surround_strength": 0.25
+          "lgn_center_surround_strength": 0.25,
+          "orientation_energy_sharpness": 8.0,
+          "orientation_energy_magnitude_gamma": 0.9,
+          "orientation_energy_tensor_mix": 0.65,
+          "orientation_energy_tensor_sharpness": 12.0,
+          "orientation_energy_tensor_floor": 0.15,
+          "complex_cell_pool_blend": 0.4,
+          "complex_cell_max_mix": 0.3,
+          "complex_cell_divisive_gain": 0.35,
+          "complex_cell_divisive_floor": 0.05,
+          "complex_cell_neighbor_mix": 0.55
         },
         "string_params": {
-          "edge_operator": "sobel",
+          "edge_operator": "orientation_energy",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
           "hemisphere": "right",

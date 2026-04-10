@@ -17,6 +17,8 @@ namespace features {
  * Different operators have different characteristics:
  * - Sobel: Simple, fast, good for general edges
  * - Gabor: Biologically realistic (V1 cortex), tunable frequency/orientation
+ * - Quadrature Gabor: phase-invariant simple-cell energy model
+ * - Orientation energy: gradient-histogram simple-cell population with tensor sharpening
  * - Difference of Gaussians (DoG): Center-surround, good for blob detection
  *
  * Biological Motivation:
@@ -173,7 +175,7 @@ class EdgeOperatorFactory {
 public:
     /**
      * @brief Create an edge operator from configuration
-     * @param type Operator type ("sobel", "gabor", "dog")
+     * @param type Operator type ("sobel", "gabor", "quadrature_gabor", "orientation_energy", "dog")
      * @param config Operator configuration
      * @return Unique pointer to edge operator
      */
@@ -191,4 +193,3 @@ public:
 } // namespace snnfw
 
 #endif // SNNFW_EDGE_OPERATOR_H
-

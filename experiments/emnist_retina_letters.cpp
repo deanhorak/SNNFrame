@@ -12,6 +12,8 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -101,6 +103,22 @@ struct Config {
     double onlineCentroidLr = 0.25;
     double onlinePositiveRewardGain = 0.35;
     double onlineNegativeRewardGain = 1.0;
+    bool onlineRewardStdpEnabled = false;
+    double onlineRewardStdpGain = 0.0;
+    double onlineRewardStdpLtp = 0.12;
+    double onlineRewardStdpLtd = 0.08;
+    bool onlineTripletStdpEnabled = false;
+    double onlineTripletStdpGain = 0.0;
+    double onlineTripletStdpLtp = 0.10;
+    double onlineTripletStdpLtd = 0.06;
+    double onlineTripletStdpFastDecay = 0.88;
+    double onlineTripletStdpSlowDecay = 0.97;
+    bool onlineVoltagePlasticityEnabled = false;
+    double onlineVoltagePlasticityGain = 0.0;
+    double onlineVoltagePlasticityLtp = 0.12;
+    double onlineVoltagePlasticityLtd = 0.08;
+    double onlineVoltagePlasticityDecay = 0.94;
+    double onlineVoltagePlasticityThreshold = 0.30;
     int onlineReplayQueueCapacity = 256;
     int onlineReplayDelaySteps = 0;
     int onlineReplayPauseInterval = 1;
@@ -115,14 +133,33 @@ struct Config {
     double focusAdjustmentMarginThreshold = 0.10;
     double focusAdjustmentZoom = 1.08;
     double focusAdjustmentShiftPx = 0.35;
+    int saccadeFixations = 1;
+    bool saccadeTrainingOnly = true;
+    double saccadeJitterPx = 0.0;
+    double saccadeZoom = 1.0;
+    std::string trainingCurriculumSpec;
+    std::vector<std::vector<int>> trainingCurriculumGroups;
+    double trainingReviewFraction = 0.0;
+    int trainingAugmentationVariants = 0;
+    double trainingAugmentationShiftPx = 0.0;
+    double trainingAugmentationRotationDeg = 0.0;
+    double trainingAugmentationNoiseStd = 0.0;
+    bool activeInferenceEnabled = false;
+    int activeInferenceFixations = 1;
+    int activeInferenceMinFixations = 1;
+    bool activeInferenceRemapEnabled = true;
+    double activeInferenceShiftPx = 3.0;
+    double activeInferenceZoom = 1.08;
+    double activeInferenceUncertaintyThreshold = 0.35;
+    double activeInferenceIorStrength = 0.35;
     bool hierarchicalRetinaLayout = false;
     std::vector<std::string> declaredHemisphereOrder;
     std::string fusionPath;
     bool separabilityDiagnostics = false;
     int separabilitySampleLimit = 0;
-    std::string stage1StreamSplitMode = "off";
-    double stage1ShapeStreamWeight = 0.45;
-    double stage1SurfaceStreamWeight = 0.55;
+    bool flowAuditEnabled = false;
+    int flowAuditSampleLimit = 0;
+    std::string flowAuditOutputPrefix;
 };
 
 struct HemisphereRuntime {
@@ -131,18 +168,34 @@ struct HemisphereRuntime {
     std::vector<ClassificationStrategy::LabeledPattern> rawTrainingPatterns;
     std::vector<ClassificationStrategy::LabeledPattern> trainingPatterns;
     std::vector<size_t> trainingSourceIndices;
-    std::vector<size_t> shapePatternIndices;
-    std::vector<size_t> surfacePatternIndices;
     std::unique_ptr<ClassificationStrategy> classifier;
     double overallWeight = 1.0;
     std::vector<double> classWeights;
     std::vector<double> predictionWeights;
     std::vector<std::vector<double>> classCentroids;
+    std::vector<std::vector<double>> rewardStdpPrototypes;
+    std::vector<std::vector<double>> tripletStdpPrototypes;
+    std::vector<double> tripletPreTrace;
+    std::vector<double> tripletPostTraceFast;
+    std::vector<double> tripletPostTraceSlow;
+    size_t tripletTraceStep = 0;
+    std::vector<std::vector<double>> voltagePlasticityPrototypes;
+    std::vector<double> voltageDepolarizationTrace;
+    size_t voltageTraceStep = 0;
     std::vector<std::vector<size_t>> onlinePatternIndices;
 };
 
 struct FusionRuntime {
     std::vector<ClassificationStrategy::LabeledPattern> trainingPatterns;
+    std::vector<std::vector<double>> rewardStdpPrototypes;
+    std::vector<std::vector<double>> tripletStdpPrototypes;
+    std::vector<double> tripletPreTrace;
+    std::vector<double> tripletPostTraceFast;
+    std::vector<double> tripletPostTraceSlow;
+    size_t tripletTraceStep = 0;
+    std::vector<std::vector<double>> voltagePlasticityPrototypes;
+    std::vector<double> voltageDepolarizationTrace;
+    size_t voltageTraceStep = 0;
     std::vector<std::vector<size_t>> onlinePatternIndices;
 };
 
@@ -166,6 +219,8 @@ struct BilateralDecisionTrace {
     std::vector<double> fusionPattern;
     std::vector<LabelTrace> topHypotheses;
     int predicted = -1;
+    int fixationCount = 1;
+    std::vector<std::pair<double, double>> fixationShifts;
 };
 
 struct DecisionContext {
@@ -200,6 +255,12 @@ struct ReplayItem {
     size_t sequence = 0;
 };
 
+struct FlowAuditVectorStats {
+    double meanAbs = 0.0;
+    double l2 = 0.0;
+    double activeFraction = 0.0;
+};
+
 struct RetinaLayerBinding {
     std::string hemisphere;
     std::string lobe;
@@ -213,11 +274,45 @@ struct RetinaLayerBinding {
 struct HemisphereTrainingArtifacts {
     std::vector<ClassificationStrategy::LabeledPattern> trainingPatterns;
     std::vector<size_t> trainingSourceIndices;
+    struct FlowAuditBranchTrainingStats {
+        std::string name;
+        std::vector<std::vector<double>> preCentroids;
+        std::vector<std::vector<double>> postCentroids;
+        std::vector<int> preCounts;
+        std::vector<int> postCounts;
+        double fixationVarianceSum = 0.0;
+        int fixationVarianceSamples = 0;
+    };
+    bool flowAuditEnabled = false;
+    std::vector<FlowAuditBranchTrainingStats> flowAuditBranches;
+};
+
+struct TrainingSchedulePlan {
+    std::vector<size_t> primaryIndices;
+    std::vector<size_t> reviewIndices;
 };
 
 std::vector<double> buildFusionPattern(std::vector<HemisphereRuntime>& hemispheres,
                                        const VisualStimulus& image,
                                        const Config& config);
+struct FixationSpec;
+struct HemispherePatternAccumulator;
+struct ContextualGroupingLayout;
+struct FlowAuditSampleCapture;
+void appendFixationToAccumulator(HemisphereRuntime& hemisphere,
+                                 HemispherePatternAccumulator& accumulator,
+                                 const FixationSpec& fixation,
+                                 const Config& config);
+std::vector<double> buildPatternFromAccumulator(HemisphereRuntime& hemisphere,
+                                                const HemispherePatternAccumulator& accumulator);
+size_t inferAuxiliaryChannelCount(const RetinaAdapter& retina);
+size_t inferFrequencyBandCount(const RetinaAdapter& retina);
+std::vector<double> applyContextualGrouping(const RetinaAdapter& retina,
+                                            std::vector<double> part);
+ContextualGroupingLayout inferContextualGroupingLayout(const RetinaAdapter& retina,
+                                                       size_t totalSize);
+std::pair<double, double> computeRetinaChannelL2Energies(const RetinaAdapter& retina,
+                                                         const std::vector<double>& part);
 
 size_t hemisphereWorkerCount(size_t hemisphereCount) {
     const size_t hardwareThreads =
@@ -294,10 +389,28 @@ void initializeHemisphereRuntime(HemisphereRuntime& hemisphere, int numClasses) 
     hemisphere.classWeights.assign(static_cast<size_t>(numClasses), 1.0);
     hemisphere.predictionWeights.assign(static_cast<size_t>(numClasses), 1.0);
     hemisphere.classCentroids.assign(static_cast<size_t>(numClasses), {});
+    hemisphere.rewardStdpPrototypes.assign(static_cast<size_t>(numClasses), {});
+    hemisphere.tripletStdpPrototypes.assign(static_cast<size_t>(numClasses), {});
+    hemisphere.tripletPreTrace.clear();
+    hemisphere.tripletPostTraceFast.assign(static_cast<size_t>(numClasses), 0.0);
+    hemisphere.tripletPostTraceSlow.assign(static_cast<size_t>(numClasses), 0.0);
+    hemisphere.tripletTraceStep = 0;
+    hemisphere.voltagePlasticityPrototypes.assign(static_cast<size_t>(numClasses), {});
+    hemisphere.voltageDepolarizationTrace.assign(static_cast<size_t>(numClasses), 0.0);
+    hemisphere.voltageTraceStep = 0;
     hemisphere.onlinePatternIndices.assign(static_cast<size_t>(numClasses), {});
 }
 
 void initializeFusionRuntime(FusionRuntime& fusionRuntime, int numClasses) {
+    fusionRuntime.rewardStdpPrototypes.assign(static_cast<size_t>(numClasses), {});
+    fusionRuntime.tripletStdpPrototypes.assign(static_cast<size_t>(numClasses), {});
+    fusionRuntime.tripletPreTrace.clear();
+    fusionRuntime.tripletPostTraceFast.assign(static_cast<size_t>(numClasses), 0.0);
+    fusionRuntime.tripletPostTraceSlow.assign(static_cast<size_t>(numClasses), 0.0);
+    fusionRuntime.tripletTraceStep = 0;
+    fusionRuntime.voltagePlasticityPrototypes.assign(static_cast<size_t>(numClasses), {});
+    fusionRuntime.voltageDepolarizationTrace.assign(static_cast<size_t>(numClasses), 0.0);
+    fusionRuntime.voltageTraceStep = 0;
     fusionRuntime.onlinePatternIndices.assign(static_cast<size_t>(numClasses), {});
 }
 
@@ -418,6 +531,17 @@ std::string labelGroupToString(const std::vector<int>& group, const Config& conf
     return oss.str();
 }
 
+std::string labelGroupsToString(const std::vector<std::vector<int>>& groups, const Config& config) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < groups.size(); ++i) {
+        if (i > 0) {
+            oss << ", ";
+        }
+        oss << "[" << labelGroupToString(groups[i], config) << "]";
+    }
+    return oss.str();
+}
+
 void normalizeL2(std::vector<double>& values) {
     double norm = 0.0;
     for (double value : values) {
@@ -442,10 +566,113 @@ void normalizeSum(std::vector<double>& values) {
     }
 }
 
+FlowAuditVectorStats computeFlowAuditVectorStats(const std::vector<double>& pattern) {
+    FlowAuditVectorStats stats;
+    if (pattern.empty()) {
+        return stats;
+    }
+
+    double l1 = 0.0;
+    double l2 = 0.0;
+    int active = 0;
+    for (double value : pattern) {
+        const double absValue = std::abs(value);
+        l1 += absValue;
+        l2 += value * value;
+        if (absValue > 1e-6) {
+            ++active;
+        }
+    }
+
+    stats.meanAbs = l1 / static_cast<double>(pattern.size());
+    stats.l2 = std::sqrt(l2);
+    stats.activeFraction = static_cast<double>(active) / static_cast<double>(pattern.size());
+    return stats;
+}
+
+double computeFlowAuditFixationVariance(const std::vector<std::vector<double>>& fixationParts) {
+    if (fixationParts.size() <= 1 || fixationParts.front().empty()) {
+        return 0.0;
+    }
+
+    const size_t dim = fixationParts.front().size();
+    std::vector<double> mean(dim, 0.0);
+    size_t valid = 0;
+    for (const auto& part : fixationParts) {
+        if (part.size() != dim) {
+            continue;
+        }
+        for (size_t i = 0; i < dim; ++i) {
+            mean[i] += part[i];
+        }
+        ++valid;
+    }
+    if (valid <= 1) {
+        return 0.0;
+    }
+    const double invValid = 1.0 / static_cast<double>(valid);
+    for (double& value : mean) {
+        value *= invValid;
+    }
+
+    double variance = 0.0;
+    for (const auto& part : fixationParts) {
+        if (part.size() != dim) {
+            continue;
+        }
+        double distanceSq = 0.0;
+        for (size_t i = 0; i < dim; ++i) {
+            const double delta = part[i] - mean[i];
+            distanceSq += delta * delta;
+        }
+        variance += distanceSq;
+    }
+    return variance / static_cast<double>(valid);
+}
+
+std::string sanitizeFlowAuditStem(std::string value) {
+    for (char& c : value) {
+        if (!(std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '-')) {
+            c = '_';
+        }
+    }
+    value.erase(std::unique(value.begin(), value.end(),
+                            [](char a, char b) { return a == '_' && b == '_'; }),
+                value.end());
+    while (!value.empty() && value.front() == '_') {
+        value.erase(value.begin());
+    }
+    while (!value.empty() && value.back() == '_') {
+        value.pop_back();
+    }
+    return value.empty() ? "flow_audit" : value;
+}
+
+std::string defaultFlowAuditOutputPrefix(const Config& config) {
+    if (!config.flowAuditOutputPrefix.empty()) {
+        return config.flowAuditOutputPrefix;
+    }
+
+    std::filesystem::path baseDir("build");
+    std::string stem = "flow_audit";
+    if (!config.configPath.empty()) {
+        stem = std::filesystem::path(config.configPath).stem().string();
+    } else if (!config.inputDomain.empty()) {
+        stem = config.inputDomain + "_" + config.inputVariant + "_flow_audit";
+    }
+    stem = sanitizeFlowAuditStem(stem);
+    return (baseDir / stem).string();
+}
+
 VisualStimulus applyImageFocusTransform(const VisualStimulus& image,
                                         double scale,
-                                        double shiftXPx) {
-    const bool hasTransform = std::abs(scale - 1.0) > 1e-6 || std::abs(shiftXPx) > 1e-6;
+                                        double shiftXPx,
+                                        double shiftYPx = 0.0,
+                                        double rotationDeg = 0.0) {
+    const bool hasTransform = std::abs(scale - 1.0) > 1e-6 ||
+                              std::abs(shiftXPx) > 1e-6 ||
+                              std::abs(shiftYPx) > 1e-6 ||
+                              std::abs(rotationDeg) > 1e-6;
     if (!hasTransform) {
         return image;
     }
@@ -461,6 +688,9 @@ VisualStimulus applyImageFocusTransform(const VisualStimulus& image,
     const double centerX = 0.5 * static_cast<double>(image.cols - 1);
     const double centerY = 0.5 * static_cast<double>(image.rows - 1);
     const double safeScale = std::max(1e-3, scale);
+    const double theta = rotationDeg * 3.14159265358979323846 / 180.0;
+    const double cosTheta = std::cos(theta);
+    const double sinTheta = std::sin(theta);
 
     auto sampleBilinear = [&](double row, double col, int channel) -> uint8_t {
         if (row < 0.0 || col < 0.0 ||
@@ -491,10 +721,11 @@ VisualStimulus applyImageFocusTransform(const VisualStimulus& image,
             double x = static_cast<double>(col) - centerX;
             double y = static_cast<double>(row) - centerY;
             x -= shiftXPx;
-            x /= safeScale;
-            y /= safeScale;
-            const double srcX = x + centerX;
-            const double srcY = y + centerY;
+            y -= shiftYPx;
+            const double rotatedX = (x * cosTheta + y * sinTheta) / safeScale;
+            const double rotatedY = (-x * sinTheta + y * cosTheta) / safeScale;
+            const double srcX = rotatedX + centerX;
+            const double srcY = rotatedY + centerY;
             for (int channel = 0; channel < transformed.channels; ++channel) {
                 transformed.pixels[(static_cast<size_t>(row * image.cols + col) *
                                     static_cast<size_t>(transformed.channels)) +
@@ -505,6 +736,374 @@ VisualStimulus applyImageFocusTransform(const VisualStimulus& image,
     }
 
     return transformed;
+}
+
+std::mt19937 makeTrainingAugmentationRng(const VisualStimulus& image,
+                                         const Config& config,
+                                         size_t sampleSeed) {
+    std::seed_seq seedSeq{
+        config.seed,
+        static_cast<unsigned int>(sampleSeed & 0xffffffffU),
+        static_cast<unsigned int>((sampleSeed >> 32U) & 0xffffffffU),
+        static_cast<unsigned int>(std::max(0, image.label)),
+        static_cast<unsigned int>(std::max(1, image.rows)),
+        static_cast<unsigned int>(std::max(1, image.cols)),
+        static_cast<unsigned int>(std::max(1, image.channels)),
+    };
+    return std::mt19937(seedSeq);
+}
+
+void applyPhotonLikeNoise(VisualStimulus& image,
+                          double normalizedNoiseStd,
+                          std::mt19937& rng) {
+    if (normalizedNoiseStd <= 0.0 || image.pixels.empty()) {
+        return;
+    }
+
+    std::normal_distribution<double> noise(0.0, 1.0);
+    for (uint8_t& pixel : image.pixels) {
+        const double value = static_cast<double>(pixel) / 255.0;
+        const double sigma = normalizedNoiseStd * std::sqrt(std::max(0.05, value));
+        const double noisyValue = std::clamp(value + sigma * noise(rng), 0.0, 1.0);
+        pixel = static_cast<uint8_t>(std::clamp(std::lround(noisyValue * 255.0), 0L, 255L));
+    }
+}
+
+std::vector<VisualStimulus> buildTrainingAugmentationStimuli(const VisualStimulus& image,
+                                                             const Config& config,
+                                                             bool trainingPhase,
+                                                             size_t sampleSeed) {
+    const bool enabled = trainingPhase &&
+        config.trainingAugmentationVariants > 0 &&
+        (config.trainingAugmentationShiftPx > 0.0 ||
+         config.trainingAugmentationRotationDeg > 0.0 ||
+         config.trainingAugmentationNoiseStd > 0.0);
+    if (!enabled) {
+        return {image};
+    }
+
+    std::mt19937 rng = makeTrainingAugmentationRng(image, config, sampleSeed);
+    std::uniform_real_distribution<double> shiftDistribution(
+        -config.trainingAugmentationShiftPx, config.trainingAugmentationShiftPx);
+    std::uniform_real_distribution<double> rotationDistribution(
+        -config.trainingAugmentationRotationDeg, config.trainingAugmentationRotationDeg);
+
+    std::vector<VisualStimulus> stimuli;
+    stimuli.reserve(static_cast<size_t>(1 + config.trainingAugmentationVariants));
+    stimuli.push_back(image);
+    for (int variant = 0; variant < config.trainingAugmentationVariants; ++variant) {
+        const double shiftX = config.trainingAugmentationShiftPx > 0.0
+            ? shiftDistribution(rng)
+            : 0.0;
+        const double shiftY = config.trainingAugmentationShiftPx > 0.0
+            ? shiftDistribution(rng)
+            : 0.0;
+        const double rotation = config.trainingAugmentationRotationDeg > 0.0
+            ? rotationDistribution(rng)
+            : 0.0;
+        auto augmented = applyImageFocusTransform(image, 1.0, shiftX, shiftY, rotation);
+        applyPhotonLikeNoise(augmented, config.trainingAugmentationNoiseStd, rng);
+        stimuli.push_back(std::move(augmented));
+    }
+    return stimuli;
+}
+
+std::vector<VisualStimulus> buildSaccadeStimuli(const VisualStimulus& image,
+                                                const Config& config,
+                                                bool trainingPhase) {
+    static const std::array<std::pair<double, double>, 8> kOffsets = {{
+        {-1.0, 0.0},
+        {1.0, 0.0},
+        {0.0, -1.0},
+        {0.0, 1.0},
+        {-0.7, -0.7},
+        {0.7, -0.7},
+        {-0.7, 0.7},
+        {0.7, 0.7},
+    }};
+
+    const bool enableSampling = trainingPhase || !config.saccadeTrainingOnly;
+    const int fixations = enableSampling ? std::max(1, config.saccadeFixations) : 1;
+    if (fixations <= 1 ||
+        (config.saccadeJitterPx <= 0.0 && std::abs(config.saccadeZoom - 1.0) <= 1e-6)) {
+        return {image};
+    }
+
+    std::vector<VisualStimulus> stimuli;
+    stimuli.reserve(static_cast<size_t>(fixations));
+    stimuli.push_back(image);
+    for (int fixation = 1; fixation < fixations; ++fixation) {
+        const auto& [offsetX, offsetY] =
+            kOffsets[static_cast<size_t>((fixation - 1) % static_cast<int>(kOffsets.size()))];
+        stimuli.push_back(applyImageFocusTransform(
+            image,
+            config.saccadeZoom,
+            config.saccadeJitterPx * offsetX,
+            config.saccadeJitterPx * offsetY));
+    }
+    return stimuli;
+}
+
+std::vector<VisualStimulus> buildExtractionStimuli(const VisualStimulus& image,
+                                                   const Config& config,
+                                                   bool trainingPhase,
+                                                   size_t sampleSeed) {
+    const auto augmentedImages =
+        buildTrainingAugmentationStimuli(image, config, trainingPhase, sampleSeed);
+    if (augmentedImages.size() == 1) {
+        return buildSaccadeStimuli(augmentedImages.front(), config, trainingPhase);
+    }
+
+    std::vector<VisualStimulus> stimuli;
+    const bool enableSampling = trainingPhase || !config.saccadeTrainingOnly;
+    const size_t fixationsPerImage = static_cast<size_t>(
+        enableSampling ? std::max(1, config.saccadeFixations) : 1);
+    stimuli.reserve(augmentedImages.size() * fixationsPerImage);
+    for (const auto& augmentedImage : augmentedImages) {
+        auto fixationImages = buildSaccadeStimuli(augmentedImage, config, trainingPhase);
+        stimuli.insert(stimuli.end(), fixationImages.begin(), fixationImages.end());
+    }
+    return stimuli;
+}
+
+struct FixationSpec {
+    VisualStimulus image;
+    double shiftXPx = 0.0;
+    double shiftYPx = 0.0;
+    double zoom = 1.0;
+    double saliency = 0.0;
+};
+
+struct HemispherePatternAccumulator {
+    std::vector<std::vector<double>> retinaSums;
+    int fixationCount = 0;
+};
+
+double computeCentralFixationSaliency(const VisualStimulus& image) {
+    if (image.rows <= 0 || image.cols <= 0 || image.pixels.empty()) {
+        return 0.0;
+    }
+
+    const int rowStart = image.rows / 4;
+    const int rowEnd = std::max(rowStart + 1, (3 * image.rows) / 4);
+    const int colStart = image.cols / 4;
+    const int colEnd = std::max(colStart + 1, (3 * image.cols) / 4);
+
+    double luminanceSum = 0.0;
+    double luminanceSqSum = 0.0;
+    double gradientSum = 0.0;
+    int count = 0;
+    for (int row = rowStart; row < rowEnd; ++row) {
+        for (int col = colStart; col < colEnd; ++col) {
+            const auto luminanceAt = [&](int r, int c) {
+                r = std::clamp(r, 0, image.rows - 1);
+                c = std::clamp(c, 0, image.cols - 1);
+                const size_t base = (static_cast<size_t>(r * image.cols + c) *
+                                     static_cast<size_t>(std::max(1, image.channels)));
+                if (image.channels >= 3) {
+                    const double red = static_cast<double>(image.pixels[base]) / 255.0;
+                    const double green = static_cast<double>(image.pixels[base + 1]) / 255.0;
+                    const double blue = static_cast<double>(image.pixels[base + 2]) / 255.0;
+                    return 0.299 * red + 0.587 * green + 0.114 * blue;
+                }
+                return static_cast<double>(image.pixels[base]) / 255.0;
+            };
+
+            const double center = luminanceAt(row, col);
+            const double left = luminanceAt(row, col - 1);
+            const double right = luminanceAt(row, col + 1);
+            const double up = luminanceAt(row - 1, col);
+            const double down = luminanceAt(row + 1, col);
+            const double dx = right - left;
+            const double dy = down - up;
+            luminanceSum += center;
+            luminanceSqSum += center * center;
+            gradientSum += std::sqrt(dx * dx + dy * dy);
+            ++count;
+        }
+    }
+
+    if (count <= 0) {
+        return 0.0;
+    }
+    const double mean = luminanceSum / static_cast<double>(count);
+    const double variance =
+        std::max(0.0, (luminanceSqSum / static_cast<double>(count)) - (mean * mean));
+    const double stddev = std::sqrt(variance);
+    const double meanGradient = gradientSum / static_cast<double>(count);
+    return (0.65 * meanGradient) + (0.35 * stddev);
+}
+
+double computeFixationRegionSaliency(const VisualStimulus& image,
+                                     int rowStart,
+                                     int rowEnd,
+                                     int colStart,
+                                     int colEnd) {
+    if (image.rows <= 0 || image.cols <= 0 || image.pixels.empty()) {
+        return 0.0;
+    }
+
+    rowStart = std::clamp(rowStart, 0, image.rows - 1);
+    rowEnd = std::clamp(rowEnd, rowStart + 1, image.rows);
+    colStart = std::clamp(colStart, 0, image.cols - 1);
+    colEnd = std::clamp(colEnd, colStart + 1, image.cols);
+    if (rowStart >= rowEnd || colStart >= colEnd) {
+        return 0.0;
+    }
+
+    const auto luminanceAt = [&](int r, int c) {
+        r = std::clamp(r, 0, image.rows - 1);
+        c = std::clamp(c, 0, image.cols - 1);
+        const size_t base = (static_cast<size_t>(r * image.cols + c) *
+                             static_cast<size_t>(std::max(1, image.channels)));
+        if (image.channels >= 3) {
+            const double red = static_cast<double>(image.pixels[base]) / 255.0;
+            const double green = static_cast<double>(image.pixels[base + 1]) / 255.0;
+            const double blue = static_cast<double>(image.pixels[base + 2]) / 255.0;
+            return 0.299 * red + 0.587 * green + 0.114 * blue;
+        }
+        return static_cast<double>(image.pixels[base]) / 255.0;
+    };
+
+    double luminanceSum = 0.0;
+    double luminanceSqSum = 0.0;
+    double gradientSum = 0.0;
+    int count = 0;
+    for (int row = rowStart; row < rowEnd; ++row) {
+        for (int col = colStart; col < colEnd; ++col) {
+            const double center = luminanceAt(row, col);
+            const double left = luminanceAt(row, col - 1);
+            const double right = luminanceAt(row, col + 1);
+            const double up = luminanceAt(row - 1, col);
+            const double down = luminanceAt(row + 1, col);
+            const double dx = right - left;
+            const double dy = down - up;
+            luminanceSum += center;
+            luminanceSqSum += center * center;
+            gradientSum += std::sqrt(dx * dx + dy * dy);
+            ++count;
+        }
+    }
+
+    if (count <= 0) {
+        return 0.0;
+    }
+    const double mean = luminanceSum / static_cast<double>(count);
+    const double variance =
+        std::max(0.0, (luminanceSqSum / static_cast<double>(count)) - (mean * mean));
+    const double stddev = std::sqrt(variance);
+    const double meanGradient = gradientSum / static_cast<double>(count);
+    return (0.65 * meanGradient) + (0.35 * stddev);
+}
+
+std::vector<FixationSpec> buildActiveInferenceFixationCandidates(const VisualStimulus& image,
+                                                                 const Config& config) {
+    struct TileCandidate {
+        int row = 0;
+        int col = 0;
+        double saliency = 0.0;
+        double normalizedDx = 0.0;
+        double normalizedDy = 0.0;
+    };
+
+    const int grid = 5;
+    const double centerX = 0.5 * static_cast<double>(std::max(1, image.cols - 1));
+    const double centerY = 0.5 * static_cast<double>(std::max(1, image.rows - 1));
+    const double halfWidth = std::max(1.0, 0.5 * static_cast<double>(image.cols));
+    const double halfHeight = std::max(1.0, 0.5 * static_cast<double>(image.rows));
+
+    std::vector<TileCandidate> rankedTiles;
+    rankedTiles.reserve(static_cast<size_t>(grid * grid));
+    for (int row = 0; row < grid; ++row) {
+        const int rowStart = (row * image.rows) / grid;
+        const int rowEnd = std::max(rowStart + 1, ((row + 1) * image.rows) / grid);
+        const double tileCenterY = 0.5 * static_cast<double>(rowStart + rowEnd - 1);
+        for (int col = 0; col < grid; ++col) {
+            const int colStart = (col * image.cols) / grid;
+            const int colEnd = std::max(colStart + 1, ((col + 1) * image.cols) / grid);
+            const double tileCenterX = 0.5 * static_cast<double>(colStart + colEnd - 1);
+            TileCandidate tile;
+            tile.row = row;
+            tile.col = col;
+            tile.saliency = computeFixationRegionSaliency(
+                image, rowStart, rowEnd, colStart, colEnd);
+            tile.normalizedDx = (tileCenterX - centerX) / halfWidth;
+            tile.normalizedDy = (tileCenterY - centerY) / halfHeight;
+            rankedTiles.push_back(tile);
+        }
+    }
+
+    std::sort(rankedTiles.begin(), rankedTiles.end(),
+              [](const TileCandidate& lhs, const TileCandidate& rhs) {
+                  if (lhs.saliency != rhs.saliency) {
+                      return lhs.saliency > rhs.saliency;
+                  }
+                  if (lhs.row != rhs.row) {
+                      return lhs.row < rhs.row;
+                  }
+                  return lhs.col < rhs.col;
+              });
+
+    std::vector<FixationSpec> candidates;
+    candidates.reserve(1 + rankedTiles.size());
+    candidates.push_back({image, 0.0, 0.0, 1.0, computeCentralFixationSaliency(image)});
+    for (const auto& tile : rankedTiles) {
+        if (std::abs(tile.normalizedDx) < 1e-6 && std::abs(tile.normalizedDy) < 1e-6) {
+            continue;
+        }
+        FixationSpec fixation;
+        fixation.shiftXPx = -config.activeInferenceShiftPx * tile.normalizedDx;
+        fixation.shiftYPx = -config.activeInferenceShiftPx * tile.normalizedDy;
+        fixation.zoom = config.activeInferenceZoom;
+        fixation.image = applyImageFocusTransform(
+            image, fixation.zoom, fixation.shiftXPx, fixation.shiftYPx);
+        fixation.saliency = tile.saliency;
+        candidates.push_back(std::move(fixation));
+    }
+    return candidates;
+}
+
+size_t selectNextActiveFixation(const std::vector<FixationSpec>& candidates,
+                                const std::vector<size_t>& selected,
+                                const Config& config) {
+    size_t bestIndex = candidates.size();
+    double bestScore = -std::numeric_limits<double>::infinity();
+    const double sigma = std::max(1.0, config.activeInferenceShiftPx);
+    const double sigmaSq = sigma * sigma;
+
+    for (size_t candidateIndex = 1; candidateIndex < candidates.size(); ++candidateIndex) {
+        if (std::find(selected.begin(), selected.end(), candidateIndex) != selected.end()) {
+            continue;
+        }
+        double score = candidates[candidateIndex].saliency;
+        for (size_t chosenIndex : selected) {
+            if (chosenIndex >= candidates.size()) {
+                continue;
+            }
+            const double dx = candidates[candidateIndex].shiftXPx - candidates[chosenIndex].shiftXPx;
+            const double dy = candidates[candidateIndex].shiftYPx - candidates[chosenIndex].shiftYPx;
+            const double distSq = dx * dx + dy * dy;
+            score -= config.activeInferenceIorStrength * std::exp(-0.5 * distSq / sigmaSq);
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            bestIndex = candidateIndex;
+        }
+    }
+
+    return bestIndex;
+}
+
+double computeDecisionUncertainty(const BilateralDecisionTrace& decision) {
+    if (decision.topHypotheses.empty()) {
+        return 1.0;
+    }
+    const double best = decision.topHypotheses.front().score;
+    const double second = decision.topHypotheses.size() > 1 ? decision.topHypotheses[1].score : 0.0;
+    if (best <= 1e-6) {
+        return 1.0;
+    }
+    return 1.0 - std::clamp((best - second) / best, 0.0, 1.0);
 }
 
 std::string toLower(std::string value) {
@@ -702,10 +1301,10 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     if (fusionPathIt != irConfig.stringParams.end()) {
         config.fusionPath = normalizeHierarchyPath(fusionPathIt->second);
     }
-    const auto stage1StreamSplitModeIt =
-        irConfig.stringParams.find("stage1_stream_split_mode");
-    if (stage1StreamSplitModeIt != irConfig.stringParams.end()) {
-        config.stage1StreamSplitMode = toLower(stage1StreamSplitModeIt->second);
+    const auto trainingCurriculumIt =
+        irConfig.stringParams.find("training_curriculum_groups");
+    if (trainingCurriculumIt != irConfig.stringParams.end()) {
+        config.trainingCurriculumSpec = trainingCurriculumIt->second;
     }
     const auto stage1KIt = irConfig.intParams.find("stage1_k");
     if (stage1KIt != irConfig.intParams.end()) {
@@ -748,16 +1347,6 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     if (corpusDisagreementGainIt != irConfig.doubleParams.end()) {
         config.corpusDisagreementGain = corpusDisagreementGainIt->second;
     }
-    const auto stage1ShapeStreamWeightIt =
-        irConfig.doubleParams.find("stage1_shape_stream_weight");
-    if (stage1ShapeStreamWeightIt != irConfig.doubleParams.end()) {
-        config.stage1ShapeStreamWeight = std::max(0.0, stage1ShapeStreamWeightIt->second);
-    }
-    const auto stage1SurfaceStreamWeightIt =
-        irConfig.doubleParams.find("stage1_surface_stream_weight");
-    if (stage1SurfaceStreamWeightIt != irConfig.doubleParams.end()) {
-        config.stage1SurfaceStreamWeight = std::max(0.0, stage1SurfaceStreamWeightIt->second);
-    }
     const auto onlineRepeatsIt = irConfig.intParams.find("online_correction_repeats");
     if (onlineRepeatsIt != irConfig.intParams.end()) {
         config.onlineCorrectionRepeats = onlineRepeatsIt->second;
@@ -777,6 +1366,86 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     const auto onlineNegativeGainIt = irConfig.doubleParams.find("online_negative_reward_gain");
     if (onlineNegativeGainIt != irConfig.doubleParams.end()) {
         config.onlineNegativeRewardGain = onlineNegativeGainIt->second;
+    }
+    const auto onlineRewardStdpEnabledIt =
+        irConfig.intParams.find("online_reward_stdp_enabled");
+    if (onlineRewardStdpEnabledIt != irConfig.intParams.end()) {
+        config.onlineRewardStdpEnabled = onlineRewardStdpEnabledIt->second != 0;
+    }
+    const auto onlineRewardStdpGainIt =
+        irConfig.doubleParams.find("online_reward_stdp_gain");
+    if (onlineRewardStdpGainIt != irConfig.doubleParams.end()) {
+        config.onlineRewardStdpGain = onlineRewardStdpGainIt->second;
+    }
+    const auto onlineRewardStdpLtpIt =
+        irConfig.doubleParams.find("online_reward_stdp_ltp");
+    if (onlineRewardStdpLtpIt != irConfig.doubleParams.end()) {
+        config.onlineRewardStdpLtp = onlineRewardStdpLtpIt->second;
+    }
+    const auto onlineRewardStdpLtdIt =
+        irConfig.doubleParams.find("online_reward_stdp_ltd");
+    if (onlineRewardStdpLtdIt != irConfig.doubleParams.end()) {
+        config.onlineRewardStdpLtd = onlineRewardStdpLtdIt->second;
+    }
+    const auto onlineTripletStdpEnabledIt =
+        irConfig.intParams.find("online_triplet_stdp_enabled");
+    if (onlineTripletStdpEnabledIt != irConfig.intParams.end()) {
+        config.onlineTripletStdpEnabled = onlineTripletStdpEnabledIt->second != 0;
+    }
+    const auto onlineTripletStdpGainIt =
+        irConfig.doubleParams.find("online_triplet_stdp_gain");
+    if (onlineTripletStdpGainIt != irConfig.doubleParams.end()) {
+        config.onlineTripletStdpGain = onlineTripletStdpGainIt->second;
+    }
+    const auto onlineTripletStdpLtpIt =
+        irConfig.doubleParams.find("online_triplet_stdp_ltp");
+    if (onlineTripletStdpLtpIt != irConfig.doubleParams.end()) {
+        config.onlineTripletStdpLtp = onlineTripletStdpLtpIt->second;
+    }
+    const auto onlineTripletStdpLtdIt =
+        irConfig.doubleParams.find("online_triplet_stdp_ltd");
+    if (onlineTripletStdpLtdIt != irConfig.doubleParams.end()) {
+        config.onlineTripletStdpLtd = onlineTripletStdpLtdIt->second;
+    }
+    const auto onlineTripletStdpFastDecayIt =
+        irConfig.doubleParams.find("online_triplet_stdp_fast_decay");
+    if (onlineTripletStdpFastDecayIt != irConfig.doubleParams.end()) {
+        config.onlineTripletStdpFastDecay = onlineTripletStdpFastDecayIt->second;
+    }
+    const auto onlineTripletStdpSlowDecayIt =
+        irConfig.doubleParams.find("online_triplet_stdp_slow_decay");
+    if (onlineTripletStdpSlowDecayIt != irConfig.doubleParams.end()) {
+        config.onlineTripletStdpSlowDecay = onlineTripletStdpSlowDecayIt->second;
+    }
+    const auto onlineVoltagePlasticityEnabledIt =
+        irConfig.intParams.find("online_voltage_plasticity_enabled");
+    if (onlineVoltagePlasticityEnabledIt != irConfig.intParams.end()) {
+        config.onlineVoltagePlasticityEnabled = onlineVoltagePlasticityEnabledIt->second != 0;
+    }
+    const auto onlineVoltagePlasticityGainIt =
+        irConfig.doubleParams.find("online_voltage_plasticity_gain");
+    if (onlineVoltagePlasticityGainIt != irConfig.doubleParams.end()) {
+        config.onlineVoltagePlasticityGain = onlineVoltagePlasticityGainIt->second;
+    }
+    const auto onlineVoltagePlasticityLtpIt =
+        irConfig.doubleParams.find("online_voltage_plasticity_ltp");
+    if (onlineVoltagePlasticityLtpIt != irConfig.doubleParams.end()) {
+        config.onlineVoltagePlasticityLtp = onlineVoltagePlasticityLtpIt->second;
+    }
+    const auto onlineVoltagePlasticityLtdIt =
+        irConfig.doubleParams.find("online_voltage_plasticity_ltd");
+    if (onlineVoltagePlasticityLtdIt != irConfig.doubleParams.end()) {
+        config.onlineVoltagePlasticityLtd = onlineVoltagePlasticityLtdIt->second;
+    }
+    const auto onlineVoltagePlasticityDecayIt =
+        irConfig.doubleParams.find("online_voltage_plasticity_decay");
+    if (onlineVoltagePlasticityDecayIt != irConfig.doubleParams.end()) {
+        config.onlineVoltagePlasticityDecay = onlineVoltagePlasticityDecayIt->second;
+    }
+    const auto onlineVoltagePlasticityThresholdIt =
+        irConfig.doubleParams.find("online_voltage_plasticity_threshold");
+    if (onlineVoltagePlasticityThresholdIt != irConfig.doubleParams.end()) {
+        config.onlineVoltagePlasticityThreshold = onlineVoltagePlasticityThresholdIt->second;
     }
     const auto onlineReplayCapacityIt = irConfig.intParams.find("online_replay_queue_capacity");
     if (onlineReplayCapacityIt != irConfig.intParams.end()) {
@@ -834,9 +1503,52 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     if (separabilitySampleLimitIt != irConfig.intParams.end()) {
         config.separabilitySampleLimit = std::max(0, separabilitySampleLimitIt->second);
     }
+    const auto flowAuditEnabledIt = irConfig.intParams.find("flow_audit_enabled");
+    if (flowAuditEnabledIt != irConfig.intParams.end()) {
+        config.flowAuditEnabled = flowAuditEnabledIt->second != 0;
+    }
+    const auto flowAuditSampleLimitIt = irConfig.intParams.find("flow_audit_sample_limit");
+    if (flowAuditSampleLimitIt != irConfig.intParams.end()) {
+        config.flowAuditSampleLimit = std::max(0, flowAuditSampleLimitIt->second);
+    }
+    const auto flowAuditOutputPrefixIt =
+        irConfig.stringParams.find("flow_audit_output_prefix");
+    if (flowAuditOutputPrefixIt != irConfig.stringParams.end()) {
+        config.flowAuditOutputPrefix = trim(flowAuditOutputPrefixIt->second);
+    }
     const auto focusAdjustmentEnabledIt = irConfig.intParams.find("focus_adjustment_enabled");
     if (focusAdjustmentEnabledIt != irConfig.intParams.end()) {
         config.focusAdjustmentEnabled = focusAdjustmentEnabledIt->second != 0;
+    }
+    const auto saccadeFixationsIt = irConfig.intParams.find("saccade_fixations");
+    if (saccadeFixationsIt != irConfig.intParams.end()) {
+        config.saccadeFixations = std::max(1, saccadeFixationsIt->second);
+    }
+    const auto trainingAugVariantsIt =
+        irConfig.intParams.find("training_augmentation_variants");
+    if (trainingAugVariantsIt != irConfig.intParams.end()) {
+        config.trainingAugmentationVariants = std::max(0, trainingAugVariantsIt->second);
+    }
+    const auto saccadeTrainingOnlyIt = irConfig.intParams.find("saccade_training_only");
+    if (saccadeTrainingOnlyIt != irConfig.intParams.end()) {
+        config.saccadeTrainingOnly = saccadeTrainingOnlyIt->second != 0;
+    }
+    const auto activeInferenceEnabledIt = irConfig.intParams.find("active_inference_enabled");
+    if (activeInferenceEnabledIt != irConfig.intParams.end()) {
+        config.activeInferenceEnabled = activeInferenceEnabledIt->second != 0;
+    }
+    const auto activeInferenceFixationsIt = irConfig.intParams.find("active_inference_fixations");
+    if (activeInferenceFixationsIt != irConfig.intParams.end()) {
+        config.activeInferenceFixations = std::max(1, activeInferenceFixationsIt->second);
+    }
+    const auto activeInferenceMinFixationsIt =
+        irConfig.intParams.find("active_inference_min_fixations");
+    if (activeInferenceMinFixationsIt != irConfig.intParams.end()) {
+        config.activeInferenceMinFixations = std::max(1, activeInferenceMinFixationsIt->second);
+    }
+    const auto activeInferenceRemapIt = irConfig.intParams.find("active_inference_remap_enabled");
+    if (activeInferenceRemapIt != irConfig.intParams.end()) {
+        config.activeInferenceRemapEnabled = activeInferenceRemapIt->second != 0;
     }
     const auto focusAdjustmentMarginIt =
         irConfig.doubleParams.find("focus_adjustment_margin_threshold");
@@ -850,6 +1562,53 @@ void applyClassificationConfig(const ClassificationConfigIR& irConfig, Config& c
     const auto focusAdjustmentShiftIt = irConfig.doubleParams.find("focus_adjustment_shift_px");
     if (focusAdjustmentShiftIt != irConfig.doubleParams.end()) {
         config.focusAdjustmentShiftPx = focusAdjustmentShiftIt->second;
+    }
+    const auto saccadeJitterIt = irConfig.doubleParams.find("saccade_jitter_px");
+    if (saccadeJitterIt != irConfig.doubleParams.end()) {
+        config.saccadeJitterPx = std::max(0.0, saccadeJitterIt->second);
+    }
+    const auto saccadeZoomIt = irConfig.doubleParams.find("saccade_zoom");
+    if (saccadeZoomIt != irConfig.doubleParams.end()) {
+        config.saccadeZoom = std::max(1e-3, saccadeZoomIt->second);
+    }
+    const auto trainingReviewFractionIt =
+        irConfig.doubleParams.find("training_review_fraction");
+    if (trainingReviewFractionIt != irConfig.doubleParams.end()) {
+        config.trainingReviewFraction =
+            std::clamp(trainingReviewFractionIt->second, 0.0, 1.0);
+    }
+    const auto trainingAugShiftIt =
+        irConfig.doubleParams.find("training_augmentation_shift_px");
+    if (trainingAugShiftIt != irConfig.doubleParams.end()) {
+        config.trainingAugmentationShiftPx = std::max(0.0, trainingAugShiftIt->second);
+    }
+    const auto trainingAugRotationIt =
+        irConfig.doubleParams.find("training_augmentation_rotation_deg");
+    if (trainingAugRotationIt != irConfig.doubleParams.end()) {
+        config.trainingAugmentationRotationDeg = std::max(0.0, trainingAugRotationIt->second);
+    }
+    const auto trainingAugNoiseIt =
+        irConfig.doubleParams.find("training_augmentation_noise_std");
+    if (trainingAugNoiseIt != irConfig.doubleParams.end()) {
+        config.trainingAugmentationNoiseStd = std::max(0.0, trainingAugNoiseIt->second);
+    }
+    const auto activeInferenceShiftIt = irConfig.doubleParams.find("active_inference_shift_px");
+    if (activeInferenceShiftIt != irConfig.doubleParams.end()) {
+        config.activeInferenceShiftPx = std::max(0.0, activeInferenceShiftIt->second);
+    }
+    const auto activeInferenceZoomIt = irConfig.doubleParams.find("active_inference_zoom");
+    if (activeInferenceZoomIt != irConfig.doubleParams.end()) {
+        config.activeInferenceZoom = std::max(1e-3, activeInferenceZoomIt->second);
+    }
+    const auto activeInferenceThresholdIt =
+        irConfig.doubleParams.find("active_inference_uncertainty_threshold");
+    if (activeInferenceThresholdIt != irConfig.doubleParams.end()) {
+        config.activeInferenceUncertaintyThreshold =
+            std::clamp(activeInferenceThresholdIt->second, 0.0, 1.0);
+    }
+    const auto activeInferenceIorIt = irConfig.doubleParams.find("active_inference_ior_strength");
+    if (activeInferenceIorIt != irConfig.doubleParams.end()) {
+        config.activeInferenceIorStrength = std::max(0.0, activeInferenceIorIt->second);
     }
     const auto inputDomainIt = irConfig.stringParams.find("input_domain");
     if (inputDomainIt != irConfig.stringParams.end()) {
@@ -1031,8 +1790,11 @@ std::vector<BaseAdapter::Config> buildRetinaConfigs(const Config& config) {
 
 std::vector<double> extractPattern(std::vector<std::unique_ptr<RetinaAdapter>>& retinas,
                                    const VisualStimulus& image,
-                                   bool useFeatures,
-                                   bool learnPatterns);
+                                   const Config& config,
+                                   bool trainingPhase,
+                                   bool learnPatterns,
+                                   size_t sampleSeed = 0U,
+                                   FlowAuditSampleCapture* flowAuditCapture = nullptr);
 
 std::vector<std::pair<std::string, std::vector<BaseAdapter::Config>>>
 groupRetinaConfigsByHemisphere(const std::vector<BaseAdapter::Config>& retinaConfigs,
@@ -1104,6 +1866,13 @@ createRetinaAdapters(const std::vector<BaseAdapter::Config>& retinaConfigs) {
     return retinas;
 }
 
+void setRetinaHomeostaticLearning(std::vector<std::unique_ptr<RetinaAdapter>>& retinas,
+                                  bool enabled) {
+    for (auto& retina : retinas) {
+        retina->setHomeostaticLearningEnabled(enabled);
+    }
+}
+
 struct TrainingSplit {
     std::vector<size_t> stage1Indices;
     std::vector<size_t> fusionIndices;
@@ -1134,6 +1903,10 @@ struct EvaluationResult {
     int focusLeftSelections = 0;
     int focusCenterSelections = 0;
     int focusRightSelections = 0;
+    int activeInferenceSamples = 0;
+    int activeInferenceExtraFixationSamples = 0;
+    int activeInferenceEarlyStops = 0;
+    double activeInferenceFixationSum = 0.0;
     int fusionRescuesOneHemisphereRight = 0;
     int fusionRescuesBothHemispheresWrong = 0;
     int fusionMissesWhenLeftWasRight = 0;
@@ -1154,6 +1927,9 @@ struct EvaluationResult {
         std::string name;
         int samples = 0;
         int centroidCorrect = 0;
+        int nonzeroSamples = 0;
+        int centroidCorrectNonzero = 0;
+        int zeroVectorSamples = 0;
         double ownScoreSum = 0.0;
         double otherScoreSum = 0.0;
         double marginSum = 0.0;
@@ -1187,6 +1963,174 @@ struct SeparabilityDiagnosticsRuntime {
     std::vector<std::vector<std::vector<std::vector<double>>>> branchCentroids;
     std::vector<std::vector<double>> fusionCentroids;
 };
+
+struct FlowAuditPartCapture {
+    std::string name;
+    std::vector<double> preNormPattern;
+    std::vector<double> postNormPattern;
+    FlowAuditVectorStats preNorm;
+    FlowAuditVectorStats postNorm;
+    double preOrientationL2 = 0.0;
+    double preAuxiliaryL2 = 0.0;
+    double postOrientationL2 = 0.0;
+    double postAuxiliaryL2 = 0.0;
+    int fixationCount = 1;
+    double fixationVariance = 0.0;
+};
+
+struct FlowAuditSampleCapture {
+    std::vector<FlowAuditPartCapture> parts;
+};
+
+struct FlowAuditBranchReference {
+    std::string name;
+    std::vector<std::vector<double>> preCentroids;
+    std::vector<std::vector<double>> postCentroids;
+    double meanTrainingFixationVariance = 0.0;
+};
+
+struct FlowAuditCsvRow {
+    size_t sampleOrdinal = 0;
+    size_t imageIndex = 0;
+    int truth = -1;
+    std::string stage;
+    std::string hemisphere;
+    std::string component;
+    int predicted = -1;
+    int initialPredicted = -1;
+    int finalPredicted = -1;
+    int top1Label = -1;
+    int top2Label = -1;
+    int bestNeighborLabel = -1;
+    int centroidPredicted = -1;
+    double top1Score = 0.0;
+    double top2Score = 0.0;
+    double confidenceMargin = 0.0;
+    double bestNeighborSimilarity = 0.0;
+    double topkPurity = 0.0;
+    double preNormMeanAbs = 0.0;
+    double preNormL2 = 0.0;
+    double preNormActiveFraction = 0.0;
+    double preOrientationL2 = 0.0;
+    double preAuxiliaryL2 = 0.0;
+    double preOwnScore = 0.0;
+    double preOtherScore = 0.0;
+    double preMargin = 0.0;
+    double postNormMeanAbs = 0.0;
+    double postNormL2 = 0.0;
+    double postNormActiveFraction = 0.0;
+    double postOrientationL2 = 0.0;
+    double postAuxiliaryL2 = 0.0;
+    double postOwnScore = 0.0;
+    double postOtherScore = 0.0;
+    double postMargin = 0.0;
+    int fixationCount = 1;
+    double fixationVariance = 0.0;
+};
+
+struct FlowAuditBranchAggregate {
+    int samples = 0;
+    int zeroPreSamples = 0;
+    int zeroPostSamples = 0;
+    double preMarginSum = 0.0;
+    double postMarginSum = 0.0;
+    double preActiveFractionSum = 0.0;
+    double postActiveFractionSum = 0.0;
+    double preNormL2Sum = 0.0;
+    double postNormL2Sum = 0.0;
+    double preOrientationL2Sum = 0.0;
+    double preAuxiliaryL2Sum = 0.0;
+    double postOrientationL2Sum = 0.0;
+    double postAuxiliaryL2Sum = 0.0;
+    double fixationVarianceSum = 0.0;
+    double meanTrainingFixationVariance = 0.0;
+};
+
+struct FlowAuditHemisphereAggregate {
+    int samples = 0;
+    double confidenceMarginSum = 0.0;
+    double centroidMarginSum = 0.0;
+    double topkPuritySum = 0.0;
+    double bestNeighborSimilaritySum = 0.0;
+};
+
+struct FlowAuditFusionAggregate {
+    int samples = 0;
+    int interactionCentroidCorrect = 0;
+    int confidenceConcatCentroidCorrect = 0;
+    int hemisphereConcatCentroidCorrect = 0;
+};
+
+struct FlowAuditReplayAggregate {
+    int replaySuccessSamples = 0;
+    int replayFailureSamples = 0;
+    int positiveClassWeightUpdates = 0;
+    int positivePredictionWeightUpdates = 0;
+    int positiveCentroidUpdates = 0;
+    int positiveExemplarInsertions = 0;
+    int positiveFusionExemplarInsertions = 0;
+    int negativeClassWeightUpdates = 0;
+    int negativePredictionWeightUpdates = 0;
+};
+
+struct FlowAuditRuntime {
+    bool enabled = false;
+    int sampleLimit = 0;
+    int numClasses = 0;
+    int recordedSamples = 0;
+    size_t droppedRows = 0;
+    std::string outputPrefix;
+    std::vector<std::vector<FlowAuditBranchReference>> hemisphereBranches;
+    std::vector<std::vector<std::vector<double>>> hemisphereCentroids;
+    std::vector<std::vector<double>> fusionInteractionCentroids;
+    std::vector<std::vector<double>> fusionConfidenceConcatCentroids;
+    std::vector<std::vector<double>> fusionHemisphereConcatCentroids;
+    std::vector<FlowAuditCsvRow> rows;
+    std::unordered_map<std::string, FlowAuditBranchAggregate> branchAggregates;
+    std::unordered_map<std::string, FlowAuditHemisphereAggregate> hemisphereAggregates;
+    FlowAuditFusionAggregate fusionAggregate;
+    FlowAuditReplayAggregate replayAggregate;
+};
+
+bool flowAuditShouldStoreRows(FlowAuditRuntime& runtime);
+void recordFlowAuditFusionAlternatives(FlowAuditRuntime& runtime,
+                                       const BilateralDecisionTrace& decision,
+                                       int truth);
+void recordFlowAuditBranchCapture(FlowAuditRuntime& runtime,
+                                  size_t sampleOrdinal,
+                                  size_t imageIndex,
+                                  int truth,
+                                  int initialPredicted,
+                                  int finalPredicted,
+                                  const std::string& hemisphereName,
+                                  const HemisphereDecisionTrace& hemisphereTrace,
+                                  const FlowAuditSampleCapture& capture,
+                                  size_t hemisphereIndex,
+                                  bool storeRows);
+void recordFlowAuditHemisphereCapture(FlowAuditRuntime& runtime,
+                                      size_t sampleOrdinal,
+                                      size_t imageIndex,
+                                      int truth,
+                                      int initialPredicted,
+                                      int finalPredicted,
+                                      const std::string& hemisphereName,
+                                      const HemisphereDecisionTrace& trace,
+                                      const HemisphereRuntime& hemisphere,
+                                      size_t hemisphereIndex,
+                                      const Config& config,
+                                      bool storeRows);
+void recordFlowAuditFusionRow(FlowAuditRuntime& runtime,
+                              size_t sampleOrdinal,
+                              size_t imageIndex,
+                              int truth,
+                              int initialPredicted,
+                              int finalPredicted,
+                              const BilateralDecisionTrace& decision,
+                              bool storeRows);
+void recordFlowAuditReplayMechanisms(FlowAuditRuntime& runtime,
+                                     const BilateralDecisionTrace& replayDecision,
+                                     bool replaySucceeded);
+void writeFlowAuditArtifacts(const FlowAuditRuntime& runtime, const std::string& label);
 
 struct TrainingSplit;
 
@@ -1258,6 +2202,129 @@ TrainingSplit splitTrainingIndices(const IndexBuckets& indicesByLabel,
     return split;
 }
 
+IndexBuckets collectSelectedIndicesByLabel(const std::vector<size_t>& selectedIndices,
+                                          const VisualDomainAdapter& loader,
+                                          int numClasses) {
+    IndexBuckets indicesByLabel(static_cast<size_t>(std::max(0, numClasses)));
+    for (size_t index : selectedIndices) {
+        if (index >= loader.size()) {
+            continue;
+        }
+        const int label = loader.getStimulus(index).label;
+        if (label >= 0 && label < numClasses) {
+            indicesByLabel[static_cast<size_t>(label)].push_back(index);
+        }
+    }
+    return indicesByLabel;
+}
+
+std::vector<std::vector<int>> resolvedCurriculumStages(const Config& config) {
+    if (config.trainingCurriculumGroups.empty()) {
+        return {};
+    }
+
+    std::vector<std::vector<int>> stages = config.trainingCurriculumGroups;
+    const auto coveredLabels = flattenLabelGroups(stages);
+    std::vector<int> remainder;
+    for (int label = 0; label < config.numClasses; ++label) {
+        if (std::find(coveredLabels.begin(), coveredLabels.end(), label) == coveredLabels.end()) {
+            remainder.push_back(label);
+        }
+    }
+    if (!remainder.empty()) {
+        stages.push_back(std::move(remainder));
+    }
+    return stages;
+}
+
+std::vector<size_t> interleaveIndicesForLabels(const IndexBuckets& indicesByLabel,
+                                               const std::vector<int>& labels) {
+    std::vector<size_t> scheduled;
+    std::vector<size_t> offsets(indicesByLabel.size(), 0);
+
+    bool addedAny = true;
+    while (addedAny) {
+        addedAny = false;
+        for (int label : labels) {
+            if (label < 0 || static_cast<size_t>(label) >= indicesByLabel.size()) {
+                continue;
+            }
+            const auto& bucket = indicesByLabel[static_cast<size_t>(label)];
+            if (offsets[static_cast<size_t>(label)] >= bucket.size()) {
+                continue;
+            }
+            scheduled.push_back(bucket[offsets[static_cast<size_t>(label)]++]);
+            addedAny = true;
+        }
+    }
+
+    return scheduled;
+}
+
+TrainingSchedulePlan buildTrainingSchedule(const std::vector<size_t>& selectedIndices,
+                                           const VisualDomainAdapter& loader,
+                                           const Config& config,
+                                           unsigned int seed) {
+    TrainingSchedulePlan plan;
+    plan.primaryIndices = selectedIndices;
+
+    const bool useCurriculum = !config.trainingCurriculumGroups.empty();
+    const bool useReview = config.trainingReviewFraction > 0.0;
+    if (!useCurriculum && !useReview) {
+        return plan;
+    }
+
+    auto indicesByLabel = collectSelectedIndicesByLabel(selectedIndices, loader, config.numClasses);
+    std::mt19937 rng(seed);
+    for (auto& bucket : indicesByLabel) {
+        std::shuffle(bucket.begin(), bucket.end(), rng);
+    }
+
+    const auto curriculumStages = resolvedCurriculumStages(config);
+    if (useCurriculum && !curriculumStages.empty()) {
+        plan.primaryIndices.clear();
+        for (const auto& stage : curriculumStages) {
+            auto stageIndices = interleaveIndicesForLabels(indicesByLabel, stage);
+            plan.primaryIndices.insert(
+                plan.primaryIndices.end(), stageIndices.begin(), stageIndices.end());
+        }
+    }
+
+    if (!useReview) {
+        return plan;
+    }
+
+    IndexBuckets reviewByLabel(static_cast<size_t>(std::max(0, config.numClasses)));
+    std::mt19937 reviewRng(seed ^ 0x9e3779b9U);
+    for (size_t label = 0; label < indicesByLabel.size(); ++label) {
+        auto reviewCandidates = indicesByLabel[label];
+        std::shuffle(reviewCandidates.begin(), reviewCandidates.end(), reviewRng);
+        const int keep = static_cast<int>(std::floor(
+            config.trainingReviewFraction * static_cast<double>(reviewCandidates.size()) + 1e-6));
+        if (keep <= 0) {
+            continue;
+        }
+        reviewByLabel[label].insert(reviewByLabel[label].end(),
+                                    reviewCandidates.begin(),
+                                    reviewCandidates.begin() +
+                                        std::min<int>(keep, static_cast<int>(reviewCandidates.size())));
+    }
+
+    if (useCurriculum && !curriculumStages.empty()) {
+        for (const auto& stage : curriculumStages) {
+            auto stageIndices = interleaveIndicesForLabels(reviewByLabel, stage);
+            plan.reviewIndices.insert(
+                plan.reviewIndices.end(), stageIndices.begin(), stageIndices.end());
+        }
+    } else {
+        std::vector<int> allLabels(config.numClasses);
+        std::iota(allLabels.begin(), allLabels.end(), 0);
+        plan.reviewIndices = interleaveIndicesForLabels(reviewByLabel, allLabels);
+    }
+
+    return plan;
+}
+
 std::vector<ClassificationStrategy::LabeledPattern> buildSupportPatterns(
     const HemisphereRuntime& hemisphere,
     const std::vector<size_t>& excludedSourceIndices) {
@@ -1279,83 +2346,76 @@ std::vector<ClassificationStrategy::LabeledPattern> buildSupportPatterns(
     return supportPatterns;
 }
 
-bool useStage1ShapeSurfaceSplit(const Config& config) {
-    return config.useFeatures && toLower(config.stage1StreamSplitMode) == "shape_surface";
-}
-
-std::pair<std::vector<size_t>, std::vector<size_t>> buildStage1StreamIndices(
-    const std::vector<PatternSlice>& slices) {
-    std::vector<size_t> shapeIndices;
-    std::vector<size_t> surfaceIndices;
-    for (const auto& slice : slices) {
-        const bool surface = slice.name.find("/auxiliary") != std::string::npos;
-        auto& target = surface ? surfaceIndices : shapeIndices;
-        if (!slice.indices.empty()) {
-            target.insert(target.end(), slice.indices.begin(), slice.indices.end());
-            continue;
-        }
-        const size_t end = slice.offset + slice.size;
-        for (size_t index = slice.offset; index < end; ++index) {
-            target.push_back(index);
-        }
-    }
-    return {shapeIndices, surfaceIndices};
-}
-
-std::vector<double> buildStage1StreamPattern(const std::vector<double>& rawPattern,
-                                             const HemisphereRuntime& hemisphere,
-                                             const Config& config) {
-    if (!useStage1ShapeSurfaceSplit(config)) {
-        return rawPattern;
-    }
-
-    auto gather = [&](const std::vector<size_t>& indices) {
-        std::vector<double> values;
-        values.reserve(indices.size());
-        for (size_t index : indices) {
-            if (index < rawPattern.size()) {
-                values.push_back(rawPattern[index]);
-            }
-        }
-        normalizeL2(values);
-        return values;
-    };
-
-    auto shape = gather(hemisphere.shapePatternIndices);
-    auto surface = gather(hemisphere.surfacePatternIndices);
-    const double shapeWeight = std::max(0.0, config.stage1ShapeStreamWeight);
-    const double surfaceWeight = std::max(0.0, config.stage1SurfaceStreamWeight);
-    std::vector<double> combined;
-    combined.reserve(shape.size() + surface.size());
-    for (double value : shape) {
-        combined.push_back(value * shapeWeight);
-    }
-    for (double value : surface) {
-        combined.push_back(value * surfaceWeight);
-    }
-    return combined;
-}
-
-std::vector<ClassificationStrategy::LabeledPattern> buildStage1TrainingPatterns(
-    const std::vector<ClassificationStrategy::LabeledPattern>& rawTrainingPatterns,
-    const HemisphereRuntime& hemisphere,
-    const Config& config) {
-    if (!useStage1ShapeSurfaceSplit(config)) {
-        return rawTrainingPatterns;
-    }
-
-    std::vector<ClassificationStrategy::LabeledPattern> transformed;
-    transformed.reserve(rawTrainingPatterns.size());
-    for (const auto& labeledPattern : rawTrainingPatterns) {
-        transformed.emplace_back(
-            buildStage1StreamPattern(labeledPattern.pattern, hemisphere, config),
-            labeledPattern.label);
-    }
-    return transformed;
-}
-
 bool useOnlineCorrection(const Config& config) {
     return config.onlineCorrectionRepeats > 0;
+}
+
+bool useOnlineRewardStdp(const Config& config) {
+    return config.onlineRewardStdpEnabled && config.onlineRewardStdpGain > 1e-6 &&
+           (config.onlineRewardStdpLtp > 1e-6 || config.onlineRewardStdpLtd > 1e-6);
+}
+
+bool useOnlineTripletStdp(const Config& config) {
+    return config.onlineTripletStdpEnabled && config.onlineTripletStdpGain > 1e-6 &&
+           (config.onlineTripletStdpLtp > 1e-6 || config.onlineTripletStdpLtd > 1e-6);
+}
+
+bool useOnlineVoltagePlasticity(const Config& config) {
+    return config.onlineVoltagePlasticityEnabled && config.onlineVoltagePlasticityGain > 1e-6 &&
+           (config.onlineVoltagePlasticityLtp > 1e-6 ||
+            config.onlineVoltagePlasticityLtd > 1e-6);
+}
+
+double onlineRewardStdpGain(const Config& config) {
+    return std::clamp(config.onlineRewardStdpGain, 0.0, 1.0);
+}
+
+double onlineRewardStdpLtp(const Config& config) {
+    return std::clamp(config.onlineRewardStdpLtp, 0.0, 1.0);
+}
+
+double onlineRewardStdpLtd(const Config& config) {
+    return std::clamp(config.onlineRewardStdpLtd, 0.0, 1.0);
+}
+
+double onlineTripletStdpGain(const Config& config) {
+    return std::clamp(config.onlineTripletStdpGain, 0.0, 1.0);
+}
+
+double onlineTripletStdpLtp(const Config& config) {
+    return std::clamp(config.onlineTripletStdpLtp, 0.0, 1.0);
+}
+
+double onlineTripletStdpLtd(const Config& config) {
+    return std::clamp(config.onlineTripletStdpLtd, 0.0, 1.0);
+}
+
+double onlineTripletStdpFastDecay(const Config& config) {
+    return std::clamp(config.onlineTripletStdpFastDecay, 0.10, 0.999);
+}
+
+double onlineTripletStdpSlowDecay(const Config& config) {
+    return std::clamp(config.onlineTripletStdpSlowDecay, 0.10, 0.999);
+}
+
+double onlineVoltagePlasticityGain(const Config& config) {
+    return std::clamp(config.onlineVoltagePlasticityGain, 0.0, 1.0);
+}
+
+double onlineVoltagePlasticityLtp(const Config& config) {
+    return std::clamp(config.onlineVoltagePlasticityLtp, 0.0, 1.0);
+}
+
+double onlineVoltagePlasticityLtd(const Config& config) {
+    return std::clamp(config.onlineVoltagePlasticityLtd, 0.0, 1.0);
+}
+
+double onlineVoltagePlasticityDecay(const Config& config) {
+    return std::clamp(config.onlineVoltagePlasticityDecay, 0.10, 0.999);
+}
+
+double onlineVoltagePlasticityThreshold(const Config& config) {
+    return std::clamp(config.onlineVoltagePlasticityThreshold, 0.05, 0.95);
 }
 
 int onlineTraceTopK(const Config& config) {
@@ -1551,6 +2611,23 @@ DecisionContext buildDecisionContext(const BilateralDecisionTrace& decision,
     return context;
 }
 
+void recordActiveInferenceUsage(EvaluationResult& result,
+                                const BilateralDecisionTrace& decision,
+                                const Config& config) {
+    if (!config.activeInferenceEnabled || config.activeInferenceFixations <= 1) {
+        return;
+    }
+    result.activeInferenceSamples++;
+    result.activeInferenceFixationSum +=
+        static_cast<double>(std::max(1, decision.fixationCount));
+    if (decision.fixationCount > 1) {
+        result.activeInferenceExtraFixationSamples++;
+    }
+    if (decision.fixationCount < std::max(1, config.activeInferenceFixations)) {
+        result.activeInferenceEarlyStops++;
+    }
+}
+
 void enqueueReplayItem(std::vector<ReplayItem>& replayQueue,
                        ReplayItem item,
                        const Config& config) {
@@ -1726,6 +2803,187 @@ void updateCentroid(std::vector<double>& centroid,
     normalizeL2(centroid);
 }
 
+void updateRewardStdpPrototype(std::vector<double>& prototype,
+                               const std::vector<double>& pattern,
+                               double learningRate,
+                               bool potentiation) {
+    if (pattern.empty() || learningRate <= 0.0) {
+        return;
+    }
+
+    if (prototype.empty()) {
+        if (!potentiation) {
+            return;
+        }
+        prototype = pattern;
+        normalizeL2(prototype);
+        return;
+    }
+
+    const size_t dim = std::min(prototype.size(), pattern.size());
+    if (potentiation) {
+        const double keep = std::clamp(1.0 - learningRate, 0.0, 1.0);
+        const double learn = std::clamp(learningRate, 0.0, 1.0);
+        for (size_t i = 0; i < dim; ++i) {
+            prototype[i] = keep * prototype[i] + learn * pattern[i];
+        }
+    } else {
+        const double ltd = std::clamp(learningRate, 0.0, 1.0);
+        for (size_t i = 0; i < dim; ++i) {
+            prototype[i] *= std::clamp(1.0 - ltd * std::max(0.0, pattern[i]), 0.0, 1.0);
+        }
+    }
+
+    normalizeL2(prototype);
+}
+
+std::vector<double> computeRewardStdpEvidence(
+    const std::vector<std::vector<double>>& prototypes,
+    const std::vector<double>& pattern) {
+    std::vector<double> scores(prototypes.size(), 0.0);
+    for (size_t label = 0; label < prototypes.size(); ++label) {
+        const auto& prototype = prototypes[label];
+        if (prototype.empty() || prototype.size() != pattern.size()) {
+            continue;
+        }
+        scores[label] = std::max(0.0, cosineSimilarity(pattern, prototype));
+    }
+    normalizeSum(scores);
+    return scores;
+}
+
+template <typename RuntimeT>
+void decayTripletStdpState(RuntimeT& runtime, size_t currentStep, const Config& config) {
+    if (currentStep <= runtime.tripletTraceStep) {
+        return;
+    }
+
+    const size_t deltaSteps = currentStep - runtime.tripletTraceStep;
+    const double fastDecay =
+        std::pow(onlineTripletStdpFastDecay(config), static_cast<double>(deltaSteps));
+    const double slowDecay =
+        std::pow(onlineTripletStdpSlowDecay(config), static_cast<double>(deltaSteps));
+    for (double& value : runtime.tripletPreTrace) {
+        value *= fastDecay;
+    }
+    for (double& value : runtime.tripletPostTraceFast) {
+        value *= fastDecay;
+    }
+    for (double& value : runtime.tripletPostTraceSlow) {
+        value *= slowDecay;
+    }
+    runtime.tripletTraceStep = currentStep;
+}
+
+std::vector<double> buildTripletStdpPattern(const std::vector<double>& pattern,
+                                            const std::vector<double>& preTrace) {
+    if (pattern.empty()) {
+        return {};
+    }
+
+    std::vector<double> combined = pattern;
+    if (preTrace.size() == pattern.size()) {
+        for (size_t i = 0; i < combined.size(); ++i) {
+            combined[i] = 0.75 * pattern[i] + 0.25 * std::max(0.0, preTrace[i]);
+        }
+    }
+    normalizeL2(combined);
+    return combined;
+}
+
+template <typename RuntimeT>
+void updateTripletStdpTraces(RuntimeT& runtime,
+                             const std::vector<double>& pattern,
+                             int label,
+                             double support) {
+    if (pattern.empty() || label < 0 ||
+        static_cast<size_t>(label) >= runtime.tripletPostTraceFast.size()) {
+        return;
+    }
+
+    if (runtime.tripletPreTrace.size() != pattern.size()) {
+        runtime.tripletPreTrace.assign(pattern.size(), 0.0);
+    }
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        runtime.tripletPreTrace[i] = 0.75 * runtime.tripletPreTrace[i] + 0.25 * pattern[i];
+    }
+    normalizeL2(runtime.tripletPreTrace);
+
+    double& fast = runtime.tripletPostTraceFast[static_cast<size_t>(label)];
+    double& slow = runtime.tripletPostTraceSlow[static_cast<size_t>(label)];
+    const double previousFast = fast;
+    fast = std::clamp(fast + support, 0.0, 4.0);
+    slow = std::clamp(slow + 0.35 * previousFast + 0.15 * support, 0.0, 4.0);
+}
+
+std::vector<double> computeTripletStdpEvidence(
+    const std::vector<std::vector<double>>& prototypes,
+    const std::vector<double>& pattern) {
+    std::vector<double> scores(prototypes.size(), 0.0);
+    for (size_t label = 0; label < prototypes.size(); ++label) {
+        const auto& prototype = prototypes[label];
+        if (prototype.empty() || prototype.size() != pattern.size()) {
+            continue;
+        }
+        scores[label] = std::max(0.0, cosineSimilarity(pattern, prototype));
+    }
+    normalizeSum(scores);
+    return scores;
+}
+
+template <typename RuntimeT>
+void decayVoltagePlasticityState(RuntimeT& runtime, size_t currentStep, const Config& config) {
+    if (currentStep <= runtime.voltageTraceStep) {
+        return;
+    }
+
+    const size_t deltaSteps = currentStep - runtime.voltageTraceStep;
+    const double decay =
+        std::pow(onlineVoltagePlasticityDecay(config), static_cast<double>(deltaSteps));
+    for (double& value : runtime.voltageDepolarizationTrace) {
+        value *= decay;
+    }
+    runtime.voltageTraceStep = currentStep;
+}
+
+double computeVoltagePlasticityDepolarization(const std::vector<double>& prototype,
+                                              const std::vector<double>& pattern,
+                                              double support,
+                                              double persistentTrace) {
+    double similarity = std::max(0.0, support);
+    if (!prototype.empty() && prototype.size() == pattern.size()) {
+        similarity = std::max(0.0, cosineSimilarity(pattern, prototype));
+    }
+    return std::clamp(0.60 * std::max(0.0, support) + 0.25 * similarity +
+                          0.15 * std::min(1.0, std::max(0.0, persistentTrace)),
+                      0.0,
+                      2.0);
+}
+
+template <typename RuntimeT>
+void updateVoltagePlasticityTrace(RuntimeT& runtime, int label, double depolarization) {
+    if (label < 0 || static_cast<size_t>(label) >= runtime.voltageDepolarizationTrace.size()) {
+        return;
+    }
+    double& trace = runtime.voltageDepolarizationTrace[static_cast<size_t>(label)];
+    trace = std::clamp(trace + 0.50 * std::max(0.0, depolarization), 0.0, 4.0);
+}
+
+std::vector<double> computeVoltagePlasticityEvidence(
+    const std::vector<std::vector<double>>& prototypes,
+    const std::vector<double>& pattern) {
+    std::vector<double> scores(prototypes.size(), 0.0);
+    for (size_t label = 0; label < prototypes.size(); ++label) {
+        const auto& prototype = prototypes[label];
+        if (prototype.empty() || prototype.size() != pattern.size()) {
+            continue;
+        }
+        scores[label] = std::max(0.0, cosineSimilarity(pattern, prototype));
+    }
+    normalizeSum(scores);
+    return scores;
+}
+
 void insertOrReplaceOnlinePattern(
     std::vector<ClassificationStrategy::LabeledPattern>& patterns,
     std::vector<size_t>* sourceIndices,
@@ -1785,12 +3043,31 @@ std::vector<LabelTrace> collectTopHypotheses(const std::vector<double>& confiden
 
 HemisphereDecisionTrace inferHemisphereDecision(HemisphereRuntime& hemisphere,
                                                 const VisualStimulus& image,
-                                                const Config& config) {
+                                                const Config& config,
+                                                FlowAuditSampleCapture* flowAuditCapture = nullptr) {
     HemisphereDecisionTrace trace;
-    trace.pattern = extractPattern(hemisphere.retinas, image, config.useFeatures, false);
-    trace.classifierPattern = buildStage1StreamPattern(trace.pattern, hemisphere, config);
+    trace.pattern = extractPattern(
+        hemisphere.retinas, image, config, false, false, 0U, flowAuditCapture);
     trace.confidence = hemisphere.classifier->classifyWithConfidence(
-        trace.classifierPattern, hemisphere.trainingPatterns, cosineSimilarity);
+        trace.pattern, hemisphere.trainingPatterns, cosineSimilarity);
+    normalizeSum(trace.confidence);
+    trace.topHypotheses = collectTopHypotheses(trace.confidence, onlineTraceTopK(config));
+    if (!trace.topHypotheses.empty()) {
+        trace.predicted = trace.topHypotheses.front().label;
+        const double best = trace.topHypotheses.front().score;
+        const double second = trace.topHypotheses.size() > 1 ? trace.topHypotheses[1].score : 0.0;
+        trace.margin = std::max(0.0, best - second);
+    }
+    return trace;
+}
+
+HemisphereDecisionTrace inferHemisphereDecisionFromPattern(HemisphereRuntime& hemisphere,
+                                                           std::vector<double> pattern,
+                                                           const Config& config) {
+    HemisphereDecisionTrace trace;
+    trace.pattern = std::move(pattern);
+    trace.confidence = hemisphere.classifier->classifyWithConfidence(
+        trace.pattern, hemisphere.trainingPatterns, cosineSimilarity);
     normalizeSum(trace.confidence);
     trace.topHypotheses = collectTopHypotheses(trace.confidence, onlineTraceTopK(config));
     if (!trace.topHypotheses.empty()) {
@@ -1805,11 +3082,16 @@ HemisphereDecisionTrace inferHemisphereDecision(HemisphereRuntime& hemisphere,
 std::vector<HemisphereDecisionTrace> inferHemisphereDecisions(
     std::vector<HemisphereRuntime>& hemispheres,
     const VisualStimulus& image,
-    const Config& config) {
+    const Config& config,
+    std::vector<FlowAuditSampleCapture>* flowAuditCaptures = nullptr) {
     return runHemisphereTasks<HemisphereDecisionTrace>(
         hemispheres.size(),
         [&](size_t hemisphereIndex) {
-            return inferHemisphereDecision(hemispheres[hemisphereIndex], image, config);
+            FlowAuditSampleCapture* capture = nullptr;
+            if (flowAuditCaptures != nullptr && hemisphereIndex < flowAuditCaptures->size()) {
+                capture = &(*flowAuditCaptures)[hemisphereIndex];
+            }
+            return inferHemisphereDecision(hemispheres[hemisphereIndex], image, config, capture);
         });
 }
 
@@ -1845,6 +3127,28 @@ std::vector<double> buildFusionPatternFromTraces(const std::vector<HemisphereDec
         }
     }
 
+    normalizeL2(fusionPattern);
+    return fusionPattern;
+}
+
+std::vector<double> buildConfidenceConcatPatternFromTraces(
+    const std::vector<HemisphereDecisionTrace>& traces) {
+    std::vector<double> fusionPattern;
+    for (const auto& trace : traces) {
+        std::vector<double> confidence = trace.confidence;
+        normalizeL2(confidence);
+        fusionPattern.insert(fusionPattern.end(), confidence.begin(), confidence.end());
+    }
+    normalizeL2(fusionPattern);
+    return fusionPattern;
+}
+
+std::vector<double> buildHemisphereConcatPatternFromTraces(
+    const std::vector<HemisphereDecisionTrace>& traces) {
+    std::vector<double> fusionPattern;
+    for (const auto& trace : traces) {
+        fusionPattern.insert(fusionPattern.end(), trace.pattern.begin(), trace.pattern.end());
+    }
     normalizeL2(fusionPattern);
     return fusionPattern;
 }
@@ -1954,7 +3258,6 @@ void calibrateCorpusCallosumWeights(std::vector<HemisphereRuntime>& hemispheres,
         std::vector<double> trueLabelAccuracy;
         std::vector<double> predictionPrecision;
     };
-
     const auto rawStats = runHemisphereTasks<CorpusStats>(
         hemispheres.size(),
         [&](size_t hemisphereIndex) {
@@ -1980,7 +3283,7 @@ void calibrateCorpusCallosumWeights(std::vector<HemisphereRuntime>& hemispheres,
                 }
 
                 const auto pattern =
-                    extractPattern(hemisphere.retinas, image, config.useFeatures, false);
+                    extractPattern(hemisphere.retinas, image, config, false, false);
                 const auto confidence = hemisphere.classifier->classifyWithConfidence(
                     pattern, supportPatterns, cosineSimilarity);
                 const int predicted = static_cast<int>(
@@ -2054,11 +3357,12 @@ void scaleClamped(double& value, double factor, double minValue, double maxValue
     value = std::clamp(value * factor, minValue, maxValue);
 }
 
-BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime>& hemispheres,
-                                                   const VisualStimulus& image,
-                                                   const Config& config) {
+BilateralDecisionTrace buildCorpusCallosumDecisionFromTraces(
+    std::vector<HemisphereRuntime>& hemispheres,
+    std::vector<HemisphereDecisionTrace> hemisphereTraces,
+    const Config& config) {
     BilateralDecisionTrace trace;
-    trace.hemisphereTraces = inferHemisphereDecisions(hemispheres, image, config);
+    trace.hemisphereTraces = std::move(hemisphereTraces);
     trace.fusionPattern = buildFusionPatternFromTraces(trace.hemisphereTraces, config);
     trace.combinedConfidence.assign(static_cast<size_t>(config.numClasses), 0.0);
     std::vector<double> disagreementScores(hemispheres.size(), 0.0);
@@ -2078,6 +3382,21 @@ BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime
             const int neighborK = config.stage1K > 0 ? config.stage1K : config.knnK;
             neighborSignature = computeNeighborSignature(hemisphere, classifierPattern, neighborK);
         }
+        std::vector<double> rewardStdpEvidence;
+        if (useOnlineRewardStdp(config)) {
+            rewardStdpEvidence =
+                computeRewardStdpEvidence(hemisphere.rewardStdpPrototypes, classifierPattern);
+        }
+        std::vector<double> tripletStdpEvidence;
+        if (useOnlineTripletStdp(config)) {
+            tripletStdpEvidence =
+                computeTripletStdpEvidence(hemisphere.tripletStdpPrototypes, classifierPattern);
+        }
+        std::vector<double> voltagePlasticityEvidence;
+        if (useOnlineVoltagePlasticity(config)) {
+            voltagePlasticityEvidence = computeVoltagePlasticityEvidence(
+                hemisphere.voltagePlasticityPrototypes, classifierPattern);
+        }
 
         for (size_t label = 0;
              label < trace.combinedConfidence.size() && label < hemisphereTrace.confidence.size();
@@ -2096,6 +3415,24 @@ BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime
                                                    hemisphere.overallWeight *
                                                    hemisphere.classWeights[label] *
                                                    neighborSignature[label];
+            }
+            if (!rewardStdpEvidence.empty()) {
+                trace.combinedConfidence[label] += onlineRewardStdpGain(config) *
+                                                   hemisphere.overallWeight *
+                                                   hemisphere.classWeights[label] *
+                                                   rewardStdpEvidence[label];
+            }
+            if (!tripletStdpEvidence.empty()) {
+                trace.combinedConfidence[label] += onlineTripletStdpGain(config) *
+                                                   hemisphere.overallWeight *
+                                                   hemisphere.classWeights[label] *
+                                                   tripletStdpEvidence[label];
+            }
+            if (!voltagePlasticityEvidence.empty()) {
+                trace.combinedConfidence[label] += onlineVoltagePlasticityGain(config) *
+                                                   hemisphere.overallWeight *
+                                                   hemisphere.classWeights[label] *
+                                                   voltagePlasticityEvidence[label];
             }
         }
 
@@ -2162,10 +3499,184 @@ BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime
     return trace;
 }
 
+template <typename BuilderFn>
+BilateralDecisionTrace inferActiveVisionDecision(std::vector<HemisphereRuntime>& hemispheres,
+                                                 const VisualStimulus& image,
+                                                 const Config& config,
+                                                 BuilderFn builder) {
+    auto candidates = buildActiveInferenceFixationCandidates(image, config);
+    if (candidates.empty()) {
+        return builder(inferHemisphereDecisions(hemispheres, image, config));
+    }
+
+    std::vector<HemispherePatternAccumulator> accumulators(hemispheres.size());
+    std::vector<size_t> selectedFixations;
+    selectedFixations.reserve(static_cast<size_t>(std::max(1, config.activeInferenceFixations)));
+    BilateralDecisionTrace decision;
+
+    const int maxFixations = std::max(1, config.activeInferenceFixations);
+    const int minFixations = std::max(1, std::min(maxFixations, config.activeInferenceMinFixations));
+    for (int fixationIndex = 0; fixationIndex < maxFixations; ++fixationIndex) {
+        const size_t candidateIndex =
+            fixationIndex == 0 ? 0u : selectNextActiveFixation(candidates, selectedFixations, config);
+        if (candidateIndex >= candidates.size()) {
+            break;
+        }
+        selectedFixations.push_back(candidateIndex);
+        for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+            appendFixationToAccumulator(
+                hemispheres[hemisphereIndex],
+                accumulators[hemisphereIndex],
+                candidates[candidateIndex],
+                config);
+        }
+
+        std::vector<HemisphereDecisionTrace> hemisphereTraces;
+        hemisphereTraces.reserve(hemispheres.size());
+        for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+            hemisphereTraces.push_back(inferHemisphereDecisionFromPattern(
+                hemispheres[hemisphereIndex],
+                buildPatternFromAccumulator(hemispheres[hemisphereIndex], accumulators[hemisphereIndex]),
+                config));
+        }
+
+        decision = builder(std::move(hemisphereTraces));
+        decision.fixationCount = static_cast<int>(selectedFixations.size());
+        decision.fixationShifts.clear();
+        decision.fixationShifts.reserve(selectedFixations.size());
+        for (size_t chosenIndex : selectedFixations) {
+            decision.fixationShifts.push_back(
+                {candidates[chosenIndex].shiftXPx, candidates[chosenIndex].shiftYPx});
+        }
+
+        if (decision.fixationCount >= minFixations &&
+            computeDecisionUncertainty(decision) <= config.activeInferenceUncertaintyThreshold) {
+            break;
+        }
+    }
+
+    if (decision.hemisphereTraces.empty()) {
+        decision = builder(inferHemisphereDecisions(hemispheres, image, config));
+    }
+    return decision;
+}
+
+BilateralDecisionTrace inferSingleViewCorpusCallosumDecision(
+    std::vector<HemisphereRuntime>& hemispheres,
+    const VisualStimulus& image,
+    const Config& config) {
+    return buildCorpusCallosumDecisionFromTraces(
+        hemispheres, inferHemisphereDecisions(hemispheres, image, config), config);
+}
+
+BilateralDecisionTrace inferSingleViewCorpusCallosumDecisionWithAudit(
+    std::vector<HemisphereRuntime>& hemispheres,
+    const VisualStimulus& image,
+    const Config& config,
+    std::vector<FlowAuditSampleCapture>& flowAuditCaptures) {
+    flowAuditCaptures.assign(hemispheres.size(), {});
+    return buildCorpusCallosumDecisionFromTraces(
+        hemispheres, inferHemisphereDecisions(hemispheres, image, config, &flowAuditCaptures), config);
+}
+
+BilateralDecisionTrace inferCorpusCallosumDecision(std::vector<HemisphereRuntime>& hemispheres,
+                                                   const VisualStimulus& image,
+                                                   const Config& config) {
+    if (!config.activeInferenceEnabled || config.activeInferenceFixations <= 1) {
+        return inferSingleViewCorpusCallosumDecision(hemispheres, image, config);
+    }
+    return inferActiveVisionDecision(
+        hemispheres,
+        image,
+        config,
+        [&](std::vector<HemisphereDecisionTrace> traces) {
+            return buildCorpusCallosumDecisionFromTraces(hemispheres, std::move(traces), config);
+        });
+}
+
 std::vector<double> buildCorpusCallosumConfidence(std::vector<HemisphereRuntime>& hemispheres,
                                                   const VisualStimulus& image,
                                                   const Config& config) {
     return inferCorpusCallosumDecision(hemispheres, image, config).combinedConfidence;
+}
+
+BilateralDecisionTrace buildFusionDecisionFromTraces(
+    std::vector<HemisphereDecisionTrace> hemisphereTraces,
+    const Config& config,
+    const ClassificationStrategy& fusionClassifier,
+    const FusionRuntime& fusionRuntime) {
+    BilateralDecisionTrace trace;
+    trace.hemisphereTraces = std::move(hemisphereTraces);
+    trace.fusionPattern = buildFusionPatternFromTraces(trace.hemisphereTraces, config);
+    trace.combinedConfidence = fusionClassifier.classifyWithConfidence(
+        trace.fusionPattern, fusionRuntime.trainingPatterns, cosineSimilarity);
+    normalizeSum(trace.combinedConfidence);
+    if (useOnlineRewardStdp(config)) {
+        const auto rewardStdpEvidence =
+            computeRewardStdpEvidence(fusionRuntime.rewardStdpPrototypes, trace.fusionPattern);
+        for (size_t label = 0;
+             label < trace.combinedConfidence.size() && label < rewardStdpEvidence.size();
+             ++label) {
+            trace.combinedConfidence[label] +=
+                onlineRewardStdpGain(config) * rewardStdpEvidence[label];
+        }
+        normalizeSum(trace.combinedConfidence);
+    }
+    if (useOnlineTripletStdp(config)) {
+        const auto tripletStdpEvidence =
+            computeTripletStdpEvidence(fusionRuntime.tripletStdpPrototypes, trace.fusionPattern);
+        for (size_t label = 0;
+             label < trace.combinedConfidence.size() && label < tripletStdpEvidence.size();
+             ++label) {
+            trace.combinedConfidence[label] +=
+                onlineTripletStdpGain(config) * tripletStdpEvidence[label];
+        }
+        normalizeSum(trace.combinedConfidence);
+    }
+    if (useOnlineVoltagePlasticity(config)) {
+        const auto voltagePlasticityEvidence = computeVoltagePlasticityEvidence(
+            fusionRuntime.voltagePlasticityPrototypes, trace.fusionPattern);
+        for (size_t label = 0;
+             label < trace.combinedConfidence.size() &&
+                 label < voltagePlasticityEvidence.size();
+             ++label) {
+            trace.combinedConfidence[label] +=
+                onlineVoltagePlasticityGain(config) * voltagePlasticityEvidence[label];
+        }
+        normalizeSum(trace.combinedConfidence);
+    }
+    trace.topHypotheses = collectTopHypotheses(trace.combinedConfidence, onlineTraceTopK(config));
+    if (!trace.topHypotheses.empty()) {
+        trace.predicted = trace.topHypotheses.front().label;
+    }
+    return trace;
+}
+
+BilateralDecisionTrace inferSingleViewFusionDecision(std::vector<HemisphereRuntime>& hemispheres,
+                                                     const VisualStimulus& image,
+                                                     const Config& config,
+                                                     const ClassificationStrategy& fusionClassifier,
+                                                     const FusionRuntime& fusionRuntime) {
+    return buildFusionDecisionFromTraces(
+        inferHemisphereDecisions(hemispheres, image, config),
+        config,
+        fusionClassifier,
+        fusionRuntime);
+}
+
+BilateralDecisionTrace inferSingleViewFusionDecisionWithAudit(
+    std::vector<HemisphereRuntime>& hemispheres,
+    const VisualStimulus& image,
+    const Config& config,
+    const ClassificationStrategy& fusionClassifier,
+    const FusionRuntime& fusionRuntime,
+    std::vector<FlowAuditSampleCapture>& flowAuditCaptures) {
+    flowAuditCaptures.assign(hemispheres.size(), {});
+    return buildFusionDecisionFromTraces(
+        inferHemisphereDecisions(hemispheres, image, config, &flowAuditCaptures),
+        config,
+        fusionClassifier,
+        fusionRuntime);
 }
 
 BilateralDecisionTrace inferFusionDecision(std::vector<HemisphereRuntime>& hemispheres,
@@ -2173,17 +3684,18 @@ BilateralDecisionTrace inferFusionDecision(std::vector<HemisphereRuntime>& hemis
                                            const Config& config,
                                            const ClassificationStrategy& fusionClassifier,
                                            const FusionRuntime& fusionRuntime) {
-    BilateralDecisionTrace trace;
-    trace.hemisphereTraces = inferHemisphereDecisions(hemispheres, image, config);
-    trace.fusionPattern = buildFusionPatternFromTraces(trace.hemisphereTraces, config);
-    trace.combinedConfidence = fusionClassifier.classifyWithConfidence(
-        trace.fusionPattern, fusionRuntime.trainingPatterns, cosineSimilarity);
-    normalizeSum(trace.combinedConfidence);
-    trace.topHypotheses = collectTopHypotheses(trace.combinedConfidence, onlineTraceTopK(config));
-    if (!trace.topHypotheses.empty()) {
-        trace.predicted = trace.topHypotheses.front().label;
+    if (!config.activeInferenceEnabled || config.activeInferenceFixations <= 1) {
+        return inferSingleViewFusionDecision(
+            hemispheres, image, config, fusionClassifier, fusionRuntime);
     }
-    return trace;
+    return inferActiveVisionDecision(
+        hemispheres,
+        image,
+        config,
+        [&](std::vector<HemisphereDecisionTrace> traces) {
+            return buildFusionDecisionFromTraces(
+                std::move(traces), config, fusionClassifier, fusionRuntime);
+        });
 }
 
 enum class FocusPreset {
@@ -2333,9 +3845,9 @@ void applyRewardToHemisphere(HemisphereRuntime& hemisphere,
             trace.classifierPattern.empty() ? trace.pattern : trace.classifierPattern;
         const double rewardGain =
             std::clamp(config.onlinePositiveRewardGain * rewardMagnitude, 0.05, 2.5);
-        const double baseLr =
-            std::clamp(config.onlineCentroidLr * 0.35 * rewardGain, 0.02, 0.20);
         const double support = std::max(0.05, rewardedTrace->score);
+        const double baseLr =
+            std::clamp(config.onlineCentroidLr * 0.35 * rewardGain, 0.01, 0.25);
         scaleClamped(hemisphere.classWeights[static_cast<size_t>(rewardedLabel)],
                      1.0 + baseLr * support,
                      0.5, 1.5);
@@ -2349,7 +3861,7 @@ void applyRewardToHemisphere(HemisphereRuntime& hemisphere,
         }
         updateCentroid(hemisphere.classCentroids[static_cast<size_t>(rewardedLabel)],
                        classifierPattern,
-                       std::clamp(config.onlineCentroidLr * support * rewardGain, 0.05, 0.45));
+                       std::clamp(config.onlineCentroidLr * support * rewardGain, 0.02, 0.50));
         insertOrReplaceOnlinePattern(hemisphere.trainingPatterns,
                                      &hemisphere.trainingSourceIndices,
                                      hemisphere.onlinePatternIndices,
@@ -2365,10 +3877,10 @@ void applyRewardToHemisphere(HemisphereRuntime& hemisphere,
     }
     const double rewardGain =
         std::clamp(config.onlineNegativeRewardGain * rewardMagnitude, 0.05, 2.5);
-    const double baseLr =
-        std::clamp(config.onlineCentroidLr * 0.35 * rewardGain, 0.02, 0.20);
     const double support = std::max(0.05, penalizedTrace->score);
-    const double penalty = std::clamp(baseLr * support * (1.0 + trace.margin), 0.02, 0.20);
+    const double baseLr =
+        std::clamp(config.onlineCentroidLr * 0.35 * rewardGain, 0.01, 0.25);
+    const double penalty = std::clamp(baseLr * support * (1.0 + trace.margin), 0.02, 0.24);
     scaleClamped(hemisphere.classWeights[static_cast<size_t>(rewardedLabel)],
                  1.0 - penalty,
                  0.5, 1.5);
@@ -2382,15 +3894,181 @@ void applyRewardToHemisphere(HemisphereRuntime& hemisphere,
     }
 }
 
+void applyRewardStdpToHemisphere(HemisphereRuntime& hemisphere,
+                                 const HemisphereDecisionTrace& trace,
+                                 int rewardedLabel,
+                                 double reward,
+                                 const Config& config) {
+    if (!useOnlineRewardStdp(config) ||
+        rewardedLabel < 0 ||
+        static_cast<size_t>(rewardedLabel) >= hemisphere.rewardStdpPrototypes.size()) {
+        return;
+    }
+
+    const auto& classifierPattern =
+        trace.classifierPattern.empty() ? trace.pattern : trace.classifierPattern;
+    if (classifierPattern.empty()) {
+        return;
+    }
+
+    const LabelTrace* labelTrace = findLabelTrace(trace.topHypotheses, rewardedLabel);
+    if (labelTrace == nullptr) {
+        return;
+    }
+
+    const double rewardMagnitude = std::clamp(std::abs(reward), 0.0, 3.0);
+    const double support = std::max(0.05, labelTrace->score);
+    if (reward > 0.0) {
+        updateRewardStdpPrototype(
+            hemisphere.rewardStdpPrototypes[static_cast<size_t>(rewardedLabel)],
+            classifierPattern,
+            std::clamp(onlineRewardStdpLtp(config) * rewardMagnitude * support, 0.02, 0.35),
+            true);
+        return;
+    }
+
+    updateRewardStdpPrototype(
+        hemisphere.rewardStdpPrototypes[static_cast<size_t>(rewardedLabel)],
+        classifierPattern,
+        std::clamp(onlineRewardStdpLtd(config) * rewardMagnitude * support * (1.0 + trace.margin),
+                   0.02,
+                   0.35),
+        false);
+}
+
+void applyTripletStdpToHemisphere(HemisphereRuntime& hemisphere,
+                                  const HemisphereDecisionTrace& trace,
+                                  int rewardedLabel,
+                                  double reward,
+                                  size_t currentStep,
+                                  const Config& config) {
+    if (!useOnlineTripletStdp(config) ||
+        rewardedLabel < 0 ||
+        static_cast<size_t>(rewardedLabel) >= hemisphere.tripletStdpPrototypes.size()) {
+        return;
+    }
+
+    const auto& classifierPattern =
+        trace.classifierPattern.empty() ? trace.pattern : trace.classifierPattern;
+    if (classifierPattern.empty()) {
+        return;
+    }
+
+    const LabelTrace* labelTrace = findLabelTrace(trace.topHypotheses, rewardedLabel);
+    if (labelTrace == nullptr) {
+        return;
+    }
+
+    decayTripletStdpState(hemisphere, currentStep, config);
+    const double rewardMagnitude = std::clamp(std::abs(reward), 0.0, 3.0);
+    const double support = std::max(0.05, labelTrace->score);
+    const double fastTrace =
+        hemisphere.tripletPostTraceFast[static_cast<size_t>(rewardedLabel)];
+    const double slowTrace =
+        hemisphere.tripletPostTraceSlow[static_cast<size_t>(rewardedLabel)];
+    const auto tripletPattern =
+        buildTripletStdpPattern(classifierPattern, hemisphere.tripletPreTrace);
+
+    if (reward > 0.0) {
+        updateRewardStdpPrototype(
+            hemisphere.tripletStdpPrototypes[static_cast<size_t>(rewardedLabel)],
+            tripletPattern,
+            std::clamp(onlineTripletStdpLtp(config) * rewardMagnitude * support *
+                           (1.0 + 0.30 * fastTrace + 0.55 * slowTrace),
+                       0.02,
+                       0.35),
+            true);
+    } else {
+        updateRewardStdpPrototype(
+            hemisphere.tripletStdpPrototypes[static_cast<size_t>(rewardedLabel)],
+            classifierPattern,
+            std::clamp(onlineTripletStdpLtd(config) * rewardMagnitude * support *
+                           (1.0 + trace.margin + 0.25 * fastTrace),
+                       0.02,
+                       0.35),
+            false);
+    }
+
+    updateTripletStdpTraces(hemisphere, classifierPattern, rewardedLabel, support);
+}
+
+void applyVoltagePlasticityToHemisphere(HemisphereRuntime& hemisphere,
+                                        const HemisphereDecisionTrace& trace,
+                                        int rewardedLabel,
+                                        double reward,
+                                        size_t currentStep,
+                                        const Config& config) {
+    if (!useOnlineVoltagePlasticity(config) ||
+        rewardedLabel < 0 ||
+        static_cast<size_t>(rewardedLabel) >= hemisphere.voltagePlasticityPrototypes.size()) {
+        return;
+    }
+
+    const auto& classifierPattern =
+        trace.classifierPattern.empty() ? trace.pattern : trace.classifierPattern;
+    if (classifierPattern.empty()) {
+        return;
+    }
+
+    const LabelTrace* labelTrace = findLabelTrace(trace.topHypotheses, rewardedLabel);
+    if (labelTrace == nullptr) {
+        return;
+    }
+
+    decayVoltagePlasticityState(hemisphere, currentStep, config);
+    const double rewardMagnitude = std::clamp(std::abs(reward), 0.0, 3.0);
+    const double support = std::max(0.05, labelTrace->score);
+    const double persistentTrace =
+        hemisphere.voltageDepolarizationTrace[static_cast<size_t>(rewardedLabel)];
+    auto& prototype =
+        hemisphere.voltagePlasticityPrototypes[static_cast<size_t>(rewardedLabel)];
+    const double depolarization = computeVoltagePlasticityDepolarization(
+        prototype, classifierPattern, support, persistentTrace);
+    const double threshold = onlineVoltagePlasticityThreshold(config);
+    const double supraThreshold = std::max(0.0, depolarization - threshold);
+
+    if (reward > 0.0) {
+        if (supraThreshold <= 1e-6) {
+            updateVoltagePlasticityTrace(hemisphere, rewardedLabel, depolarization * 0.5);
+            return;
+        }
+        updateRewardStdpPrototype(
+            prototype,
+            classifierPattern,
+            std::clamp(onlineVoltagePlasticityLtp(config) * rewardMagnitude *
+                           std::max(0.05, supraThreshold) * (1.0 + 0.35 * trace.margin),
+                       0.02,
+                       0.35),
+            true);
+        updateVoltagePlasticityTrace(hemisphere, rewardedLabel, depolarization);
+        return;
+    }
+
+    updateRewardStdpPrototype(
+        prototype,
+        classifierPattern,
+        std::clamp(onlineVoltagePlasticityLtd(config) * rewardMagnitude *
+                       std::max(0.05, depolarization + 0.35 * trace.margin +
+                                         0.25 * supraThreshold),
+                   0.02,
+                   0.35),
+        false);
+    updateVoltagePlasticityTrace(hemisphere, rewardedLabel, depolarization);
+}
+
 void applyRewardToFusion(FusionRuntime& fusionRuntime,
                          const std::vector<double>& fusionPattern,
+                         const std::vector<LabelTrace>& topHypotheses,
                          int rewardedLabel,
                          double reward,
                          const Config& config) {
     if (reward <= 0.0 ||
-        reward * config.onlinePositiveRewardGain < 0.05) {
+        reward * config.onlinePositiveRewardGain < 0.05 ||
+        rewardedLabel < 0 ||
+        fusionPattern.empty()) {
         return;
     }
+
     insertOrReplaceOnlinePattern(fusionRuntime.trainingPatterns,
                                  nullptr,
                                  fusionRuntime.onlinePatternIndices,
@@ -2399,11 +4077,159 @@ void applyRewardToFusion(FusionRuntime& fusionRuntime,
                                  config.onlineExemplarBudgetPerClass);
 }
 
+void applyRewardStdpToFusion(FusionRuntime& fusionRuntime,
+                             const std::vector<double>& fusionPattern,
+                             const std::vector<LabelTrace>& topHypotheses,
+                             int rewardedLabel,
+                             double reward,
+                             const Config& config) {
+    if (!useOnlineRewardStdp(config) ||
+        rewardedLabel < 0 ||
+        static_cast<size_t>(rewardedLabel) >= fusionRuntime.rewardStdpPrototypes.size() ||
+        fusionPattern.empty()) {
+        return;
+    }
+
+    const LabelTrace* labelTrace = findLabelTrace(topHypotheses, rewardedLabel);
+    if (labelTrace == nullptr) {
+        return;
+    }
+
+    const double rewardMagnitude = std::clamp(std::abs(reward), 0.0, 3.0);
+    const double support = std::max(0.05, labelTrace->score);
+    if (reward > 0.0) {
+        updateRewardStdpPrototype(
+            fusionRuntime.rewardStdpPrototypes[static_cast<size_t>(rewardedLabel)],
+            fusionPattern,
+            std::clamp(onlineRewardStdpLtp(config) * rewardMagnitude * support, 0.02, 0.35),
+            true);
+        return;
+    }
+
+    updateRewardStdpPrototype(
+        fusionRuntime.rewardStdpPrototypes[static_cast<size_t>(rewardedLabel)],
+        fusionPattern,
+        std::clamp(onlineRewardStdpLtd(config) * rewardMagnitude * support, 0.02, 0.35),
+        false);
+}
+
+void applyTripletStdpToFusion(FusionRuntime& fusionRuntime,
+                              const std::vector<double>& fusionPattern,
+                              const std::vector<LabelTrace>& topHypotheses,
+                              int rewardedLabel,
+                              double reward,
+                              size_t currentStep,
+                              const Config& config) {
+    if (!useOnlineTripletStdp(config) ||
+        rewardedLabel < 0 ||
+        static_cast<size_t>(rewardedLabel) >= fusionRuntime.tripletStdpPrototypes.size() ||
+        fusionPattern.empty()) {
+        return;
+    }
+
+    const LabelTrace* labelTrace = findLabelTrace(topHypotheses, rewardedLabel);
+    if (labelTrace == nullptr) {
+        return;
+    }
+
+    decayTripletStdpState(fusionRuntime, currentStep, config);
+    const double rewardMagnitude = std::clamp(std::abs(reward), 0.0, 3.0);
+    const double support = std::max(0.05, labelTrace->score);
+    const double fastTrace =
+        fusionRuntime.tripletPostTraceFast[static_cast<size_t>(rewardedLabel)];
+    const double slowTrace =
+        fusionRuntime.tripletPostTraceSlow[static_cast<size_t>(rewardedLabel)];
+    const auto tripletPattern =
+        buildTripletStdpPattern(fusionPattern, fusionRuntime.tripletPreTrace);
+
+    if (reward > 0.0) {
+        updateRewardStdpPrototype(
+            fusionRuntime.tripletStdpPrototypes[static_cast<size_t>(rewardedLabel)],
+            tripletPattern,
+            std::clamp(onlineTripletStdpLtp(config) * rewardMagnitude * support *
+                           (1.0 + 0.30 * fastTrace + 0.55 * slowTrace),
+                       0.02,
+                       0.35),
+            true);
+    } else {
+        updateRewardStdpPrototype(
+            fusionRuntime.tripletStdpPrototypes[static_cast<size_t>(rewardedLabel)],
+            fusionPattern,
+            std::clamp(onlineTripletStdpLtd(config) * rewardMagnitude * support *
+                           (1.0 + 0.25 * fastTrace),
+                       0.02,
+                       0.35),
+            false);
+    }
+
+    updateTripletStdpTraces(fusionRuntime, fusionPattern, rewardedLabel, support);
+}
+
+void applyVoltagePlasticityToFusion(FusionRuntime& fusionRuntime,
+                                    const std::vector<double>& fusionPattern,
+                                    const std::vector<LabelTrace>& topHypotheses,
+                                    int rewardedLabel,
+                                    double reward,
+                                    size_t currentStep,
+                                    const Config& config) {
+    if (!useOnlineVoltagePlasticity(config) ||
+        rewardedLabel < 0 ||
+        static_cast<size_t>(rewardedLabel) >= fusionRuntime.voltagePlasticityPrototypes.size() ||
+        fusionPattern.empty()) {
+        return;
+    }
+
+    const LabelTrace* labelTrace = findLabelTrace(topHypotheses, rewardedLabel);
+    if (labelTrace == nullptr) {
+        return;
+    }
+
+    decayVoltagePlasticityState(fusionRuntime, currentStep, config);
+    const double rewardMagnitude = std::clamp(std::abs(reward), 0.0, 3.0);
+    const double support = std::max(0.05, labelTrace->score);
+    const double persistentTrace =
+        fusionRuntime.voltageDepolarizationTrace[static_cast<size_t>(rewardedLabel)];
+    auto& prototype =
+        fusionRuntime.voltagePlasticityPrototypes[static_cast<size_t>(rewardedLabel)];
+    const double depolarization = computeVoltagePlasticityDepolarization(
+        prototype, fusionPattern, support, persistentTrace);
+    const double threshold = onlineVoltagePlasticityThreshold(config);
+    const double supraThreshold = std::max(0.0, depolarization - threshold);
+
+    if (reward > 0.0) {
+        if (supraThreshold <= 1e-6) {
+            updateVoltagePlasticityTrace(fusionRuntime, rewardedLabel, depolarization * 0.5);
+            return;
+        }
+        updateRewardStdpPrototype(
+            prototype,
+            fusionPattern,
+            std::clamp(onlineVoltagePlasticityLtp(config) * rewardMagnitude *
+                           std::max(0.05, supraThreshold),
+                       0.02,
+                       0.35),
+            true);
+        updateVoltagePlasticityTrace(fusionRuntime, rewardedLabel, depolarization);
+        return;
+    }
+
+    updateRewardStdpPrototype(
+        prototype,
+        fusionPattern,
+        std::clamp(onlineVoltagePlasticityLtd(config) * rewardMagnitude *
+                       std::max(0.05, depolarization + 0.25 * supraThreshold),
+                   0.02,
+                   0.35),
+        false);
+    updateVoltagePlasticityTrace(fusionRuntime, rewardedLabel, depolarization);
+}
+
 EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& hemispheres,
                                                 const VisualDomainAdapter& loader,
                                                 const std::vector<size_t>& indices,
                                                 const Config& config,
                                                 SeparabilityDiagnosticsRuntime* separabilityRuntime,
+                                                FlowAuditRuntime* flowAuditRuntime,
                                                 const std::string& label) {
     EvaluationResult result = makeEvaluationResult(config);
     if (separabilityRuntime != nullptr) {
@@ -2440,6 +4266,9 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
             std::max(0.05, replayContext.plasticity * item.eligibilityScale);
 
         if (record.finalPredicted == record.truth) {
+            if (flowAuditRuntime != nullptr) {
+                recordFlowAuditReplayMechanisms(*flowAuditRuntime, replayDecision, true);
+            }
             if (!record.correctionSucceeded) {
                 result.correctionSuccesses++;
                 record.correctionSucceeded = true;
@@ -2450,9 +4279,31 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
                                         replayDecision.predicted,
                                         effectiveReward,
                                         config);
+                applyRewardStdpToHemisphere(hemispheres[hemisphereIndex],
+                                            replayDecision.hemisphereTraces[hemisphereIndex],
+                                            replayDecision.predicted,
+                                            effectiveReward,
+                                            config);
+                applyTripletStdpToHemisphere(hemispheres[hemisphereIndex],
+                                             replayDecision.hemisphereTraces[hemisphereIndex],
+                                             replayDecision.predicted,
+                                             effectiveReward,
+                                             currentStep,
+                                             config);
+                applyVoltagePlasticityToHemisphere(
+                    hemispheres[hemisphereIndex],
+                    replayDecision.hemisphereTraces[hemisphereIndex],
+                    replayDecision.predicted,
+                    effectiveReward,
+                    currentStep,
+                    config);
             }
             updateConfusionClusterMemory(confusionMemory, replayDecision, false, config);
             return;
+        }
+
+        if (flowAuditRuntime != nullptr) {
+            recordFlowAuditReplayMechanisms(*flowAuditRuntime, replayDecision, false);
         }
 
         for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
@@ -2461,6 +4312,24 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
                                     replayDecision.predicted,
                                     -effectiveReward,
                                     config);
+            applyRewardStdpToHemisphere(hemispheres[hemisphereIndex],
+                                        replayDecision.hemisphereTraces[hemisphereIndex],
+                                        replayDecision.predicted,
+                                        -effectiveReward,
+                                        config);
+            applyTripletStdpToHemisphere(hemispheres[hemisphereIndex],
+                                         replayDecision.hemisphereTraces[hemisphereIndex],
+                                         replayDecision.predicted,
+                                         -effectiveReward,
+                                         currentStep,
+                                         config);
+            applyVoltagePlasticityToHemisphere(
+                hemispheres[hemisphereIndex],
+                replayDecision.hemisphereTraces[hemisphereIndex],
+                replayDecision.predicted,
+                -effectiveReward,
+                currentStep,
+                config);
         }
         updateConfusionClusterMemory(confusionMemory, replayDecision, true, config);
         if (item.remainingReplays > 1) {
@@ -2505,7 +4374,15 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
             continue;
         }
 
-        auto decision = inferCorpusCallosumDecision(hemispheres, image, config);
+        std::vector<FlowAuditSampleCapture> flowAuditCaptures;
+        const bool captureBranchAudit =
+            flowAuditRuntime != nullptr &&
+            (!config.activeInferenceEnabled || config.activeInferenceFixations <= 1) &&
+            !config.focusAdjustmentEnabled;
+        auto decision = captureBranchAudit
+            ? inferSingleViewCorpusCallosumDecisionWithAudit(
+                  hemispheres, image, config, flowAuditCaptures)
+            : inferCorpusCallosumDecision(hemispheres, image, config);
         const int initialPredicted = decision.predicted;
         if (initialPredicted < 0 || initialPredicted >= config.numClasses) {
             continue;
@@ -2528,6 +4405,48 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
             [&](const VisualStimulus& focusedImage) {
                 return inferCorpusCallosumDecision(hemispheres, focusedImage, config);
             });
+        recordActiveInferenceUsage(result, decision, config);
+        const size_t sampleOrdinal = records.size() + 1;
+        const bool storeFlowAuditRows =
+            flowAuditRuntime != nullptr ? flowAuditShouldStoreRows(*flowAuditRuntime) : false;
+        if (flowAuditRuntime != nullptr) {
+            recordFlowAuditFusionAlternatives(*flowAuditRuntime, decision, truth);
+            if (captureBranchAudit && flowAuditCaptures.size() == hemispheres.size()) {
+                for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+                    recordFlowAuditBranchCapture(*flowAuditRuntime,
+                                                 sampleOrdinal,
+                                                 index,
+                                                 truth,
+                                                 initialPredicted,
+                                                 decision.predicted,
+                                                 hemispheres[hemisphereIndex].name,
+                                                 decision.hemisphereTraces[hemisphereIndex],
+                                                 flowAuditCaptures[hemisphereIndex],
+                                                 hemisphereIndex,
+                                                 storeFlowAuditRows);
+                    recordFlowAuditHemisphereCapture(*flowAuditRuntime,
+                                                     sampleOrdinal,
+                                                     index,
+                                                     truth,
+                                                     initialPredicted,
+                                                     decision.predicted,
+                                                     hemispheres[hemisphereIndex].name,
+                                                     decision.hemisphereTraces[hemisphereIndex],
+                                                     hemispheres[hemisphereIndex],
+                                                     hemisphereIndex,
+                                                     config,
+                                                     storeFlowAuditRows);
+                }
+            }
+            recordFlowAuditFusionRow(*flowAuditRuntime,
+                                     sampleOrdinal,
+                                     index,
+                                     truth,
+                                     initialPredicted,
+                                     decision.predicted,
+                                     decision,
+                                     storeFlowAuditRows);
+        }
         records.push_back(
             {index, truth, leftInitialPredicted, rightInitialPredicted, initialPredicted,
              initialPredicted, false});
@@ -2545,6 +4464,24 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
                                             decision.predicted,
                                             std::max(0.25, 0.5 * context.plasticity),
                                             config);
+                    applyRewardStdpToHemisphere(hemispheres[hemisphereIndex],
+                                                decision.hemisphereTraces[hemisphereIndex],
+                                                decision.predicted,
+                                                std::max(0.25, 0.5 * context.plasticity),
+                                                config);
+                    applyTripletStdpToHemisphere(hemispheres[hemisphereIndex],
+                                                 decision.hemisphereTraces[hemisphereIndex],
+                                                 decision.predicted,
+                                                 std::max(0.25, 0.5 * context.plasticity),
+                                                 records.size(),
+                                                 config);
+                    applyVoltagePlasticityToHemisphere(
+                        hemispheres[hemisphereIndex],
+                        decision.hemisphereTraces[hemisphereIndex],
+                        decision.predicted,
+                        std::max(0.25, 0.5 * context.plasticity),
+                        records.size(),
+                        config);
                 }
             } else {
                 result.correctionEvents++;
@@ -2554,6 +4491,24 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
                                             decision.predicted,
                                             -context.plasticity,
                                             config);
+                    applyRewardStdpToHemisphere(hemispheres[hemisphereIndex],
+                                                decision.hemisphereTraces[hemisphereIndex],
+                                                decision.predicted,
+                                                -context.plasticity,
+                                                config);
+                    applyTripletStdpToHemisphere(hemispheres[hemisphereIndex],
+                                                 decision.hemisphereTraces[hemisphereIndex],
+                                                 decision.predicted,
+                                                 -context.plasticity,
+                                                 records.size(),
+                                                 config);
+                    applyVoltagePlasticityToHemisphere(
+                        hemispheres[hemisphereIndex],
+                        decision.hemisphereTraces[hemisphereIndex],
+                        decision.predicted,
+                        -context.plasticity,
+                        records.size(),
+                        config);
                 }
                 enqueueReplayItem(replayQueue,
                                   makeReplayItem(records.size() - 1,
@@ -2592,50 +4547,10 @@ EvaluationResult evaluateCorpusCallosumPatterns(std::vector<HemisphereRuntime>& 
     return result;
 }
 
-std::vector<double> extractPattern(std::vector<std::unique_ptr<RetinaAdapter>>& retinas,
-                                   const VisualStimulus& image,
-                                   bool useFeatures,
-                                   bool learnPatterns) {
-    std::vector<double> combined;
-
-    for (auto& retina : retinas) {
-        snnfw::adapters::SensoryAdapter::DataSample sample;
-        sample.rawData = image.pixels;
-        sample.timestamp = 0.0;
-        sample.rows = image.rows;
-        sample.cols = image.cols;
-        sample.channels = std::max(1, image.channels);
-
-        std::vector<double> part;
-        if (useFeatures) {
-            auto features = retina->extractFeatures(sample);
-            part = std::move(features.features);
-        } else {
-            retina->processData(sample);
-            if (learnPatterns) {
-                for (const auto& neuron : retina->getNeurons()) {
-                    neuron->learnCurrentPattern();
-                }
-            }
-            part = retina->getActivationPattern();
-        }
-        normalizeL2(part);
-        const double fusionWeight = std::max(0.0, retina->getDoubleParam("fusion_weight", 1.0));
-        if (fusionWeight != 1.0) {
-            for (double& value : part) {
-                value *= fusionWeight;
-            }
-        }
-        combined.insert(combined.end(), part.begin(), part.end());
-        retina->clearNeuronStates();
-    }
-
-    return combined;
-}
-
-std::vector<double> extractRetinaPartPattern(RetinaAdapter& retina,
-                                             const VisualStimulus& image,
-                                             bool useFeatures) {
+std::vector<double> extractRetinaPartRawPattern(RetinaAdapter& retina,
+                                                const VisualStimulus& image,
+                                                bool useFeatures,
+                                                bool learnPatterns) {
     snnfw::adapters::SensoryAdapter::DataSample sample;
     sample.rawData = image.pixels;
     sample.timestamp = 0.0;
@@ -2649,8 +4564,20 @@ std::vector<double> extractRetinaPartPattern(RetinaAdapter& retina,
         part = std::move(features.features);
     } else {
         retina.processData(sample);
+        if (learnPatterns) {
+            for (const auto& neuron : retina.getNeurons()) {
+                neuron->learnCurrentPattern();
+            }
+        }
         part = retina.getActivationPattern();
     }
+    retina.clearNeuronStates();
+    return part;
+}
+
+std::vector<double> finalizeRetinaPartPattern(const RetinaAdapter& retina,
+                                              std::vector<double> part) {
+    part = applyContextualGrouping(retina, std::move(part));
     normalizeL2(part);
     const double fusionWeight = std::max(0.0, retina.getDoubleParam("fusion_weight", 1.0));
     if (fusionWeight != 1.0) {
@@ -2658,8 +4585,405 @@ std::vector<double> extractRetinaPartPattern(RetinaAdapter& retina,
             value *= fusionWeight;
         }
     }
-    retina.clearNeuronStates();
     return part;
+}
+
+bool usePerFixationStage1Memory(const RetinaAdapter& retina,
+                                const Config& config,
+                                bool trainingPhase) {
+    if (!trainingPhase || config.saccadeFixations <= 1) {
+        return false;
+    }
+    return toLower(retina.getStringParam("stage1_fixation_memory_mode", "mean")) ==
+           "per_fixation_exemplar";
+}
+
+bool useMeanMaxFixationSummary(const RetinaAdapter& retina) {
+    return toLower(retina.getStringParam("stage1_fixation_memory_mode", "mean")) ==
+           "mean_max_summary";
+}
+
+std::vector<double> extractPattern(std::vector<std::unique_ptr<RetinaAdapter>>& retinas,
+                                   const VisualStimulus& image,
+                                   const Config& config,
+                                   bool trainingPhase,
+                                   bool learnPatterns,
+                                   size_t sampleSeed,
+                                   FlowAuditSampleCapture* flowAuditCapture) {
+    std::vector<double> combined;
+    const auto fixationImages = buildExtractionStimuli(image, config, trainingPhase, sampleSeed);
+    if (flowAuditCapture != nullptr) {
+        flowAuditCapture->parts.clear();
+        flowAuditCapture->parts.reserve(retinas.size());
+    }
+
+    for (auto& retina : retinas) {
+        std::vector<double> part;
+        std::vector<std::vector<double>> fixationParts;
+        fixationParts.reserve(fixationImages.size());
+        for (const auto& fixationImage : fixationImages) {
+            auto rawPart = extractRetinaPartRawPattern(
+                *retina, fixationImage, config.useFeatures, learnPatterns);
+            fixationParts.push_back(std::move(rawPart));
+        }
+        const bool meanMaxSummary = useMeanMaxFixationSummary(*retina);
+        std::vector<double> preNormPart;
+        std::vector<double> finalizedPart;
+        double preOrientationL2 = 0.0;
+        double preAuxiliaryL2 = 0.0;
+        double postOrientationL2 = 0.0;
+        double postAuxiliaryL2 = 0.0;
+
+        if (meanMaxSummary && !fixationParts.empty()) {
+            std::vector<double> meanPart = fixationParts.front();
+            std::vector<double> maxPart = fixationParts.front();
+            for (size_t fixationIndex = 1; fixationIndex < fixationParts.size(); ++fixationIndex) {
+                const auto& rawPart = fixationParts[fixationIndex];
+                if (rawPart.size() != meanPart.size()) {
+                    continue;
+                }
+                for (size_t i = 0; i < meanPart.size(); ++i) {
+                    meanPart[i] += rawPart[i];
+                    maxPart[i] = std::max(maxPart[i], rawPart[i]);
+                }
+            }
+            if (fixationParts.size() > 1) {
+                const double invFixations = 1.0 / static_cast<double>(fixationParts.size());
+                for (double& value : meanPart) {
+                    value *= invFixations;
+                }
+            }
+            auto finalizedMean = finalizeRetinaPartPattern(*retina, meanPart);
+            auto finalizedMax = finalizeRetinaPartPattern(*retina, maxPart);
+            preNormPart.reserve(meanPart.size() + maxPart.size());
+            preNormPart.insert(preNormPart.end(), meanPart.begin(), meanPart.end());
+            preNormPart.insert(preNormPart.end(), maxPart.begin(), maxPart.end());
+            finalizedPart.reserve(finalizedMean.size() + finalizedMax.size());
+            finalizedPart.insert(finalizedPart.end(), finalizedMean.begin(), finalizedMean.end());
+            finalizedPart.insert(finalizedPart.end(), finalizedMax.begin(), finalizedMax.end());
+            const auto [meanPreOrientationL2, meanPreAuxiliaryL2] =
+                computeRetinaChannelL2Energies(*retina, meanPart);
+            const auto [maxPreOrientationL2, maxPreAuxiliaryL2] =
+                computeRetinaChannelL2Energies(*retina, maxPart);
+            const auto [meanPostOrientationL2, meanPostAuxiliaryL2] =
+                computeRetinaChannelL2Energies(*retina, finalizedMean);
+            const auto [maxPostOrientationL2, maxPostAuxiliaryL2] =
+                computeRetinaChannelL2Energies(*retina, finalizedMax);
+            preOrientationL2 = std::sqrt(meanPreOrientationL2 * meanPreOrientationL2 +
+                                         maxPreOrientationL2 * maxPreOrientationL2);
+            preAuxiliaryL2 = std::sqrt(meanPreAuxiliaryL2 * meanPreAuxiliaryL2 +
+                                       maxPreAuxiliaryL2 * maxPreAuxiliaryL2);
+            postOrientationL2 = std::sqrt(meanPostOrientationL2 * meanPostOrientationL2 +
+                                          maxPostOrientationL2 * maxPostOrientationL2);
+            postAuxiliaryL2 = std::sqrt(meanPostAuxiliaryL2 * meanPostAuxiliaryL2 +
+                                        maxPostAuxiliaryL2 * maxPostAuxiliaryL2);
+        } else {
+            for (const auto& rawPart : fixationParts) {
+                if (part.empty()) {
+                    part.assign(rawPart.size(), 0.0);
+                }
+                if (rawPart.size() != part.size()) {
+                    continue;
+                }
+                for (size_t i = 0; i < part.size(); ++i) {
+                    part[i] += rawPart[i];
+                }
+            }
+            if (!part.empty() && fixationImages.size() > 1) {
+                const double invFixations = 1.0 / static_cast<double>(fixationImages.size());
+                for (double& value : part) {
+                    value *= invFixations;
+                }
+            }
+            preNormPart = part;
+            finalizedPart = finalizeRetinaPartPattern(*retina, std::move(part));
+            const auto [basePreOrientationL2, basePreAuxiliaryL2] =
+                computeRetinaChannelL2Energies(*retina, preNormPart);
+            const auto [basePostOrientationL2, basePostAuxiliaryL2] =
+                computeRetinaChannelL2Energies(*retina, finalizedPart);
+            preOrientationL2 = basePreOrientationL2;
+            preAuxiliaryL2 = basePreAuxiliaryL2;
+            postOrientationL2 = basePostOrientationL2;
+            postAuxiliaryL2 = basePostAuxiliaryL2;
+        }
+
+        if (flowAuditCapture != nullptr) {
+            FlowAuditPartCapture capture;
+            capture.name = retina->getName();
+            capture.preNormPattern = preNormPart;
+            capture.postNormPattern = finalizedPart;
+            capture.preNorm = computeFlowAuditVectorStats(preNormPart);
+            capture.postNorm = computeFlowAuditVectorStats(finalizedPart);
+            capture.preOrientationL2 = preOrientationL2;
+            capture.preAuxiliaryL2 = preAuxiliaryL2;
+            capture.postOrientationL2 = postOrientationL2;
+            capture.postAuxiliaryL2 = postAuxiliaryL2;
+            capture.fixationCount = static_cast<int>(std::max<size_t>(1, fixationImages.size()));
+            capture.fixationVariance = computeFlowAuditFixationVariance(fixationParts);
+            flowAuditCapture->parts.push_back(std::move(capture));
+        }
+        combined.insert(combined.end(), finalizedPart.begin(), finalizedPart.end());
+    }
+
+    return combined;
+}
+
+struct Stage1PatternBatch {
+    std::vector<std::vector<double>> patterns;
+    std::vector<FlowAuditSampleCapture> captures;
+};
+
+Stage1PatternBatch extractStage1TrainingPatternBatch(
+    std::vector<std::unique_ptr<RetinaAdapter>>& retinas,
+    const VisualStimulus& image,
+    const Config& config,
+    bool learnPatterns,
+    size_t sampleSeed,
+    bool captureFlowAudit) {
+    Stage1PatternBatch batch;
+    const bool hasPerFixationMemory = std::any_of(
+        retinas.begin(), retinas.end(), [&](const auto& retina) {
+            return usePerFixationStage1Memory(*retina, config, true);
+        });
+    if (!hasPerFixationMemory) {
+        FlowAuditSampleCapture capture;
+        batch.patterns.push_back(extractPattern(retinas,
+                                                image,
+                                                config,
+                                                true,
+                                                learnPatterns,
+                                                sampleSeed,
+                                                captureFlowAudit ? &capture : nullptr));
+        if (captureFlowAudit) {
+            batch.captures.push_back(std::move(capture));
+        }
+        return batch;
+    }
+
+    const auto fixationImages = buildExtractionStimuli(image, config, true, sampleSeed);
+
+    std::vector<std::vector<std::vector<double>>> retinaPatternOptions;
+    std::vector<std::vector<FlowAuditPartCapture>> retinaCaptureOptions;
+    retinaPatternOptions.reserve(retinas.size());
+    retinaCaptureOptions.reserve(retinas.size());
+
+    size_t outputPatternCount = 1;
+    for (auto& retina : retinas) {
+        const bool perFixationMemory =
+            usePerFixationStage1Memory(*retina, config, true) && fixationImages.size() > 1;
+        std::vector<std::vector<double>> fixationRawParts;
+        fixationRawParts.reserve(fixationImages.size());
+        for (const auto& fixationImage : fixationImages) {
+            fixationRawParts.push_back(
+                extractRetinaPartRawPattern(*retina, fixationImage, config.useFeatures, learnPatterns));
+        }
+
+        std::vector<std::vector<double>> patternOptions;
+        std::vector<FlowAuditPartCapture> captureOptions;
+        if (perFixationMemory) {
+            patternOptions.reserve(fixationRawParts.size());
+            captureOptions.reserve(fixationRawParts.size());
+            const double fixationVariance = computeFlowAuditFixationVariance(fixationRawParts);
+            for (const auto& rawPart : fixationRawParts) {
+                auto finalizedPart = finalizeRetinaPartPattern(*retina, rawPart);
+                patternOptions.push_back(finalizedPart);
+                if (captureFlowAudit) {
+                    FlowAuditPartCapture capture;
+                    capture.name = retina->getName();
+                    capture.preNormPattern = rawPart;
+                    capture.postNormPattern = finalizedPart;
+                    capture.preNorm = computeFlowAuditVectorStats(rawPart);
+                    capture.postNorm = computeFlowAuditVectorStats(finalizedPart);
+                    const auto [preOrientationL2, preAuxiliaryL2] =
+                        computeRetinaChannelL2Energies(*retina, rawPart);
+                    capture.preOrientationL2 = preOrientationL2;
+                    capture.preAuxiliaryL2 = preAuxiliaryL2;
+                    const auto [postOrientationL2, postAuxiliaryL2] =
+                        computeRetinaChannelL2Energies(*retina, finalizedPart);
+                    capture.postOrientationL2 = postOrientationL2;
+                    capture.postAuxiliaryL2 = postAuxiliaryL2;
+                    capture.fixationCount = 1;
+                    capture.fixationVariance = fixationVariance;
+                    captureOptions.push_back(std::move(capture));
+                }
+            }
+        } else {
+            std::vector<double> meanPart;
+            for (const auto& rawPart : fixationRawParts) {
+                if (meanPart.empty()) {
+                    meanPart.assign(rawPart.size(), 0.0);
+                }
+                if (rawPart.size() != meanPart.size()) {
+                    continue;
+                }
+                for (size_t i = 0; i < meanPart.size(); ++i) {
+                    meanPart[i] += rawPart[i];
+                }
+            }
+            if (!meanPart.empty() && fixationRawParts.size() > 1) {
+                const double invFixations = 1.0 / static_cast<double>(fixationRawParts.size());
+                for (double& value : meanPart) {
+                    value *= invFixations;
+                }
+            }
+            auto finalizedPart = finalizeRetinaPartPattern(*retina, meanPart);
+            patternOptions.push_back(finalizedPart);
+            if (captureFlowAudit) {
+                FlowAuditPartCapture capture;
+                capture.name = retina->getName();
+                capture.preNormPattern = meanPart;
+                capture.postNormPattern = finalizedPart;
+                capture.preNorm = computeFlowAuditVectorStats(meanPart);
+                capture.postNorm = computeFlowAuditVectorStats(finalizedPart);
+                const auto [preOrientationL2, preAuxiliaryL2] =
+                    computeRetinaChannelL2Energies(*retina, meanPart);
+                capture.preOrientationL2 = preOrientationL2;
+                capture.preAuxiliaryL2 = preAuxiliaryL2;
+                const auto [postOrientationL2, postAuxiliaryL2] =
+                    computeRetinaChannelL2Energies(*retina, finalizedPart);
+                capture.postOrientationL2 = postOrientationL2;
+                capture.postAuxiliaryL2 = postAuxiliaryL2;
+                capture.fixationCount = static_cast<int>(std::max<size_t>(1, fixationRawParts.size()));
+                capture.fixationVariance = computeFlowAuditFixationVariance(fixationRawParts);
+                captureOptions.push_back(std::move(capture));
+            }
+        }
+
+        outputPatternCount = std::max(outputPatternCount, patternOptions.size());
+        retinaPatternOptions.push_back(std::move(patternOptions));
+        retinaCaptureOptions.push_back(std::move(captureOptions));
+    }
+
+    batch.patterns.resize(outputPatternCount);
+    if (captureFlowAudit) {
+        batch.captures.resize(outputPatternCount);
+    }
+    for (size_t optionIndex = 0; optionIndex < outputPatternCount; ++optionIndex) {
+        for (size_t retinaIndex = 0; retinaIndex < retinaPatternOptions.size(); ++retinaIndex) {
+            const auto& options = retinaPatternOptions[retinaIndex];
+            if (options.empty()) {
+                continue;
+            }
+            const size_t chosenIndex = optionIndex < options.size() ? optionIndex : 0;
+            const auto& chosenPart = options[chosenIndex];
+            batch.patterns[optionIndex].insert(batch.patterns[optionIndex].end(),
+                                               chosenPart.begin(),
+                                               chosenPart.end());
+            if (captureFlowAudit) {
+                const auto& captures = retinaCaptureOptions[retinaIndex];
+                if (!captures.empty()) {
+                    const size_t captureIndex = optionIndex < captures.size() ? optionIndex : 0;
+                    batch.captures[optionIndex].parts.push_back(captures[captureIndex]);
+                }
+            }
+        }
+    }
+    return batch;
+}
+
+std::vector<double> extractRetinaPartPattern(RetinaAdapter& retina,
+                                             const VisualStimulus& image,
+                                             bool useFeatures) {
+    return finalizeRetinaPartPattern(
+        retina, extractRetinaPartRawPattern(retina, image, useFeatures, false));
+}
+
+std::vector<double> remapRetinaPartPattern(const RetinaAdapter& retina,
+                                           std::vector<double> part,
+                                           const VisualStimulus& image,
+                                           double shiftXPx,
+                                           double shiftYPx,
+                                           bool enabled) {
+    if (!enabled || part.empty() || image.rows <= 0 || image.cols <= 0) {
+        return part;
+    }
+
+    const int gridSize = std::max(1, retina.getIntParam("grid_size", 1));
+    const size_t regionCount = static_cast<size_t>(gridSize * gridSize);
+    if (regionCount == 0 || (part.size() % regionCount) != 0) {
+        return part;
+    }
+
+    const int shiftCols = static_cast<int>(std::lround(
+        (-shiftXPx) * static_cast<double>(gridSize) / static_cast<double>(image.cols)));
+    const int shiftRows = static_cast<int>(std::lround(
+        (-shiftYPx) * static_cast<double>(gridSize) / static_cast<double>(image.rows)));
+    if (shiftCols == 0 && shiftRows == 0) {
+        return part;
+    }
+
+    const size_t blockSize = part.size() / regionCount;
+    std::vector<double> remapped(part.size(), 0.0);
+    for (int row = 0; row < gridSize; ++row) {
+        for (int col = 0; col < gridSize; ++col) {
+            const int dstRow = row + shiftRows;
+            const int dstCol = col + shiftCols;
+            if (dstRow < 0 || dstRow >= gridSize || dstCol < 0 || dstCol >= gridSize) {
+                continue;
+            }
+            const size_t srcBase =
+                (static_cast<size_t>(row * gridSize + col) * blockSize);
+            const size_t dstBase =
+                (static_cast<size_t>(dstRow * gridSize + dstCol) * blockSize);
+            std::copy_n(part.begin() + static_cast<std::ptrdiff_t>(srcBase),
+                        static_cast<std::ptrdiff_t>(blockSize),
+                        remapped.begin() + static_cast<std::ptrdiff_t>(dstBase));
+        }
+    }
+    return remapped;
+}
+
+void appendFixationToAccumulator(HemisphereRuntime& hemisphere,
+                                 HemispherePatternAccumulator& accumulator,
+                                 const FixationSpec& fixation,
+                                 const Config& config) {
+    if (accumulator.retinaSums.empty()) {
+        accumulator.retinaSums.resize(hemisphere.retinas.size());
+    }
+
+    for (size_t retinaIndex = 0; retinaIndex < hemisphere.retinas.size(); ++retinaIndex) {
+        auto& retina = hemisphere.retinas[retinaIndex];
+        auto rawPart = extractRetinaPartRawPattern(
+            *retina, fixation.image, config.useFeatures, false);
+        rawPart = remapRetinaPartPattern(
+            *retina,
+            std::move(rawPart),
+            fixation.image,
+            fixation.shiftXPx,
+            fixation.shiftYPx,
+            config.activeInferenceRemapEnabled);
+        auto& sum = accumulator.retinaSums[retinaIndex];
+        if (sum.empty()) {
+            sum.assign(rawPart.size(), 0.0);
+        }
+        if (sum.size() != rawPart.size()) {
+            continue;
+        }
+        for (size_t i = 0; i < sum.size(); ++i) {
+            sum[i] += rawPart[i];
+        }
+    }
+
+    accumulator.fixationCount++;
+}
+
+std::vector<double> buildPatternFromAccumulator(HemisphereRuntime& hemisphere,
+                                                const HemispherePatternAccumulator& accumulator) {
+    std::vector<double> combined;
+    const double invFixations =
+        1.0 / static_cast<double>(std::max(1, accumulator.fixationCount));
+    for (size_t retinaIndex = 0; retinaIndex < hemisphere.retinas.size(); ++retinaIndex) {
+        if (retinaIndex >= accumulator.retinaSums.size()) {
+            continue;
+        }
+        std::vector<double> part = accumulator.retinaSums[retinaIndex];
+        for (double& value : part) {
+            value *= invFixations;
+        }
+        part = finalizeRetinaPartPattern(*hemisphere.retinas[retinaIndex], std::move(part));
+        combined.insert(combined.end(), part.begin(), part.end());
+    }
+    return combined;
 }
 
 std::vector<PatternSlice> buildRetinaProjectionSlices(const RetinaAdapter& retina,
@@ -2762,6 +5086,12 @@ size_t inferAuxiliaryChannelCount(const RetinaAdapter& retina) {
     if (mode == "appearance_bank") {
         return 6u;
     }
+    if (mode == "appearance_stream_bank") {
+        return 10u;
+    }
+    if (mode == "luminance_stream_bank") {
+        return 7u;
+    }
     return 1u;
 }
 
@@ -2783,6 +5113,485 @@ size_t inferFrequencyBandCount(const RetinaAdapter& retina) {
         }
     }
     return std::max<size_t>(1u, values.size());
+}
+
+struct ContextualGroupingLayout {
+    size_t gridSize = 0;
+    size_t regionCount = 0;
+    size_t numOrientations = 0;
+    size_t orientationBlocks = 0;
+    size_t colorEdgeChannels = 0;
+    size_t auxiliaryChannels = 0;
+    size_t frequencyBandCount = 0;
+    size_t orientationFeatureCount = 0;
+    size_t perRegionOrientationEntries = 0;
+    size_t perRegionEntries = 0;
+
+    bool valid() const {
+        return gridSize > 0 &&
+               regionCount > 0 &&
+               numOrientations > 0 &&
+               orientationBlocks > 0 &&
+               colorEdgeChannels > 0 &&
+               frequencyBandCount > 0 &&
+               orientationFeatureCount > 0 &&
+               perRegionOrientationEntries > 0 &&
+               perRegionEntries > 0;
+    }
+
+    size_t orientationChannelIndex(size_t block, size_t color, size_t orientation) const {
+        return ((block * colorEdgeChannels) + color) * numOrientations + orientation;
+    }
+
+    size_t regionValueIndex(size_t region,
+                            size_t orientationChannel,
+                            size_t band) const {
+        return region * perRegionEntries + orientationChannel * frequencyBandCount + band;
+    }
+};
+
+ContextualGroupingLayout inferContextualGroupingLayout(const RetinaAdapter& retina,
+                                                       size_t totalSize) {
+    ContextualGroupingLayout layout;
+    layout.gridSize =
+        static_cast<size_t>(std::max(1, retina.getIntParam("grid_size", 1)));
+    layout.regionCount = layout.gridSize * layout.gridSize;
+    layout.numOrientations =
+        static_cast<size_t>(std::max(1, retina.getIntParam("num_orientations", 8)));
+    const int subfieldGridSize = std::max(1, retina.getIntParam("subfield_grid_size", 1));
+    const bool subfieldIncludePooled = retina.getIntParam("subfield_include_pooled", 1) != 0;
+    const size_t subfieldCount =
+        subfieldGridSize <= 1 ? 0u : static_cast<size_t>(subfieldGridSize * subfieldGridSize);
+    layout.orientationBlocks =
+        subfieldCount == 0 ? 1u : (subfieldIncludePooled ? 1u + subfieldCount : subfieldCount);
+    layout.colorEdgeChannels =
+        toLower(retina.getStringParam("color_edge_mode", "none")) == "opponent" ? 3u : 1u;
+    layout.auxiliaryChannels = inferAuxiliaryChannelCount(retina);
+    layout.frequencyBandCount = inferFrequencyBandCount(retina);
+    layout.orientationFeatureCount =
+        layout.numOrientations * layout.orientationBlocks * layout.colorEdgeChannels;
+    layout.perRegionOrientationEntries =
+        layout.orientationFeatureCount * layout.frequencyBandCount;
+    const size_t perRegionAuxEntries = layout.auxiliaryChannels * layout.frequencyBandCount;
+    layout.perRegionEntries = layout.perRegionOrientationEntries + perRegionAuxEntries;
+    if (layout.regionCount == 0 ||
+        layout.perRegionEntries == 0 ||
+        layout.regionCount * layout.perRegionEntries != totalSize) {
+        return {};
+    }
+    return layout;
+}
+
+std::pair<double, double> computeRetinaChannelL2Energies(const RetinaAdapter& retina,
+                                                         const std::vector<double>& part) {
+    const auto layout = inferContextualGroupingLayout(retina, part.size());
+    if (!layout.valid()) {
+        const double l2 = computeFlowAuditVectorStats(part).l2;
+        return {l2, 0.0};
+    }
+
+    double orientationSq = 0.0;
+    double auxiliarySq = 0.0;
+    for (size_t region = 0; region < layout.regionCount; ++region) {
+        const size_t base = region * layout.perRegionEntries;
+        for (size_t i = 0; i < layout.perRegionOrientationEntries; ++i) {
+            const double value = part[base + i];
+            orientationSq += value * value;
+        }
+        for (size_t i = layout.perRegionOrientationEntries; i < layout.perRegionEntries; ++i) {
+            const double value = part[base + i];
+            auxiliarySq += value * value;
+        }
+    }
+    return {std::sqrt(orientationSq), std::sqrt(auxiliarySq)};
+}
+
+void initializeFlowAuditTraining(HemisphereTrainingArtifacts& artifacts,
+                                 const std::vector<std::unique_ptr<RetinaAdapter>>& retinas,
+                                 int numClasses) {
+    artifacts.flowAuditEnabled = true;
+    artifacts.flowAuditBranches.clear();
+    artifacts.flowAuditBranches.reserve(retinas.size());
+    for (const auto& retina : retinas) {
+        HemisphereTrainingArtifacts::FlowAuditBranchTrainingStats stats;
+        stats.name = retina->getName();
+        stats.preCentroids.assign(static_cast<size_t>(std::max(0, numClasses)), {});
+        stats.postCentroids.assign(static_cast<size_t>(std::max(0, numClasses)), {});
+        stats.preCounts.assign(static_cast<size_t>(std::max(0, numClasses)), 0);
+        stats.postCounts.assign(static_cast<size_t>(std::max(0, numClasses)), 0);
+        artifacts.flowAuditBranches.push_back(std::move(stats));
+    }
+}
+
+void accumulateFlowAuditCentroid(std::vector<double>& centroid,
+                                 int& count,
+                                 const std::vector<double>& pattern) {
+    if (pattern.empty()) {
+        return;
+    }
+    if (centroid.empty()) {
+        centroid.assign(pattern.size(), 0.0);
+    }
+    if (centroid.size() != pattern.size()) {
+        return;
+    }
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        centroid[i] += pattern[i];
+    }
+    ++count;
+}
+
+void accumulateFlowAuditTrainingCapture(HemisphereTrainingArtifacts& artifacts,
+                                        const FlowAuditSampleCapture& capture,
+                                        int label) {
+    if (!artifacts.flowAuditEnabled || label < 0) {
+        return;
+    }
+    for (size_t branchIndex = 0;
+         branchIndex < capture.parts.size() && branchIndex < artifacts.flowAuditBranches.size();
+         ++branchIndex) {
+        auto& branch = artifacts.flowAuditBranches[branchIndex];
+        if (label < 0 || static_cast<size_t>(label) >= branch.preCentroids.size()) {
+            continue;
+        }
+        accumulateFlowAuditCentroid(branch.preCentroids[static_cast<size_t>(label)],
+                                    branch.preCounts[static_cast<size_t>(label)],
+                                    capture.parts[branchIndex].preNormPattern);
+        accumulateFlowAuditCentroid(branch.postCentroids[static_cast<size_t>(label)],
+                                    branch.postCounts[static_cast<size_t>(label)],
+                                    capture.parts[branchIndex].postNormPattern);
+        branch.fixationVarianceSum += capture.parts[branchIndex].fixationVariance;
+        branch.fixationVarianceSamples++;
+    }
+}
+
+void finalizeFlowAuditTraining(HemisphereTrainingArtifacts& artifacts) {
+    if (!artifacts.flowAuditEnabled) {
+        return;
+    }
+    for (auto& branch : artifacts.flowAuditBranches) {
+        for (size_t label = 0; label < branch.preCentroids.size(); ++label) {
+            if (branch.preCounts[label] > 0) {
+                const double invCount = 1.0 / static_cast<double>(branch.preCounts[label]);
+                for (double& value : branch.preCentroids[label]) {
+                    value *= invCount;
+                }
+                normalizeL2(branch.preCentroids[label]);
+            }
+            if (branch.postCounts[label] > 0) {
+                const double invCount = 1.0 / static_cast<double>(branch.postCounts[label]);
+                for (double& value : branch.postCentroids[label]) {
+                    value *= invCount;
+                }
+                normalizeL2(branch.postCentroids[label]);
+            }
+        }
+    }
+}
+
+int quantizeDirectionComponent(double value) {
+    if (std::abs(value) < 0.33) {
+        return 0;
+    }
+    return value > 0.0 ? 1 : -1;
+}
+
+std::pair<int, int> quantizeDirection(double angleRadians) {
+    int dx = quantizeDirectionComponent(std::cos(angleRadians));
+    int dy = quantizeDirectionComponent(std::sin(angleRadians));
+    if (dx == 0 && dy == 0) {
+        if (std::abs(std::cos(angleRadians)) >= std::abs(std::sin(angleRadians))) {
+            dx = std::cos(angleRadians) >= 0.0 ? 1 : -1;
+        } else {
+            dy = std::sin(angleRadians) >= 0.0 ? 1 : -1;
+        }
+    }
+    return {dx, dy};
+}
+
+double sampleRegionValue(const std::vector<double>& values,
+                         size_t gridSize,
+                         int row,
+                         int col) {
+    if (row < 0 || col < 0 ||
+        row >= static_cast<int>(gridSize) ||
+        col >= static_cast<int>(gridSize)) {
+        return 0.0;
+    }
+    return values[static_cast<size_t>(row) * gridSize + static_cast<size_t>(col)];
+}
+
+double sampleEnergy(const std::vector<double>& energy,
+                    const ContextualGroupingLayout& layout,
+                    int row,
+                    int col,
+                    size_t orientation,
+                    size_t band) {
+    if (row < 0 || col < 0 ||
+        row >= static_cast<int>(layout.gridSize) ||
+        col >= static_cast<int>(layout.gridSize) ||
+        orientation >= layout.numOrientations ||
+        band >= layout.frequencyBandCount) {
+        return 0.0;
+    }
+    const size_t region =
+        static_cast<size_t>(row) * layout.gridSize + static_cast<size_t>(col);
+    return energy[(region * layout.numOrientations + orientation) * layout.frequencyBandCount + band];
+}
+
+std::vector<double> applyContextualGrouping(const RetinaAdapter& retina,
+                                            std::vector<double> part) {
+    if (retina.getIntParam("contextual_grouping_enabled", 0) == 0 || part.empty()) {
+        return part;
+    }
+
+    const ContextualGroupingLayout layout =
+        inferContextualGroupingLayout(retina, part.size());
+    if (!layout.valid()) {
+        return part;
+    }
+
+    const int iterations =
+        std::max(1, retina.getIntParam("contextual_grouping_iterations", 3));
+    const double contourGain =
+        std::max(0.0, retina.getDoubleParam("contextual_grouping_contour_gain", 0.35));
+    const double surroundGain =
+        std::max(0.0, retina.getDoubleParam("contextual_grouping_surround_gain", 0.18));
+    const double divisiveGain =
+        std::max(0.0, retina.getDoubleParam("contextual_grouping_divisive_gain", 0.55));
+    const double ownershipGain =
+        std::max(0.0, retina.getDoubleParam("contextual_grouping_ownership_gain", 0.45));
+    const double coarseBiasBase = std::clamp(
+        retina.getDoubleParam("contextual_grouping_coarse_bias", 0.60), 0.0, 1.0);
+
+    std::vector<double> energy(
+        layout.regionCount * layout.numOrientations * layout.frequencyBandCount, 0.0);
+    std::vector<double> regionSurface(layout.regionCount, 0.0);
+
+    for (size_t region = 0; region < layout.regionCount; ++region) {
+        double orientationMean = 0.0;
+        for (size_t orientation = 0; orientation < layout.numOrientations; ++orientation) {
+            for (size_t band = 0; band < layout.frequencyBandCount; ++band) {
+                double sum = 0.0;
+                int count = 0;
+                for (size_t block = 0; block < layout.orientationBlocks; ++block) {
+                    for (size_t color = 0; color < layout.colorEdgeChannels; ++color) {
+                        const size_t orientationChannel =
+                            layout.orientationChannelIndex(block, color, orientation);
+                        const size_t index =
+                            layout.regionValueIndex(region, orientationChannel, band);
+                        sum += part[index];
+                        ++count;
+                    }
+                }
+                const double mean = count > 0 ? (sum / static_cast<double>(count)) : 0.0;
+                energy[(region * layout.numOrientations + orientation) * layout.frequencyBandCount + band] =
+                    mean;
+                orientationMean += mean;
+            }
+        }
+
+        double auxiliaryMean = 0.0;
+        if (layout.auxiliaryChannels > 0) {
+            for (size_t aux = 0; aux < layout.auxiliaryChannels; ++aux) {
+                for (size_t band = 0; band < layout.frequencyBandCount; ++band) {
+                    const size_t index =
+                        region * layout.perRegionEntries +
+                        layout.perRegionOrientationEntries +
+                        aux * layout.frequencyBandCount + band;
+                    auxiliaryMean += part[index];
+                }
+            }
+            auxiliaryMean /=
+                static_cast<double>(layout.auxiliaryChannels * layout.frequencyBandCount);
+        }
+
+        orientationMean /=
+            static_cast<double>(layout.numOrientations * layout.frequencyBandCount);
+        regionSurface[region] =
+            layout.auxiliaryChannels > 0 ? (0.60 * auxiliaryMean + 0.40 * orientationMean)
+                                         : orientationMean;
+    }
+
+    const std::vector<double> baseEnergy = energy;
+    std::vector<double> updated = energy;
+    const double kPi = 3.14159265358979323846;
+    for (int iter = 0; iter < iterations; ++iter) {
+        std::vector<double> regionTotals(layout.regionCount * layout.frequencyBandCount, 0.0);
+        for (size_t region = 0; region < layout.regionCount; ++region) {
+            for (size_t band = 0; band < layout.frequencyBandCount; ++band) {
+                double total = 0.0;
+                for (size_t orientation = 0; orientation < layout.numOrientations; ++orientation) {
+                    const double value = energy[(region * layout.numOrientations + orientation) *
+                                                layout.frequencyBandCount +
+                                                band];
+                    total += value;
+                }
+                regionTotals[region * layout.frequencyBandCount + band] = total;
+            }
+        }
+
+        for (size_t region = 0; region < layout.regionCount; ++region) {
+            const int row = static_cast<int>(region / layout.gridSize);
+            const int col = static_cast<int>(region % layout.gridSize);
+            for (size_t orientation = 0; orientation < layout.numOrientations; ++orientation) {
+                const double theta = (kPi * static_cast<double>(orientation)) /
+                                     static_cast<double>(layout.numOrientations);
+                const auto [tangentDx, tangentDy] = quantizeDirection(theta);
+                const auto [normalDx, normalDy] = quantizeDirection(theta + (0.5 * kPi));
+                const size_t prevOrientation =
+                    orientation == 0 ? (layout.numOrientations - 1) : (orientation - 1);
+                const size_t nextOrientation =
+                    (orientation + 1) % layout.numOrientations;
+
+                for (size_t band = 0; band < layout.frequencyBandCount; ++band) {
+                    const size_t currentIndex =
+                        (region * layout.numOrientations + orientation) *
+                            layout.frequencyBandCount +
+                        band;
+                    const double currentValue = energy[currentIndex];
+                    const double coarseBias =
+                        layout.frequencyBandCount > 1 && iterations > 1
+                            ? (coarseBiasBase *
+                               (1.0 - static_cast<double>(iter) /
+                                          static_cast<double>(iterations - 1)))
+                            : 0.0;
+                    const double lowBandReference = energy[(region * layout.numOrientations +
+                                                            orientation) *
+                                                               layout.frequencyBandCount];
+                    const double referenceValue =
+                        ((1.0 - coarseBias) * currentValue) + (coarseBias * lowBandReference);
+
+                    const double contourSupport =
+                        0.35 * (sampleEnergy(energy, layout, row + tangentDy, col + tangentDx,
+                                             prevOrientation, band) +
+                                sampleEnergy(energy, layout, row - tangentDy, col - tangentDx,
+                                             prevOrientation, band)) +
+                        0.30 * (sampleEnergy(energy, layout, row + tangentDy, col + tangentDx,
+                                             orientation, band) +
+                                sampleEnergy(energy, layout, row - tangentDy, col - tangentDx,
+                                             orientation, band)) +
+                        0.35 * (sampleEnergy(energy, layout, row + tangentDy, col + tangentDx,
+                                             nextOrientation, band) +
+                                sampleEnergy(energy, layout, row - tangentDy, col - tangentDx,
+                                             nextOrientation, band));
+
+                    double localPool = 0.0;
+                    double orthogonalPool = 0.0;
+                    int localCount = 0;
+                    for (int dr = -1; dr <= 1; ++dr) {
+                        for (int dc = -1; dc <= 1; ++dc) {
+                            const int sampleRow = row + dr;
+                            const int sampleCol = col + dc;
+                            if (sampleRow < 0 || sampleCol < 0 ||
+                                sampleRow >= static_cast<int>(layout.gridSize) ||
+                                sampleCol >= static_cast<int>(layout.gridSize)) {
+                                continue;
+                            }
+                            localPool += regionTotals[(static_cast<size_t>(sampleRow) *
+                                                       layout.gridSize +
+                                                       static_cast<size_t>(sampleCol)) *
+                                                          layout.frequencyBandCount +
+                                                      band];
+                            ++localCount;
+                        }
+                    }
+                    if (localCount > 0) {
+                        localPool /= static_cast<double>(localCount);
+                    }
+                    orthogonalPool =
+                        std::max(0.0,
+                                 regionTotals[region * layout.frequencyBandCount + band] -
+                                     currentValue);
+                    orthogonalPool /=
+                        std::max(1.0, static_cast<double>(layout.numOrientations - 1));
+
+                    const auto computeSideEvidence = [&](int side) {
+                        const int sideRow = row + side * normalDy;
+                        const int sideCol = col + side * normalDx;
+                        const double center = sampleRegionValue(regionSurface, layout.gridSize,
+                                                                sideRow, sideCol);
+                        const double forward = sampleRegionValue(
+                            regionSurface, layout.gridSize, sideRow + tangentDy,
+                            sideCol + tangentDx);
+                        const double backward = sampleRegionValue(
+                            regionSurface, layout.gridSize, sideRow - tangentDy,
+                            sideCol - tangentDx);
+                        return center + 0.5 * (forward + backward);
+                    };
+
+                    const double positiveSide = computeSideEvidence(1);
+                    const double negativeSide = computeSideEvidence(-1);
+                    const double sideDelta =
+                        std::clamp(positiveSide - negativeSide, -1.0, 1.0);
+                    const double drive =
+                        referenceValue * (1.0 + contourGain * contourSupport);
+                    const double positiveOwnership =
+                        drive * std::clamp(1.0 + ownershipGain * sideDelta, 0.25, 2.0);
+                    const double negativeOwnership =
+                        drive * std::clamp(1.0 - ownershipGain * sideDelta, 0.25, 2.0);
+                    const double ownedDrive = std::max(positiveOwnership, negativeOwnership);
+                    const double suppressed =
+                        std::max(0.0, ownedDrive - surroundGain * orthogonalPool);
+                    const double normalized =
+                        suppressed / (1.0 + divisiveGain * std::max(0.0, localPool));
+
+                    updated[currentIndex] =
+                        std::clamp(0.35 * currentValue + 0.65 * normalized, 0.0, 4.0);
+                }
+            }
+        }
+        energy.swap(updated);
+    }
+
+    for (size_t region = 0; region < layout.regionCount; ++region) {
+        double regionScaleSum = 0.0;
+        int regionScaleCount = 0;
+        for (size_t orientation = 0; orientation < layout.numOrientations; ++orientation) {
+            for (size_t band = 0; band < layout.frequencyBandCount; ++band) {
+                const size_t energyIndex =
+                    (region * layout.numOrientations + orientation) *
+                        layout.frequencyBandCount +
+                    band;
+                const double originalMean = baseEnergy[energyIndex];
+                const double targetMean = energy[energyIndex];
+                const double scale =
+                    originalMean > 1e-6
+                        ? std::clamp(targetMean / originalMean, 0.45, 2.75)
+                        : (targetMean > 1e-6 ? 1.25 : 1.0);
+                regionScaleSum += scale;
+                ++regionScaleCount;
+
+                for (size_t block = 0; block < layout.orientationBlocks; ++block) {
+                    for (size_t color = 0; color < layout.colorEdgeChannels; ++color) {
+                        const size_t orientationChannel =
+                            layout.orientationChannelIndex(block, color, orientation);
+                        const size_t index =
+                            layout.regionValueIndex(region, orientationChannel, band);
+                        part[index] *= scale;
+                    }
+                }
+            }
+        }
+
+        if (layout.auxiliaryChannels == 0 || regionScaleCount <= 0) {
+            continue;
+        }
+        const double regionScale =
+            std::clamp(regionScaleSum / static_cast<double>(regionScaleCount), 0.60, 1.80);
+        const double auxiliaryScale = 0.85 + 0.15 * regionScale;
+        for (size_t aux = 0; aux < layout.auxiliaryChannels; ++aux) {
+            for (size_t band = 0; band < layout.frequencyBandCount; ++band) {
+                const size_t index =
+                    region * layout.perRegionEntries +
+                    layout.perRegionOrientationEntries +
+                    aux * layout.frequencyBandCount + band;
+                part[index] *= auxiliaryScale;
+            }
+        }
+    }
+
+    return part;
 }
 
 std::vector<PatternSlice> buildRetinaProjectionSlices(const RetinaAdapter& retina,
@@ -2945,6 +5754,438 @@ std::vector<std::vector<std::vector<double>>> computeBranchCentroids(
     return centroids;
 }
 
+struct CentroidAuditMetrics {
+    int predicted = -1;
+    double ownScore = 0.0;
+    double bestOtherScore = 0.0;
+    double margin = 0.0;
+};
+
+struct NeighborAuditMetrics {
+    int bestNeighborLabel = -1;
+    double bestNeighborSimilarity = 0.0;
+    double topkPurity = 0.0;
+};
+
+CentroidAuditMetrics computeCentroidAuditMetrics(const std::vector<double>& pattern,
+                                                 int truth,
+                                                 const std::vector<std::vector<double>>& centroids) {
+    CentroidAuditMetrics metrics;
+    if (pattern.empty() || truth < 0 || static_cast<size_t>(truth) >= centroids.size()) {
+        return metrics;
+    }
+
+    const auto& ownCentroid = centroids[static_cast<size_t>(truth)];
+    if (ownCentroid.empty()) {
+        return metrics;
+    }
+
+    metrics.ownScore = cosineSimilarity(pattern, ownCentroid);
+    double bestScore = -std::numeric_limits<double>::infinity();
+    for (size_t label = 0; label < centroids.size(); ++label) {
+        if (centroids[label].empty()) {
+            continue;
+        }
+        const double score = cosineSimilarity(pattern, centroids[label]);
+        if (static_cast<int>(label) != truth) {
+            metrics.bestOtherScore = std::max(metrics.bestOtherScore, score);
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            metrics.predicted = static_cast<int>(label);
+        }
+    }
+    metrics.margin = metrics.ownScore - metrics.bestOtherScore;
+    return metrics;
+}
+
+NeighborAuditMetrics computeNeighborAuditMetrics(const HemisphereRuntime& hemisphere,
+                                                 const std::vector<double>& pattern,
+                                                 int truth,
+                                                 int k) {
+    NeighborAuditMetrics metrics;
+    if (pattern.empty() || hemisphere.trainingPatterns.empty()) {
+        return metrics;
+    }
+
+    std::vector<std::pair<int, double>> neighbors;
+    neighbors.reserve(hemisphere.trainingPatterns.size());
+    for (size_t i = 0; i < hemisphere.trainingPatterns.size(); ++i) {
+        neighbors.emplace_back(static_cast<int>(i),
+                               cosineSimilarity(pattern, hemisphere.trainingPatterns[i].pattern));
+    }
+
+    const int actualK = std::min<int>(std::max(1, k), static_cast<int>(neighbors.size()));
+    if (actualK <= 0) {
+        return metrics;
+    }
+
+    std::partial_sort(neighbors.begin(), neighbors.begin() + actualK, neighbors.end(),
+                      [](const auto& lhs, const auto& rhs) { return lhs.second > rhs.second; });
+
+    int truthMatches = 0;
+    for (int i = 0; i < actualK; ++i) {
+        const auto& [index, similarity] = neighbors[static_cast<size_t>(i)];
+        const int label = hemisphere.trainingPatterns[static_cast<size_t>(index)].label;
+        if (i == 0) {
+            metrics.bestNeighborLabel = label;
+            metrics.bestNeighborSimilarity = similarity;
+        }
+        if (label == truth) {
+            ++truthMatches;
+        }
+    }
+    metrics.topkPurity =
+        static_cast<double>(truthMatches) / static_cast<double>(std::max(1, actualK));
+    return metrics;
+}
+
+FlowAuditRuntime buildFlowAuditRuntime(
+    std::vector<HemisphereRuntime>& hemispheres,
+    const std::vector<HemisphereTrainingArtifacts>& trainingArtifacts,
+    const VisualDomainAdapter& loader,
+    const TrainingSplit& split,
+    const Config& config,
+    const FusionRuntime& fusionRuntime) {
+    FlowAuditRuntime runtime;
+    runtime.enabled = config.flowAuditEnabled;
+    runtime.sampleLimit = config.flowAuditSampleLimit;
+    runtime.numClasses = config.numClasses;
+    runtime.outputPrefix = defaultFlowAuditOutputPrefix(config);
+    if (!runtime.enabled) {
+        return runtime;
+    }
+
+    runtime.hemisphereBranches.resize(hemispheres.size());
+    runtime.hemisphereCentroids.resize(hemispheres.size());
+    for (size_t hemisphereIndex = 0;
+         hemisphereIndex < hemispheres.size() && hemisphereIndex < trainingArtifacts.size();
+         ++hemisphereIndex) {
+        runtime.hemisphereCentroids[hemisphereIndex] =
+            computeClassCentroids(hemispheres[hemisphereIndex].trainingPatterns, config.numClasses);
+        const auto& artifact = trainingArtifacts[hemisphereIndex];
+        runtime.hemisphereBranches[hemisphereIndex].reserve(artifact.flowAuditBranches.size());
+        for (const auto& branch : artifact.flowAuditBranches) {
+            FlowAuditBranchReference ref;
+            ref.name = branch.name;
+            ref.preCentroids = branch.preCentroids;
+            ref.postCentroids = branch.postCentroids;
+            ref.meanTrainingFixationVariance =
+                branch.fixationVarianceSamples > 0
+                    ? (branch.fixationVarianceSum /
+                       static_cast<double>(branch.fixationVarianceSamples))
+                    : 0.0;
+            runtime.hemisphereBranches[hemisphereIndex].push_back(std::move(ref));
+        }
+    }
+
+    std::vector<ClassificationStrategy::LabeledPattern> interactionPatterns;
+    std::vector<ClassificationStrategy::LabeledPattern> confidenceConcatPatterns;
+    std::vector<ClassificationStrategy::LabeledPattern> hemisphereConcatPatterns;
+    if (!split.fusionIndices.empty()) {
+        interactionPatterns.reserve(split.fusionIndices.size());
+        confidenceConcatPatterns.reserve(split.fusionIndices.size());
+        hemisphereConcatPatterns.reserve(split.fusionIndices.size());
+        for (size_t index : split.fusionIndices) {
+            const auto& image = loader.getStimulus(index);
+            const int label = image.label;
+            if (label < 0 || label >= config.numClasses) {
+                continue;
+            }
+            const auto traces = inferHemisphereDecisions(hemispheres, image, config);
+            interactionPatterns.emplace_back(buildFusionPatternFromTraces(traces, config), label);
+            confidenceConcatPatterns.emplace_back(
+                buildConfidenceConcatPatternFromTraces(traces), label);
+            hemisphereConcatPatterns.emplace_back(
+                buildHemisphereConcatPatternFromTraces(traces), label);
+        }
+    } else if (!fusionRuntime.trainingPatterns.empty()) {
+        interactionPatterns = fusionRuntime.trainingPatterns;
+    }
+
+    runtime.fusionInteractionCentroids =
+        computeClassCentroids(interactionPatterns, config.numClasses);
+    runtime.fusionConfidenceConcatCentroids =
+        computeClassCentroids(confidenceConcatPatterns, config.numClasses);
+    runtime.fusionHemisphereConcatCentroids =
+        computeClassCentroids(hemisphereConcatPatterns, config.numClasses);
+    return runtime;
+}
+
+bool flowAuditShouldStoreRows(FlowAuditRuntime& runtime) {
+    if (!runtime.enabled) {
+        return false;
+    }
+    if (runtime.sampleLimit <= 0) {
+        runtime.recordedSamples++;
+        return true;
+    }
+    if (runtime.recordedSamples < runtime.sampleLimit) {
+        runtime.recordedSamples++;
+        return true;
+    }
+    return false;
+}
+
+void appendFlowAuditRow(FlowAuditRuntime& runtime, const FlowAuditCsvRow& row, bool storeRow) {
+    if (!runtime.enabled) {
+        return;
+    }
+    if (storeRow) {
+        runtime.rows.push_back(row);
+    } else {
+        runtime.droppedRows++;
+    }
+}
+
+void recordFlowAuditFusionAlternatives(FlowAuditRuntime& runtime,
+                                       const BilateralDecisionTrace& decision,
+                                       int truth) {
+    if (!runtime.enabled || truth < 0 || truth >= runtime.numClasses) {
+        return;
+    }
+    runtime.fusionAggregate.samples++;
+
+    const auto interactionMetrics = computeCentroidAuditMetrics(
+        decision.fusionPattern, truth, runtime.fusionInteractionCentroids);
+    if (interactionMetrics.predicted == truth) {
+        runtime.fusionAggregate.interactionCentroidCorrect++;
+    }
+
+    const auto confidenceConcatPattern =
+        buildConfidenceConcatPatternFromTraces(decision.hemisphereTraces);
+    const auto confidenceConcatMetrics = computeCentroidAuditMetrics(
+        confidenceConcatPattern, truth, runtime.fusionConfidenceConcatCentroids);
+    if (confidenceConcatMetrics.predicted == truth) {
+        runtime.fusionAggregate.confidenceConcatCentroidCorrect++;
+    }
+
+    const auto hemisphereConcatPattern =
+        buildHemisphereConcatPatternFromTraces(decision.hemisphereTraces);
+    const auto hemisphereConcatMetrics = computeCentroidAuditMetrics(
+        hemisphereConcatPattern, truth, runtime.fusionHemisphereConcatCentroids);
+    if (hemisphereConcatMetrics.predicted == truth) {
+        runtime.fusionAggregate.hemisphereConcatCentroidCorrect++;
+    }
+}
+
+void populateFlowAuditTopHypotheses(const std::vector<LabelTrace>& topHypotheses,
+                                    FlowAuditCsvRow& row) {
+    if (!topHypotheses.empty()) {
+        row.top1Label = topHypotheses.front().label;
+        row.top1Score = topHypotheses.front().score;
+    }
+    if (topHypotheses.size() > 1) {
+        row.top2Label = topHypotheses[1].label;
+        row.top2Score = topHypotheses[1].score;
+    }
+    row.confidenceMargin = std::max(0.0, row.top1Score - row.top2Score);
+}
+
+void recordFlowAuditBranchCapture(FlowAuditRuntime& runtime,
+                                  size_t sampleOrdinal,
+                                  size_t imageIndex,
+                                  int truth,
+                                  int initialPredicted,
+                                  int finalPredicted,
+                                  const std::string& hemisphereName,
+                                  const HemisphereDecisionTrace& hemisphereTrace,
+                                  const FlowAuditSampleCapture& capture,
+                                  size_t hemisphereIndex,
+                                  bool storeRows) {
+    if (!runtime.enabled || hemisphereIndex >= runtime.hemisphereBranches.size()) {
+        return;
+    }
+
+    for (size_t branchIndex = 0;
+         branchIndex < capture.parts.size() &&
+         branchIndex < runtime.hemisphereBranches[hemisphereIndex].size();
+         ++branchIndex) {
+        const auto& partCapture = capture.parts[branchIndex];
+        const auto& branchRef = runtime.hemisphereBranches[hemisphereIndex][branchIndex];
+        const auto preMetrics = computeCentroidAuditMetrics(
+            partCapture.preNormPattern, truth, branchRef.preCentroids);
+        const auto postMetrics = computeCentroidAuditMetrics(
+            partCapture.postNormPattern, truth, branchRef.postCentroids);
+
+        auto& aggregate = runtime.branchAggregates[hemisphereName + "/" + branchRef.name];
+        aggregate.samples++;
+        aggregate.zeroPreSamples += partCapture.preNorm.l2 <= 1e-6 ? 1 : 0;
+        aggregate.zeroPostSamples += partCapture.postNorm.l2 <= 1e-6 ? 1 : 0;
+        aggregate.preMarginSum += preMetrics.margin;
+        aggregate.postMarginSum += postMetrics.margin;
+        aggregate.preActiveFractionSum += partCapture.preNorm.activeFraction;
+        aggregate.postActiveFractionSum += partCapture.postNorm.activeFraction;
+        aggregate.preNormL2Sum += partCapture.preNorm.l2;
+        aggregate.postNormL2Sum += partCapture.postNorm.l2;
+        aggregate.preOrientationL2Sum += partCapture.preOrientationL2;
+        aggregate.preAuxiliaryL2Sum += partCapture.preAuxiliaryL2;
+        aggregate.postOrientationL2Sum += partCapture.postOrientationL2;
+        aggregate.postAuxiliaryL2Sum += partCapture.postAuxiliaryL2;
+        aggregate.fixationVarianceSum += partCapture.fixationVariance;
+        aggregate.meanTrainingFixationVariance = branchRef.meanTrainingFixationVariance;
+
+        FlowAuditCsvRow row;
+        row.sampleOrdinal = sampleOrdinal;
+        row.imageIndex = imageIndex;
+        row.truth = truth;
+        row.stage = "branch";
+        row.hemisphere = hemisphereName;
+        row.component = branchRef.name;
+        row.predicted = hemisphereTrace.predicted;
+        row.initialPredicted = initialPredicted;
+        row.finalPredicted = finalPredicted;
+        populateFlowAuditTopHypotheses(hemisphereTrace.topHypotheses, row);
+        row.preNormMeanAbs = partCapture.preNorm.meanAbs;
+        row.preNormL2 = partCapture.preNorm.l2;
+        row.preNormActiveFraction = partCapture.preNorm.activeFraction;
+        row.preOrientationL2 = partCapture.preOrientationL2;
+        row.preAuxiliaryL2 = partCapture.preAuxiliaryL2;
+        row.preOwnScore = preMetrics.ownScore;
+        row.preOtherScore = preMetrics.bestOtherScore;
+        row.preMargin = preMetrics.margin;
+        row.postNormMeanAbs = partCapture.postNorm.meanAbs;
+        row.postNormL2 = partCapture.postNorm.l2;
+        row.postNormActiveFraction = partCapture.postNorm.activeFraction;
+        row.postOrientationL2 = partCapture.postOrientationL2;
+        row.postAuxiliaryL2 = partCapture.postAuxiliaryL2;
+        row.postOwnScore = postMetrics.ownScore;
+        row.postOtherScore = postMetrics.bestOtherScore;
+        row.postMargin = postMetrics.margin;
+        row.centroidPredicted = postMetrics.predicted;
+        row.fixationCount = partCapture.fixationCount;
+        row.fixationVariance = partCapture.fixationVariance;
+        appendFlowAuditRow(runtime, row, storeRows);
+    }
+}
+
+void recordFlowAuditHemisphereCapture(FlowAuditRuntime& runtime,
+                                      size_t sampleOrdinal,
+                                      size_t imageIndex,
+                                      int truth,
+                                      int initialPredicted,
+                                      int finalPredicted,
+                                      const std::string& hemisphereName,
+                                      const HemisphereDecisionTrace& trace,
+                                      const HemisphereRuntime& hemisphere,
+                                      size_t hemisphereIndex,
+                                      const Config& config,
+                                      bool storeRows) {
+    if (!runtime.enabled || hemisphereIndex >= runtime.hemisphereCentroids.size()) {
+        return;
+    }
+
+    const auto centroidMetrics = computeCentroidAuditMetrics(
+        trace.pattern, truth, runtime.hemisphereCentroids[hemisphereIndex]);
+    const auto neighborMetrics = computeNeighborAuditMetrics(
+        hemisphere, trace.pattern, truth, config.stage1K > 0 ? config.stage1K : config.knnK);
+
+    auto& aggregate = runtime.hemisphereAggregates[hemisphereName];
+    aggregate.samples++;
+    aggregate.confidenceMarginSum += trace.margin;
+    aggregate.centroidMarginSum += centroidMetrics.margin;
+    aggregate.topkPuritySum += neighborMetrics.topkPurity;
+    aggregate.bestNeighborSimilaritySum += neighborMetrics.bestNeighborSimilarity;
+
+    FlowAuditCsvRow row;
+    row.sampleOrdinal = sampleOrdinal;
+    row.imageIndex = imageIndex;
+    row.truth = truth;
+    row.stage = "hemisphere";
+    row.hemisphere = hemisphereName;
+    row.component = "combined";
+    row.predicted = trace.predicted;
+    row.initialPredicted = initialPredicted;
+    row.finalPredicted = finalPredicted;
+    populateFlowAuditTopHypotheses(trace.topHypotheses, row);
+    const auto postStats = computeFlowAuditVectorStats(trace.pattern);
+    row.postNormMeanAbs = postStats.meanAbs;
+    row.postNormL2 = postStats.l2;
+    row.postNormActiveFraction = postStats.activeFraction;
+    row.postOwnScore = centroidMetrics.ownScore;
+    row.postOtherScore = centroidMetrics.bestOtherScore;
+    row.postMargin = centroidMetrics.margin;
+    row.centroidPredicted = centroidMetrics.predicted;
+    row.bestNeighborLabel = neighborMetrics.bestNeighborLabel;
+    row.bestNeighborSimilarity = neighborMetrics.bestNeighborSimilarity;
+    row.topkPurity = neighborMetrics.topkPurity;
+    appendFlowAuditRow(runtime, row, storeRows);
+}
+
+void recordFlowAuditFusionRow(FlowAuditRuntime& runtime,
+                              size_t sampleOrdinal,
+                              size_t imageIndex,
+                              int truth,
+                              int initialPredicted,
+                              int finalPredicted,
+                              const BilateralDecisionTrace& decision,
+                              bool storeRows) {
+    if (!runtime.enabled) {
+        return;
+    }
+
+    const auto centroidMetrics = computeCentroidAuditMetrics(
+        decision.fusionPattern, truth, runtime.fusionInteractionCentroids);
+    FlowAuditCsvRow row;
+    row.sampleOrdinal = sampleOrdinal;
+    row.imageIndex = imageIndex;
+    row.truth = truth;
+    row.stage = "fusion";
+    row.hemisphere = "bilateral";
+    row.component = "interaction";
+    row.predicted = decision.predicted;
+    row.initialPredicted = initialPredicted;
+    row.finalPredicted = finalPredicted;
+    populateFlowAuditTopHypotheses(decision.topHypotheses, row);
+    const auto postStats = computeFlowAuditVectorStats(decision.fusionPattern);
+    row.postNormMeanAbs = postStats.meanAbs;
+    row.postNormL2 = postStats.l2;
+    row.postNormActiveFraction = postStats.activeFraction;
+    row.postOwnScore = centroidMetrics.ownScore;
+    row.postOtherScore = centroidMetrics.bestOtherScore;
+    row.postMargin = centroidMetrics.margin;
+    row.centroidPredicted = centroidMetrics.predicted;
+    appendFlowAuditRow(runtime, row, storeRows);
+}
+
+void recordFlowAuditReplayMechanisms(FlowAuditRuntime& runtime,
+                                     const BilateralDecisionTrace& replayDecision,
+                                     bool replaySucceeded) {
+    if (!runtime.enabled) {
+        return;
+    }
+
+    if (replaySucceeded) {
+        runtime.replayAggregate.replaySuccessSamples++;
+        for (const auto& trace : replayDecision.hemisphereTraces) {
+            if (trace.predicted < 0) {
+                continue;
+            }
+            runtime.replayAggregate.positiveClassWeightUpdates++;
+            runtime.replayAggregate.positiveCentroidUpdates++;
+            runtime.replayAggregate.positiveExemplarInsertions++;
+            if (trace.predicted == replayDecision.predicted) {
+                runtime.replayAggregate.positivePredictionWeightUpdates++;
+            }
+        }
+        if (replayDecision.predicted >= 0 && !replayDecision.fusionPattern.empty()) {
+            runtime.replayAggregate.positiveFusionExemplarInsertions++;
+        }
+        return;
+    }
+
+    runtime.replayAggregate.replayFailureSamples++;
+    for (const auto& trace : replayDecision.hemisphereTraces) {
+        if (trace.predicted < 0) {
+            continue;
+        }
+        runtime.replayAggregate.negativeClassWeightUpdates++;
+        if (trace.predicted == replayDecision.predicted) {
+            runtime.replayAggregate.negativePredictionWeightUpdates++;
+        }
+    }
+}
+
 void updateSeparabilityStats(EvaluationResult::SeparabilityStats& stats,
                              const std::vector<double>& pattern,
                              const std::vector<double>& rawPattern,
@@ -2980,6 +6221,7 @@ void updateSeparabilityStats(EvaluationResult::SeparabilityStats& stats,
     stats.ownScoreSum += ownScore;
     stats.otherScoreSum += std::max(0.0, bestOther);
     stats.marginSum += ownScore - std::max(0.0, bestOther);
+    bool nonzeroRawPattern = false;
     if (!rawPattern.empty()) {
         double l1 = 0.0;
         double l2 = 0.0;
@@ -2990,12 +6232,18 @@ void updateSeparabilityStats(EvaluationResult::SeparabilityStats& stats,
             l2 += value * value;
             if (absValue > 1e-6) {
                 active++;
+                nonzeroRawPattern = true;
             }
         }
         stats.rawL1Sum += l1 / static_cast<double>(rawPattern.size());
         stats.rawL2Sum += std::sqrt(l2);
         stats.rawActiveFractionSum +=
             static_cast<double>(active) / static_cast<double>(rawPattern.size());
+    }
+    if (nonzeroRawPattern) {
+        stats.nonzeroSamples++;
+    } else {
+        stats.zeroVectorSamples++;
     }
     if (truth >= 0 &&
         static_cast<size_t>(truth) < stats.centroidConfusion.size() &&
@@ -3005,6 +6253,9 @@ void updateSeparabilityStats(EvaluationResult::SeparabilityStats& stats,
     }
     if (bestLabel == truth) {
         stats.centroidCorrect++;
+        if (nonzeroRawPattern) {
+            stats.centroidCorrectNonzero++;
+        }
     }
 }
 
@@ -3312,7 +6563,7 @@ EvaluationResult evaluatePatterns(std::vector<std::unique_ptr<RetinaAdapter>>& r
             continue;
         }
 
-        const auto pattern = extractPattern(retinas, image, config.useFeatures, false);
+        const auto pattern = extractPattern(retinas, image, config, false, false);
         const int predicted = classifier.classify(pattern, trainingPatterns, cosineSimilarity);
         result.confusion[static_cast<size_t>(truth)][static_cast<size_t>(predicted)]++;
         result.correct += (predicted == truth) ? 1 : 0;
@@ -3339,6 +6590,7 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                                            const ClassificationStrategy& fusionClassifier,
                                            FusionRuntime& fusionRuntime,
                                            SeparabilityDiagnosticsRuntime* separabilityRuntime,
+                                           FlowAuditRuntime* flowAuditRuntime,
                                            const std::string& label) {
     EvaluationResult result = makeEvaluationResult(config);
     if (separabilityRuntime != nullptr) {
@@ -3376,6 +6628,9 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
             std::max(0.05, replayContext.plasticity * item.eligibilityScale);
 
         if (record.finalPredicted == record.truth) {
+            if (flowAuditRuntime != nullptr) {
+                recordFlowAuditReplayMechanisms(*flowAuditRuntime, replayDecision, true);
+            }
             if (!record.correctionSucceeded) {
                 result.correctionSuccesses++;
                 record.correctionSucceeded = true;
@@ -3386,14 +6641,57 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                                         replayDecision.predicted,
                                         effectiveReward,
                                         config);
+                applyRewardStdpToHemisphere(hemispheres[hemisphereIndex],
+                                            replayDecision.hemisphereTraces[hemisphereIndex],
+                                            replayDecision.predicted,
+                                            effectiveReward,
+                                            config);
+                applyTripletStdpToHemisphere(hemispheres[hemisphereIndex],
+                                             replayDecision.hemisphereTraces[hemisphereIndex],
+                                             replayDecision.predicted,
+                                             effectiveReward,
+                                             currentStep,
+                                             config);
+                applyVoltagePlasticityToHemisphere(
+                    hemispheres[hemisphereIndex],
+                    replayDecision.hemisphereTraces[hemisphereIndex],
+                    replayDecision.predicted,
+                    effectiveReward,
+                    currentStep,
+                    config);
             }
             applyRewardToFusion(fusionRuntime,
                                 replayDecision.fusionPattern,
+                                replayDecision.topHypotheses,
                                 replayDecision.predicted,
                                 effectiveReward,
                                 config);
+            applyRewardStdpToFusion(fusionRuntime,
+                                    replayDecision.fusionPattern,
+                                    replayDecision.topHypotheses,
+                                    replayDecision.predicted,
+                                    effectiveReward,
+                                    config);
+            applyTripletStdpToFusion(fusionRuntime,
+                                     replayDecision.fusionPattern,
+                                     replayDecision.topHypotheses,
+                                     replayDecision.predicted,
+                                     effectiveReward,
+                                     currentStep,
+                                     config);
+            applyVoltagePlasticityToFusion(fusionRuntime,
+                                           replayDecision.fusionPattern,
+                                           replayDecision.topHypotheses,
+                                           replayDecision.predicted,
+                                           effectiveReward,
+                                           currentStep,
+                                           config);
             updateConfusionClusterMemory(confusionMemory, replayDecision, false, config);
             return;
+        }
+
+        if (flowAuditRuntime != nullptr) {
+            recordFlowAuditReplayMechanisms(*flowAuditRuntime, replayDecision, false);
         }
 
         for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
@@ -3402,7 +6700,45 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                                     replayDecision.predicted,
                                     -effectiveReward,
                                     config);
+            applyRewardStdpToHemisphere(hemispheres[hemisphereIndex],
+                                        replayDecision.hemisphereTraces[hemisphereIndex],
+                                        replayDecision.predicted,
+                                        -effectiveReward,
+                                        config);
+            applyTripletStdpToHemisphere(hemispheres[hemisphereIndex],
+                                         replayDecision.hemisphereTraces[hemisphereIndex],
+                                         replayDecision.predicted,
+                                         -effectiveReward,
+                                         currentStep,
+                                         config);
+            applyVoltagePlasticityToHemisphere(
+                hemispheres[hemisphereIndex],
+                replayDecision.hemisphereTraces[hemisphereIndex],
+                replayDecision.predicted,
+                -effectiveReward,
+                currentStep,
+                config);
         }
+        applyRewardStdpToFusion(fusionRuntime,
+                                replayDecision.fusionPattern,
+                                replayDecision.topHypotheses,
+                                replayDecision.predicted,
+                                -effectiveReward,
+                                config);
+        applyTripletStdpToFusion(fusionRuntime,
+                                 replayDecision.fusionPattern,
+                                 replayDecision.topHypotheses,
+                                 replayDecision.predicted,
+                                 -effectiveReward,
+                                 currentStep,
+                                 config);
+        applyVoltagePlasticityToFusion(fusionRuntime,
+                                       replayDecision.fusionPattern,
+                                       replayDecision.topHypotheses,
+                                       replayDecision.predicted,
+                                       -effectiveReward,
+                                       currentStep,
+                                       config);
         updateConfusionClusterMemory(confusionMemory, replayDecision, true, config);
         if (item.remainingReplays > 1) {
             enqueueReplayItem(replayQueue,
@@ -3446,7 +6782,15 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
             continue;
         }
 
-        auto decision = inferFusionDecision(hemispheres, image, config, fusionClassifier, fusionRuntime);
+        std::vector<FlowAuditSampleCapture> flowAuditCaptures;
+        const bool captureBranchAudit =
+            flowAuditRuntime != nullptr &&
+            (!config.activeInferenceEnabled || config.activeInferenceFixations <= 1) &&
+            !config.focusAdjustmentEnabled;
+        auto decision = captureBranchAudit
+            ? inferSingleViewFusionDecisionWithAudit(
+                  hemispheres, image, config, fusionClassifier, fusionRuntime, flowAuditCaptures)
+            : inferFusionDecision(hemispheres, image, config, fusionClassifier, fusionRuntime);
         const int initialPredicted = decision.predicted;
         if (initialPredicted < 0 || initialPredicted >= config.numClasses) {
             continue;
@@ -3470,6 +6814,48 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                 return inferFusionDecision(
                     hemispheres, focusedImage, config, fusionClassifier, fusionRuntime);
             });
+        recordActiveInferenceUsage(result, decision, config);
+        const size_t sampleOrdinal = records.size() + 1;
+        const bool storeFlowAuditRows =
+            flowAuditRuntime != nullptr ? flowAuditShouldStoreRows(*flowAuditRuntime) : false;
+        if (flowAuditRuntime != nullptr) {
+            recordFlowAuditFusionAlternatives(*flowAuditRuntime, decision, truth);
+            if (captureBranchAudit && flowAuditCaptures.size() == hemispheres.size()) {
+                for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
+                    recordFlowAuditBranchCapture(*flowAuditRuntime,
+                                                 sampleOrdinal,
+                                                 index,
+                                                 truth,
+                                                 initialPredicted,
+                                                 decision.predicted,
+                                                 hemispheres[hemisphereIndex].name,
+                                                 decision.hemisphereTraces[hemisphereIndex],
+                                                 flowAuditCaptures[hemisphereIndex],
+                                                 hemisphereIndex,
+                                                 storeFlowAuditRows);
+                    recordFlowAuditHemisphereCapture(*flowAuditRuntime,
+                                                     sampleOrdinal,
+                                                     index,
+                                                     truth,
+                                                     initialPredicted,
+                                                     decision.predicted,
+                                                     hemispheres[hemisphereIndex].name,
+                                                     decision.hemisphereTraces[hemisphereIndex],
+                                                     hemispheres[hemisphereIndex],
+                                                     hemisphereIndex,
+                                                     config,
+                                                     storeFlowAuditRows);
+                }
+            }
+            recordFlowAuditFusionRow(*flowAuditRuntime,
+                                     sampleOrdinal,
+                                     index,
+                                     truth,
+                                     initialPredicted,
+                                     decision.predicted,
+                                     decision,
+                                     storeFlowAuditRows);
+        }
         records.push_back(
             {index, truth, leftInitialPredicted, rightInitialPredicted, initialPredicted,
              initialPredicted, false});
@@ -3486,12 +6872,51 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                                             decision.predicted,
                                             std::max(0.25, 0.5 * context.plasticity),
                                             config);
+                    applyRewardStdpToHemisphere(hemispheres[hemisphereIndex],
+                                                decision.hemisphereTraces[hemisphereIndex],
+                                                decision.predicted,
+                                                std::max(0.25, 0.5 * context.plasticity),
+                                                config);
+                    applyTripletStdpToHemisphere(hemispheres[hemisphereIndex],
+                                                 decision.hemisphereTraces[hemisphereIndex],
+                                                 decision.predicted,
+                                                 std::max(0.25, 0.5 * context.plasticity),
+                                                 records.size(),
+                                                 config);
+                    applyVoltagePlasticityToHemisphere(
+                        hemispheres[hemisphereIndex],
+                        decision.hemisphereTraces[hemisphereIndex],
+                        decision.predicted,
+                        std::max(0.25, 0.5 * context.plasticity),
+                        records.size(),
+                        config);
                 }
                 applyRewardToFusion(fusionRuntime,
                                     decision.fusionPattern,
+                                    decision.topHypotheses,
                                     decision.predicted,
                                     std::max(0.25, 0.5 * context.plasticity),
                                     config);
+                applyRewardStdpToFusion(fusionRuntime,
+                                        decision.fusionPattern,
+                                        decision.topHypotheses,
+                                        decision.predicted,
+                                        std::max(0.25, 0.5 * context.plasticity),
+                                        config);
+                applyTripletStdpToFusion(fusionRuntime,
+                                         decision.fusionPattern,
+                                         decision.topHypotheses,
+                                         decision.predicted,
+                                         std::max(0.25, 0.5 * context.plasticity),
+                                         records.size(),
+                                         config);
+                applyVoltagePlasticityToFusion(fusionRuntime,
+                                               decision.fusionPattern,
+                                               decision.topHypotheses,
+                                               decision.predicted,
+                                               std::max(0.25, 0.5 * context.plasticity),
+                                               records.size(),
+                                               config);
             } else {
                 result.correctionEvents++;
                 for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
@@ -3500,7 +6925,45 @@ EvaluationResult evaluateBilateralPatterns(std::vector<HemisphereRuntime>& hemis
                                             decision.predicted,
                                             -context.plasticity,
                                             config);
+                    applyRewardStdpToHemisphere(hemispheres[hemisphereIndex],
+                                                decision.hemisphereTraces[hemisphereIndex],
+                                                decision.predicted,
+                                                -context.plasticity,
+                                                config);
+                    applyTripletStdpToHemisphere(hemispheres[hemisphereIndex],
+                                                 decision.hemisphereTraces[hemisphereIndex],
+                                                 decision.predicted,
+                                                 -context.plasticity,
+                                                 records.size(),
+                                                 config);
+                    applyVoltagePlasticityToHemisphere(
+                        hemispheres[hemisphereIndex],
+                        decision.hemisphereTraces[hemisphereIndex],
+                        decision.predicted,
+                        -context.plasticity,
+                        records.size(),
+                        config);
                 }
+                applyRewardStdpToFusion(fusionRuntime,
+                                        decision.fusionPattern,
+                                        decision.topHypotheses,
+                                        decision.predicted,
+                                        -context.plasticity,
+                                        config);
+                applyTripletStdpToFusion(fusionRuntime,
+                                         decision.fusionPattern,
+                                         decision.topHypotheses,
+                                         decision.predicted,
+                                         -context.plasticity,
+                                         records.size(),
+                                         config);
+                applyVoltagePlasticityToFusion(fusionRuntime,
+                                               decision.fusionPattern,
+                                               decision.topHypotheses,
+                                               decision.predicted,
+                                               -context.plasticity,
+                                               records.size(),
+                                               config);
                 enqueueReplayItem(replayQueue,
                                   makeReplayItem(records.size() - 1,
                                                  config.onlineCorrectionRepeats,
@@ -3878,6 +7341,9 @@ void printSeparabilitySummary(const EvaluationResult& result, const Config& conf
         const double centroidAccuracy =
             100.0 * static_cast<double>(stats.centroidCorrect) /
             static_cast<double>(std::max(1, stats.samples));
+        const double nonzeroCentroidAccuracy =
+            100.0 * static_cast<double>(stats.centroidCorrectNonzero) /
+            static_cast<double>(std::max(1, stats.nonzeroSamples));
         const double ownScore =
             stats.ownScoreSum / static_cast<double>(std::max(1, stats.samples));
         const double otherScore =
@@ -3897,7 +7363,9 @@ void printSeparabilitySummary(const EvaluationResult& result, const Config& conf
                   << ", margin=" << margin
                   << ", raw_l1=" << rawL1
                   << ", raw_l2=" << rawL2
-                  << ", raw_active=" << (100.0 * rawActiveFraction) << "%";
+                  << ", raw_active=" << (100.0 * rawActiveFraction) << "%"
+                  << ", nonzero_centroid_acc=" << nonzeroCentroidAccuracy << "%"
+                  << ", zero_vectors=" << stats.zeroVectorSamples;
 
         int dominantTarget = -1;
         int dominantTargetCount = 0;
@@ -3956,6 +7424,190 @@ void printSeparabilitySummary(const EvaluationResult& result, const Config& conf
         }
         std::cout << std::endl;
     }
+}
+
+std::string escapeJsonString(const std::string& value) {
+    std::ostringstream oss;
+    for (char c : value) {
+        switch (c) {
+            case '\\':
+                oss << "\\\\";
+                break;
+            case '"':
+                oss << "\\\"";
+                break;
+            case '\n':
+                oss << "\\n";
+                break;
+            case '\r':
+                oss << "\\r";
+                break;
+            case '\t':
+                oss << "\\t";
+                break;
+            default:
+                oss << c;
+                break;
+        }
+    }
+    return oss.str();
+}
+
+void writeFlowAuditArtifacts(const FlowAuditRuntime& runtime, const std::string& label) {
+    if (!runtime.enabled) {
+        return;
+    }
+
+    std::filesystem::path prefix(runtime.outputPrefix);
+    const std::string labelSuffix = sanitizeFlowAuditStem(toLower(label));
+    if (!labelSuffix.empty()) {
+        prefix += "_" + labelSuffix;
+    }
+    if (!prefix.parent_path().empty()) {
+        std::filesystem::create_directories(prefix.parent_path());
+    }
+
+    const std::filesystem::path csvPath = prefix.string() + "_samples.csv";
+    const std::filesystem::path jsonPath = prefix.string() + "_summary.json";
+
+    {
+        std::ofstream csv(csvPath);
+        csv << "sample_ordinal,image_index,truth,stage,hemisphere,component,predicted,initial_predicted,"
+               "final_predicted,top1_label,top1_score,top2_label,top2_score,confidence_margin,"
+               "best_neighbor_label,best_neighbor_similarity,topk_purity,centroid_predicted,"
+               "pre_norm_mean_abs,pre_norm_l2,pre_norm_active_fraction,pre_orientation_l2,"
+               "pre_auxiliary_l2,pre_own_score,pre_other_score,pre_margin,post_norm_mean_abs,"
+               "post_norm_l2,post_norm_active_fraction,post_orientation_l2,post_auxiliary_l2,"
+               "post_own_score,post_other_score,post_margin,fixation_count,fixation_variance\n";
+        for (const auto& row : runtime.rows) {
+            csv << row.sampleOrdinal << ','
+                << row.imageIndex << ','
+                << row.truth << ','
+                << row.stage << ','
+                << row.hemisphere << ','
+                << row.component << ','
+                << row.predicted << ','
+                << row.initialPredicted << ','
+                << row.finalPredicted << ','
+                << row.top1Label << ','
+                << row.top1Score << ','
+                << row.top2Label << ','
+                << row.top2Score << ','
+                << row.confidenceMargin << ','
+                << row.bestNeighborLabel << ','
+                << row.bestNeighborSimilarity << ','
+                << row.topkPurity << ','
+                << row.centroidPredicted << ','
+                << row.preNormMeanAbs << ','
+                << row.preNormL2 << ','
+                << row.preNormActiveFraction << ','
+                << row.preOrientationL2 << ','
+                << row.preAuxiliaryL2 << ','
+                << row.preOwnScore << ','
+                << row.preOtherScore << ','
+                << row.preMargin << ','
+                << row.postNormMeanAbs << ','
+                << row.postNormL2 << ','
+                << row.postNormActiveFraction << ','
+                << row.postOrientationL2 << ','
+                << row.postAuxiliaryL2 << ','
+                << row.postOwnScore << ','
+                << row.postOtherScore << ','
+                << row.postMargin << ','
+                << row.fixationCount << ','
+                << row.fixationVariance << '\n';
+        }
+    }
+
+    std::vector<std::pair<std::string, FlowAuditBranchAggregate>> sortedBranchAggregates(
+        runtime.branchAggregates.begin(), runtime.branchAggregates.end());
+    std::sort(sortedBranchAggregates.begin(), sortedBranchAggregates.end(),
+              [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+    std::vector<std::pair<std::string, FlowAuditHemisphereAggregate>> sortedHemisphereAggregates(
+        runtime.hemisphereAggregates.begin(), runtime.hemisphereAggregates.end());
+    std::sort(sortedHemisphereAggregates.begin(), sortedHemisphereAggregates.end(),
+              [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+
+    std::ofstream json(jsonPath);
+    json << "{\n";
+    json << "  \"output_prefix\": \"" << escapeJsonString(prefix.string()) << "\",\n";
+    json << "  \"samples_recorded\": " << runtime.recordedSamples << ",\n";
+    json << "  \"rows_written\": " << runtime.rows.size() << ",\n";
+    json << "  \"dropped_rows\": " << runtime.droppedRows << ",\n";
+    json << "  \"fusion_alternatives\": {\n";
+    json << "    \"samples\": " << runtime.fusionAggregate.samples << ",\n";
+    json << "    \"interaction_centroid_accuracy\": "
+         << (runtime.fusionAggregate.samples > 0
+                 ? (100.0 * static_cast<double>(runtime.fusionAggregate.interactionCentroidCorrect) /
+                    static_cast<double>(runtime.fusionAggregate.samples))
+                 : 0.0)
+         << ",\n";
+    json << "    \"confidence_concat_centroid_accuracy\": "
+         << (runtime.fusionAggregate.samples > 0
+                 ? (100.0 * static_cast<double>(runtime.fusionAggregate.confidenceConcatCentroidCorrect) /
+                    static_cast<double>(runtime.fusionAggregate.samples))
+                 : 0.0)
+         << ",\n";
+    json << "    \"hemisphere_concat_centroid_accuracy\": "
+         << (runtime.fusionAggregate.samples > 0
+                 ? (100.0 * static_cast<double>(runtime.fusionAggregate.hemisphereConcatCentroidCorrect) /
+                    static_cast<double>(runtime.fusionAggregate.samples))
+                 : 0.0)
+         << "\n";
+    json << "  },\n";
+    json << "  \"replay_mechanisms\": {\n";
+    json << "    \"replay_success_samples\": " << runtime.replayAggregate.replaySuccessSamples << ",\n";
+    json << "    \"replay_failure_samples\": " << runtime.replayAggregate.replayFailureSamples << ",\n";
+    json << "    \"positive_class_weight_updates\": " << runtime.replayAggregate.positiveClassWeightUpdates << ",\n";
+    json << "    \"positive_prediction_weight_updates\": " << runtime.replayAggregate.positivePredictionWeightUpdates << ",\n";
+    json << "    \"positive_centroid_updates\": " << runtime.replayAggregate.positiveCentroidUpdates << ",\n";
+    json << "    \"positive_exemplar_insertions\": " << runtime.replayAggregate.positiveExemplarInsertions << ",\n";
+    json << "    \"positive_fusion_exemplar_insertions\": " << runtime.replayAggregate.positiveFusionExemplarInsertions << ",\n";
+    json << "    \"negative_class_weight_updates\": " << runtime.replayAggregate.negativeClassWeightUpdates << ",\n";
+    json << "    \"negative_prediction_weight_updates\": " << runtime.replayAggregate.negativePredictionWeightUpdates << "\n";
+    json << "  },\n";
+    json << "  \"branch_aggregates\": [\n";
+    for (size_t i = 0; i < sortedBranchAggregates.size(); ++i) {
+        const auto& [name, stats] = sortedBranchAggregates[i];
+        const double samples = static_cast<double>(std::max(1, stats.samples));
+        json << "    {\n";
+        json << "      \"name\": \"" << escapeJsonString(name) << "\",\n";
+        json << "      \"samples\": " << stats.samples << ",\n";
+        json << "      \"zero_pre_samples\": " << stats.zeroPreSamples << ",\n";
+        json << "      \"zero_post_samples\": " << stats.zeroPostSamples << ",\n";
+        json << "      \"mean_pre_margin\": " << (stats.preMarginSum / samples) << ",\n";
+        json << "      \"mean_post_margin\": " << (stats.postMarginSum / samples) << ",\n";
+        json << "      \"mean_pre_active_fraction\": " << (stats.preActiveFractionSum / samples) << ",\n";
+        json << "      \"mean_post_active_fraction\": " << (stats.postActiveFractionSum / samples) << ",\n";
+        json << "      \"mean_pre_norm_l2\": " << (stats.preNormL2Sum / samples) << ",\n";
+        json << "      \"mean_post_norm_l2\": " << (stats.postNormL2Sum / samples) << ",\n";
+        json << "      \"mean_pre_orientation_l2\": " << (stats.preOrientationL2Sum / samples) << ",\n";
+        json << "      \"mean_pre_auxiliary_l2\": " << (stats.preAuxiliaryL2Sum / samples) << ",\n";
+        json << "      \"mean_post_orientation_l2\": " << (stats.postOrientationL2Sum / samples) << ",\n";
+        json << "      \"mean_post_auxiliary_l2\": " << (stats.postAuxiliaryL2Sum / samples) << ",\n";
+        json << "      \"mean_fixation_variance\": " << (stats.fixationVarianceSum / samples) << ",\n";
+        json << "      \"mean_training_fixation_variance\": " << stats.meanTrainingFixationVariance << "\n";
+        json << "    }" << (i + 1 < sortedBranchAggregates.size() ? "," : "") << "\n";
+    }
+    json << "  ],\n";
+    json << "  \"hemisphere_aggregates\": [\n";
+    for (size_t i = 0; i < sortedHemisphereAggregates.size(); ++i) {
+        const auto& [name, stats] = sortedHemisphereAggregates[i];
+        const double samples = static_cast<double>(std::max(1, stats.samples));
+        json << "    {\n";
+        json << "      \"name\": \"" << escapeJsonString(name) << "\",\n";
+        json << "      \"samples\": " << stats.samples << ",\n";
+        json << "      \"mean_confidence_margin\": " << (stats.confidenceMarginSum / samples) << ",\n";
+        json << "      \"mean_centroid_margin\": " << (stats.centroidMarginSum / samples) << ",\n";
+        json << "      \"mean_topk_purity\": " << (stats.topkPuritySum / samples) << ",\n";
+        json << "      \"mean_best_neighbor_similarity\": " << (stats.bestNeighborSimilaritySum / samples) << "\n";
+        json << "    }" << (i + 1 < sortedHemisphereAggregates.size() ? "," : "") << "\n";
+    }
+    json << "  ]\n";
+    json << "}\n";
+
+    std::cout << "  Flow audit CSV: " << csvPath.string() << std::endl;
+    std::cout << "  Flow audit summary: " << jsonPath.string() << std::endl;
 }
 
 void resetOrientationFlowDiagnostics(std::vector<HemisphereRuntime>& hemispheres) {
@@ -4156,6 +7808,27 @@ void printFocusAdjustmentSummary(const EvaluationResult& result) {
               << ", right=" << result.focusRightSelections << std::endl;
 }
 
+void printActiveInferenceSummary(const EvaluationResult& result, const Config& config) {
+    if (!config.activeInferenceEnabled || result.activeInferenceSamples <= 0) {
+        return;
+    }
+    const double meanFixations =
+        result.activeInferenceFixationSum /
+        static_cast<double>(std::max(1, result.activeInferenceSamples));
+    const double extraRate =
+        100.0 * static_cast<double>(result.activeInferenceExtraFixationSamples) /
+        static_cast<double>(std::max(1, result.activeInferenceSamples));
+    const double earlyStopRate =
+        100.0 * static_cast<double>(result.activeInferenceEarlyStops) /
+        static_cast<double>(std::max(1, result.activeInferenceSamples));
+    std::cout << "  Active inference: samples=" << result.activeInferenceSamples
+              << ", mean_fixations=" << std::fixed << std::setprecision(2) << meanFixations
+              << ", extra_fixations=" << result.activeInferenceExtraFixationSamples
+              << " (" << extraRate << "%)"
+              << ", early_stops=" << result.activeInferenceEarlyStops
+              << " (" << earlyStopRate << "%)" << std::endl;
+}
+
 Config parseArgs(int argc, char* argv[]) {
     Config config;
 
@@ -4283,6 +7956,38 @@ Config parseArgs(int argc, char* argv[]) {
             config.onlinePositiveRewardGain = std::atof(argv[++i]);
         } else if (arg == "--online-negative-reward-gain" && i + 1 < argc) {
             config.onlineNegativeRewardGain = std::atof(argv[++i]);
+        } else if (arg == "--online-reward-stdp-enabled") {
+            config.onlineRewardStdpEnabled = true;
+        } else if (arg == "--online-reward-stdp-gain" && i + 1 < argc) {
+            config.onlineRewardStdpGain = std::atof(argv[++i]);
+        } else if (arg == "--online-reward-stdp-ltp" && i + 1 < argc) {
+            config.onlineRewardStdpLtp = std::atof(argv[++i]);
+        } else if (arg == "--online-reward-stdp-ltd" && i + 1 < argc) {
+            config.onlineRewardStdpLtd = std::atof(argv[++i]);
+        } else if (arg == "--online-triplet-stdp-enabled") {
+            config.onlineTripletStdpEnabled = true;
+        } else if (arg == "--online-triplet-stdp-gain" && i + 1 < argc) {
+            config.onlineTripletStdpGain = std::atof(argv[++i]);
+        } else if (arg == "--online-triplet-stdp-ltp" && i + 1 < argc) {
+            config.onlineTripletStdpLtp = std::atof(argv[++i]);
+        } else if (arg == "--online-triplet-stdp-ltd" && i + 1 < argc) {
+            config.onlineTripletStdpLtd = std::atof(argv[++i]);
+        } else if (arg == "--online-triplet-stdp-fast-decay" && i + 1 < argc) {
+            config.onlineTripletStdpFastDecay = std::atof(argv[++i]);
+        } else if (arg == "--online-triplet-stdp-slow-decay" && i + 1 < argc) {
+            config.onlineTripletStdpSlowDecay = std::atof(argv[++i]);
+        } else if (arg == "--online-voltage-plasticity-enabled") {
+            config.onlineVoltagePlasticityEnabled = true;
+        } else if (arg == "--online-voltage-plasticity-gain" && i + 1 < argc) {
+            config.onlineVoltagePlasticityGain = std::atof(argv[++i]);
+        } else if (arg == "--online-voltage-plasticity-ltp" && i + 1 < argc) {
+            config.onlineVoltagePlasticityLtp = std::atof(argv[++i]);
+        } else if (arg == "--online-voltage-plasticity-ltd" && i + 1 < argc) {
+            config.onlineVoltagePlasticityLtd = std::atof(argv[++i]);
+        } else if (arg == "--online-voltage-plasticity-decay" && i + 1 < argc) {
+            config.onlineVoltagePlasticityDecay = std::atof(argv[++i]);
+        } else if (arg == "--online-voltage-plasticity-threshold" && i + 1 < argc) {
+            config.onlineVoltagePlasticityThreshold = std::atof(argv[++i]);
         } else if (arg == "--online-replay-queue-capacity" && i + 1 < argc) {
             config.onlineReplayQueueCapacity = std::atoi(argv[++i]);
         } else if (arg == "--online-replay-delay-steps" && i + 1 < argc) {
@@ -4313,6 +8018,41 @@ Config parseArgs(int argc, char* argv[]) {
             config.focusAdjustmentZoom = std::atof(argv[++i]);
         } else if (arg == "--focus-adjustment-shift-px" && i + 1 < argc) {
             config.focusAdjustmentShiftPx = std::atof(argv[++i]);
+        } else if (arg == "--training-curriculum-groups" && i + 1 < argc) {
+            config.trainingCurriculumSpec = argv[++i];
+        } else if (arg == "--training-review-fraction" && i + 1 < argc) {
+            config.trainingReviewFraction = std::clamp(std::atof(argv[++i]), 0.0, 1.0);
+        } else if (arg == "--training-augmentation-variants" && i + 1 < argc) {
+            config.trainingAugmentationVariants = std::max(0, std::atoi(argv[++i]));
+        } else if (arg == "--training-augmentation-shift-px" && i + 1 < argc) {
+            config.trainingAugmentationShiftPx = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--training-augmentation-rotation-deg" && i + 1 < argc) {
+            config.trainingAugmentationRotationDeg = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--training-augmentation-noise-std" && i + 1 < argc) {
+            config.trainingAugmentationNoiseStd = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--active-inference-enabled") {
+            config.activeInferenceEnabled = true;
+        } else if (arg == "--active-inference-fixations" && i + 1 < argc) {
+            config.activeInferenceFixations = std::max(1, std::atoi(argv[++i]));
+        } else if (arg == "--active-inference-min-fixations" && i + 1 < argc) {
+            config.activeInferenceMinFixations = std::max(1, std::atoi(argv[++i]));
+        } else if (arg == "--active-inference-remap-enabled" && i + 1 < argc) {
+            config.activeInferenceRemapEnabled = std::atoi(argv[++i]) != 0;
+        } else if (arg == "--active-inference-shift-px" && i + 1 < argc) {
+            config.activeInferenceShiftPx = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--active-inference-zoom" && i + 1 < argc) {
+            config.activeInferenceZoom = std::max(1e-3, std::atof(argv[++i]));
+        } else if (arg == "--active-inference-uncertainty-threshold" && i + 1 < argc) {
+            config.activeInferenceUncertaintyThreshold =
+                std::clamp(std::atof(argv[++i]), 0.0, 1.0);
+        } else if (arg == "--active-inference-ior-strength" && i + 1 < argc) {
+            config.activeInferenceIorStrength = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--flow-audit-enabled") {
+            config.flowAuditEnabled = true;
+        } else if (arg == "--flow-audit-sample-limit" && i + 1 < argc) {
+            config.flowAuditSampleLimit = std::max(0, std::atoi(argv[++i]));
+        } else if (arg == "--flow-audit-output-prefix" && i + 1 < argc) {
+            config.flowAuditOutputPrefix = argv[++i];
         } else if (arg == "--use-features") {
             config.useFeatures = true;
         } else if (arg == "--use-activations") {
@@ -4340,7 +8080,7 @@ Config parseArgs(int argc, char* argv[]) {
                 << "  --grid-sizes <n1,n2,...>\n"
                 << "  --num-orientations <n>\n"
                 << "  --edge-threshold <v>\n"
-                << "  --edge-operator sobel|gabor|dog\n"
+                << "  --edge-operator sobel|gabor|quadrature_gabor|orientation_energy|dog\n"
                 << "  --encoding-strategy rate|temporal|population\n"
                 << "  --classifier majority|weighted_similarity|weighted_distance|hierarchical\n"
                 << "  --activation-mode binary|similarity|hybrid\n"
@@ -4356,6 +8096,22 @@ Config parseArgs(int argc, char* argv[]) {
                 << "  --online-centroid-lr <v>\n"
                 << "  --online-positive-reward-gain <v>\n"
                 << "  --online-negative-reward-gain <v>\n"
+                << "  --online-reward-stdp-enabled\n"
+                << "  --online-reward-stdp-gain <v>\n"
+                << "  --online-reward-stdp-ltp <v>\n"
+                << "  --online-reward-stdp-ltd <v>\n"
+                << "  --online-triplet-stdp-enabled\n"
+                << "  --online-triplet-stdp-gain <v>\n"
+                << "  --online-triplet-stdp-ltp <v>\n"
+                << "  --online-triplet-stdp-ltd <v>\n"
+                << "  --online-triplet-stdp-fast-decay <v>\n"
+                << "  --online-triplet-stdp-slow-decay <v>\n"
+                << "  --online-voltage-plasticity-enabled\n"
+                << "  --online-voltage-plasticity-gain <v>\n"
+                << "  --online-voltage-plasticity-ltp <v>\n"
+                << "  --online-voltage-plasticity-ltd <v>\n"
+                << "  --online-voltage-plasticity-decay <v>\n"
+                << "  --online-voltage-plasticity-threshold <v>\n"
                 << "  --online-replay-queue-capacity <n>\n"
                 << "  --online-replay-delay-steps <n>\n"
                 << "  --online-replay-pause-interval <n>\n"
@@ -4371,6 +8127,23 @@ Config parseArgs(int argc, char* argv[]) {
                 << "  --focus-adjustment-margin-threshold <v>\n"
                 << "  --focus-adjustment-zoom <v>\n"
                 << "  --focus-adjustment-shift-px <v>\n"
+                << "  --training-curriculum-groups <A,B;C,D;...>\n"
+                << "  --training-review-fraction <v>\n"
+                << "  --training-augmentation-variants <n>\n"
+                << "  --training-augmentation-shift-px <v>\n"
+                << "  --training-augmentation-rotation-deg <v>\n"
+                << "  --training-augmentation-noise-std <v>\n"
+                << "  --active-inference-enabled\n"
+                << "  --active-inference-fixations <n>\n"
+                << "  --active-inference-min-fixations <n>\n"
+                << "  --active-inference-remap-enabled <0|1>\n"
+                << "  --active-inference-shift-px <v>\n"
+                << "  --active-inference-zoom <v>\n"
+                << "  --active-inference-uncertainty-threshold <v>\n"
+                << "  --active-inference-ior-strength <v>\n"
+                << "  --flow-audit-enabled\n"
+                << "  --flow-audit-sample-limit <n>\n"
+                << "  --flow-audit-output-prefix <path-prefix>\n"
                 << "  --focus-groups <A,B;C,D;...>\n"
                 << "  --focus-limit-per-label <n>\n"
                 << "  --focus-only\n"
@@ -4456,6 +8229,24 @@ int main(int argc, char* argv[]) {
                       << ", online_centroid_lr=" << config.onlineCentroidLr
                       << ", online_pos_gain=" << config.onlinePositiveRewardGain
                       << ", online_neg_gain=" << config.onlineNegativeRewardGain
+                      << ", reward_stdp=" << (config.onlineRewardStdpEnabled ? "on" : "off")
+                      << ", reward_stdp_gain=" << config.onlineRewardStdpGain
+                      << ", reward_stdp_ltp=" << config.onlineRewardStdpLtp
+                      << ", reward_stdp_ltd=" << config.onlineRewardStdpLtd
+                      << ", triplet_stdp=" << (config.onlineTripletStdpEnabled ? "on" : "off")
+                      << ", triplet_stdp_gain=" << config.onlineTripletStdpGain
+                      << ", triplet_stdp_ltp=" << config.onlineTripletStdpLtp
+                      << ", triplet_stdp_ltd=" << config.onlineTripletStdpLtd
+                      << ", triplet_stdp_fast_decay=" << config.onlineTripletStdpFastDecay
+                      << ", triplet_stdp_slow_decay=" << config.onlineTripletStdpSlowDecay
+                      << ", voltage_plasticity="
+                      << (config.onlineVoltagePlasticityEnabled ? "on" : "off")
+                      << ", voltage_plasticity_gain=" << config.onlineVoltagePlasticityGain
+                      << ", voltage_plasticity_ltp=" << config.onlineVoltagePlasticityLtp
+                      << ", voltage_plasticity_ltd=" << config.onlineVoltagePlasticityLtd
+                      << ", voltage_plasticity_decay=" << config.onlineVoltagePlasticityDecay
+                      << ", voltage_plasticity_threshold="
+                      << config.onlineVoltagePlasticityThreshold
                       << ", replay_capacity=" << config.onlineReplayQueueCapacity
                       << ", replay_delay_steps=" << config.onlineReplayDelaySteps
                       << ", replay_pause_interval=" << config.onlineReplayPauseInterval
@@ -4466,13 +8257,37 @@ int main(int argc, char* argv[]) {
                       << ", context_disagreement_gain=" << config.onlineContextDisagreementGain
                       << ", confusion_cluster_gain=" << config.onlineConfusionClusterGain
                       << ", confusion_cluster_decay=" << config.onlineConfusionClusterDecay
-                      << ", stage1_stream_split=" << config.stage1StreamSplitMode
-                      << ", stage1_shape_weight=" << config.stage1ShapeStreamWeight
-                      << ", stage1_surface_weight=" << config.stage1SurfaceStreamWeight
                       << ", focus_adjustment=" << (config.focusAdjustmentEnabled ? "on" : "off")
                       << ", focus_margin_threshold=" << config.focusAdjustmentMarginThreshold
                       << ", focus_zoom=" << config.focusAdjustmentZoom
                       << ", focus_shift_px=" << config.focusAdjustmentShiftPx
+                      << ", saccade_fixations=" << config.saccadeFixations
+                      << ", saccade_training_only=" << (config.saccadeTrainingOnly ? "on" : "off")
+                      << ", saccade_jitter_px=" << config.saccadeJitterPx
+                      << ", saccade_zoom=" << config.saccadeZoom
+                      << ", curriculum="
+                      << (config.trainingCurriculumSpec.empty()
+                              ? std::string("<none>")
+                              : config.trainingCurriculumSpec)
+                      << ", review_fraction=" << config.trainingReviewFraction
+                      << ", train_aug_variants=" << config.trainingAugmentationVariants
+                      << ", train_aug_shift_px=" << config.trainingAugmentationShiftPx
+                      << ", train_aug_rotation_deg=" << config.trainingAugmentationRotationDeg
+                      << ", train_aug_noise_std=" << config.trainingAugmentationNoiseStd
+                      << ", active_inference=" << (config.activeInferenceEnabled ? "on" : "off")
+                      << ", active_fixations=" << config.activeInferenceFixations
+                      << ", active_min_fixations=" << config.activeInferenceMinFixations
+                      << ", active_shift_px=" << config.activeInferenceShiftPx
+                      << ", active_zoom=" << config.activeInferenceZoom
+                      << ", active_uncertainty=" << config.activeInferenceUncertaintyThreshold
+                      << ", active_ior=" << config.activeInferenceIorStrength
+                      << ", active_remap=" << (config.activeInferenceRemapEnabled ? "on" : "off")
+                      << ", flow_audit=" << (config.flowAuditEnabled ? "on" : "off")
+                      << ", flow_audit_limit=" << config.flowAuditSampleLimit
+                      << ", flow_audit_prefix="
+                      << (defaultFlowAuditOutputPrefix(config).empty()
+                              ? std::string("<none>")
+                              : defaultFlowAuditOutputPrefix(config))
                       << ", fusion_path=" << (config.fusionPath.empty() ? "<none>" : config.fusionPath)
                       << std::endl;
         }
@@ -4518,11 +8333,24 @@ int main(int argc, char* argv[]) {
         if (!config.focusGroupSpec.empty()) {
             config.focusGroups = parseLabelGroups(config.focusGroupSpec, config);
         }
+        if (!config.trainingCurriculumSpec.empty()) {
+            config.trainingCurriculumGroups =
+                parseLabelGroups(config.trainingCurriculumSpec, config);
+        }
         if (config.focusOnly && config.focusGroups.empty()) {
             throw std::runtime_error("--focus-only requires --focus-groups");
         }
         std::cout << "  Input domain=" << trainLoader->domainName()
                   << ", classes=" << config.numClasses << std::endl;
+        if (!config.trainingCurriculumGroups.empty()) {
+            std::cout << "  Training curriculum: "
+                      << labelGroupsToString(config.trainingCurriculumGroups, config)
+                      << std::endl;
+        }
+        if (config.trainingReviewFraction > 0.0) {
+            std::cout << "  Training review fraction/class=" << config.trainingReviewFraction
+                      << std::endl;
+        }
 
         const auto trainIndicesByLabel = collectLabelIndices(*trainLoader, config.numClasses);
         const auto testIndicesByLabel = collectLabelIndices(*testLoader, config.numClasses);
@@ -4538,27 +8366,49 @@ int main(int argc, char* argv[]) {
             auto classifier = makeClassifierStrategy(config.classifier, config.knnK,
                                                      config.classifierExponent, config);
 
-            std::vector<ClassificationStrategy::LabeledPattern> trainingPatterns;
-            trainingPatterns.reserve(
-                static_cast<size_t>(config.numClasses * std::max(1, config.examplesPerClass)));
             const auto selectedTrainIndices =
                 selectStratifiedIndices(trainIndicesByLabel, config.examplesPerClass, config.seed);
+            const auto trainingSchedule =
+                buildTrainingSchedule(selectedTrainIndices, *trainLoader, config, config.seed);
+            std::vector<ClassificationStrategy::LabeledPattern> trainingPatterns;
+            trainingPatterns.reserve(trainingSchedule.primaryIndices.size() +
+                                     trainingSchedule.reviewIndices.size());
+            if (!config.trainingCurriculumGroups.empty() || !trainingSchedule.reviewIndices.empty()) {
+                std::cout << "  Training schedule: primary="
+                          << trainingSchedule.primaryIndices.size()
+                          << ", review=" << trainingSchedule.reviewIndices.size() << std::endl;
+            }
 
             const auto trainingStart = std::chrono::high_resolution_clock::now();
-            for (size_t i : selectedTrainIndices) {
+            setRetinaHomeostaticLearning(retinas, true);
+            for (size_t i : trainingSchedule.primaryIndices) {
                 const auto& image = trainLoader->getStimulus(i);
                 const int label = image.label;
                 if (label < 0 || label >= config.numClasses) {
                     continue;
                 }
                 trainingPatterns.emplace_back(
-                    extractPattern(retinas, image, config.useFeatures,
-                                   !config.useFeatures && config.activationMode != "binary"),
+                    extractPattern(retinas, image, config, true,
+                                   !config.useFeatures && config.activationMode != "binary",
+                                   i),
                     label);
                 if (static_cast<int>(trainingPatterns.size()) % 1000 == 0) {
                     std::cout << "  Training patterns: " << trainingPatterns.size() << std::endl;
                 }
             }
+            for (size_t i : trainingSchedule.reviewIndices) {
+                const auto& image = trainLoader->getStimulus(i);
+                const int label = image.label;
+                if (label < 0 || label >= config.numClasses) {
+                    continue;
+                }
+                trainingPatterns.emplace_back(
+                    extractPattern(retinas, image, config, true,
+                                   !config.useFeatures && config.activationMode != "binary",
+                                   i ^ 0x9e3779b97f4a7c15ULL),
+                    label);
+            }
+            setRetinaHomeostaticLearning(retinas, false);
 
             std::cout << "  Stored training patterns: " << trainingPatterns.size() << std::endl;
             const auto end = std::chrono::high_resolution_clock::now();
@@ -4639,6 +8489,15 @@ int main(int argc, char* argv[]) {
             const auto split = splitTrainingIndices(trainIndicesByLabel, config.examplesPerClass,
                                                     config.fusionHoldoutPerClass, config.seed,
                                                     useCorpusCallosumFusion(config));
+            const auto stage1TrainingSchedule =
+                buildTrainingSchedule(split.stage1Indices, *trainLoader, config, config.seed);
+            if (!config.trainingCurriculumGroups.empty() ||
+                !stage1TrainingSchedule.reviewIndices.empty()) {
+                std::cout << "  Stage1 training schedule: primary="
+                          << stage1TrainingSchedule.primaryIndices.size()
+                          << ", review=" << stage1TrainingSchedule.reviewIndices.size()
+                          << std::endl;
+            }
 
             const auto trainingStart = std::chrono::high_resolution_clock::now();
             if (hemispheres.size() > 1) {
@@ -4650,20 +8509,66 @@ int main(int argc, char* argv[]) {
                 [&](size_t hemisphereIndex) {
                     HemisphereTrainingArtifacts artifacts;
                     auto& hemisphere = hemispheres[hemisphereIndex];
-                    artifacts.trainingPatterns.reserve(split.stage1Indices.size());
-                    artifacts.trainingSourceIndices.reserve(split.stage1Indices.size());
-                    for (size_t i : split.stage1Indices) {
+                    setRetinaHomeostaticLearning(hemisphere.retinas, true);
+                    if (config.flowAuditEnabled) {
+                        initializeFlowAuditTraining(
+                            artifacts, hemisphere.retinas, config.numClasses);
+                    }
+                    artifacts.trainingPatterns.reserve(stage1TrainingSchedule.primaryIndices.size() +
+                                                       stage1TrainingSchedule.reviewIndices.size());
+                    artifacts.trainingSourceIndices.reserve(
+                        stage1TrainingSchedule.primaryIndices.size() +
+                        stage1TrainingSchedule.reviewIndices.size());
+                    for (size_t i : stage1TrainingSchedule.primaryIndices) {
                         const auto& image = trainLoader->getStimulus(i);
                         const int label = image.label;
                         if (label < 0 || label >= config.numClasses) {
                             continue;
                         }
-                        artifacts.trainingPatterns.emplace_back(
-                            extractPattern(hemisphere.retinas, image, config.useFeatures,
-                                           !config.useFeatures && config.activationMode != "binary"),
-                            label);
-                        artifacts.trainingSourceIndices.push_back(i);
+                        auto batch = extractStage1TrainingPatternBatch(
+                            hemisphere.retinas,
+                            image,
+                            config,
+                            !config.useFeatures && config.activationMode != "binary",
+                            i,
+                            config.flowAuditEnabled);
+                        for (size_t patternIndex = 0; patternIndex < batch.patterns.size();
+                             ++patternIndex) {
+                            artifacts.trainingPatterns.emplace_back(batch.patterns[patternIndex], label);
+                            if (config.flowAuditEnabled &&
+                                patternIndex < batch.captures.size()) {
+                                accumulateFlowAuditTrainingCapture(
+                                    artifacts, batch.captures[patternIndex], label);
+                            }
+                            artifacts.trainingSourceIndices.push_back(i);
+                        }
                     }
+                    for (size_t i : stage1TrainingSchedule.reviewIndices) {
+                        const auto& image = trainLoader->getStimulus(i);
+                        const int label = image.label;
+                        if (label < 0 || label >= config.numClasses) {
+                            continue;
+                        }
+                        auto batch = extractStage1TrainingPatternBatch(
+                            hemisphere.retinas,
+                            image,
+                            config,
+                            !config.useFeatures && config.activationMode != "binary",
+                            i ^ 0x9e3779b97f4a7c15ULL,
+                            config.flowAuditEnabled);
+                        for (size_t patternIndex = 0; patternIndex < batch.patterns.size();
+                             ++patternIndex) {
+                            artifacts.trainingPatterns.emplace_back(batch.patterns[patternIndex], label);
+                            if (config.flowAuditEnabled &&
+                                patternIndex < batch.captures.size()) {
+                                accumulateFlowAuditTrainingCapture(
+                                    artifacts, batch.captures[patternIndex], label);
+                            }
+                            artifacts.trainingSourceIndices.push_back(i);
+                        }
+                    }
+                    setRetinaHomeostaticLearning(hemisphere.retinas, false);
+                    finalizeFlowAuditTraining(artifacts);
                     return artifacts;
                 });
             for (size_t hemisphereIndex = 0; hemisphereIndex < hemispheres.size(); ++hemisphereIndex) {
@@ -4672,24 +8577,6 @@ int main(int argc, char* argv[]) {
                 hemisphere.trainingSourceIndices =
                     trainingArtifacts[hemisphereIndex].trainingSourceIndices;
                 hemisphere.trainingPatterns = hemisphere.rawTrainingPatterns;
-                hemisphere.shapePatternIndices.clear();
-                hemisphere.surfacePatternIndices.clear();
-                if (useStage1ShapeSurfaceSplit(config) && !hemisphere.rawTrainingPatterns.empty()) {
-                    size_t sliceSampleIndex = 0;
-                    if (!split.stage1Indices.empty()) {
-                        sliceSampleIndex = split.stage1Indices.front();
-                    } else if (trainLoader->size() > 0) {
-                        sliceSampleIndex = 0;
-                    }
-                    const auto& sampleImage = trainLoader->getStimulus(sliceSampleIndex);
-                    const auto slices =
-                        buildPatternSlices(hemisphere.retinas, sampleImage, config.useFeatures);
-                    auto [shapeIndices, surfaceIndices] = buildStage1StreamIndices(slices);
-                    hemisphere.shapePatternIndices = std::move(shapeIndices);
-                    hemisphere.surfacePatternIndices = std::move(surfaceIndices);
-                    hemisphere.trainingPatterns = buildStage1TrainingPatterns(
-                        hemisphere.rawTrainingPatterns, hemisphere, config);
-                }
                 hemisphere.classifier = makeClassifierStrategy(
                     config.stage1Classifier, stage1K, config.stage1Exponent, config);
                 buildHemisphereClassCentroids(hemisphere);
@@ -4746,18 +8633,24 @@ int main(int argc, char* argv[]) {
                 std::chrono::duration<double>(end - trainingStart).count();
             const auto baseSeparabilityRuntime = buildSeparabilityDiagnosticsRuntime(
                 hemispheres, *trainLoader, split, config, fusionRuntime);
+            const auto baseFlowAuditRuntime = buildFlowAuditRuntime(
+                hemispheres, trainingArtifacts, *trainLoader, split, config, fusionRuntime);
 
             if (!config.focusOnly) {
                 auto separabilityRuntime = baseSeparabilityRuntime;
+                auto flowAuditRuntime = baseFlowAuditRuntime;
                 resetOrientationFlowDiagnostics(hemispheres);
                 const auto eval = useCorpusCallosumFusion(config)
                     ? evaluateCorpusCallosumPatterns(
                           hemispheres, *testLoader, selectedTestIndices, config,
-                          separabilityRuntime.enabled ? &separabilityRuntime : nullptr, "Testing")
+                          separabilityRuntime.enabled ? &separabilityRuntime : nullptr,
+                          flowAuditRuntime.enabled ? &flowAuditRuntime : nullptr,
+                          "Testing")
                     : evaluateBilateralPatterns(
                           hemispheres, *testLoader, selectedTestIndices, config, *fusionClassifier,
                           fusionRuntime,
                           separabilityRuntime.enabled ? &separabilityRuntime : nullptr,
+                          flowAuditRuntime.enabled ? &flowAuditRuntime : nullptr,
                           "Testing");
                 const double accuracy =
                     100.0 * static_cast<double>(eval.correct) /
@@ -4772,11 +8665,15 @@ int main(int argc, char* argv[]) {
                 printHemisphereAgreementSummary(eval);
                 printHemisphereStage1Summary(eval, config);
                 printBilateralAttributionSummary(eval, config);
+                printActiveInferenceSummary(eval, config);
                 printFocusAdjustmentSummary(eval);
                 printOnlineCorrectionSummary(eval);
                 printSeparabilitySummary(eval, config);
                 printOrientationFlowSummary(hemispheres);
                 printPatchInputSummary(hemispheres);
+                if (flowAuditRuntime.enabled) {
+                    writeFlowAuditArtifacts(flowAuditRuntime, "testing");
+                }
 
                 printPerClassAccuracy(eval.confusion, config);
                 printTopConfusions(eval.confusion, config);
@@ -4784,15 +8681,19 @@ int main(int argc, char* argv[]) {
 
             if (!config.focusGroups.empty()) {
                 auto separabilityRuntime = baseSeparabilityRuntime;
+                auto flowAuditRuntime = baseFlowAuditRuntime;
                 resetOrientationFlowDiagnostics(hemispheres);
                 const auto focusedEval = useCorpusCallosumFusion(config)
                     ? evaluateCorpusCallosumPatterns(
                           hemispheres, *testLoader, focusedTestIndices, config,
-                          separabilityRuntime.enabled ? &separabilityRuntime : nullptr, "Focus")
+                          separabilityRuntime.enabled ? &separabilityRuntime : nullptr,
+                          flowAuditRuntime.enabled ? &flowAuditRuntime : nullptr,
+                          "Focus")
                     : evaluateBilateralPatterns(
                           hemispheres, *testLoader, focusedTestIndices, config, *fusionClassifier,
                           fusionRuntime,
                           separabilityRuntime.enabled ? &separabilityRuntime : nullptr,
+                          flowAuditRuntime.enabled ? &flowAuditRuntime : nullptr,
                           "Focus");
                 const double focusedAccuracy =
                     100.0 * static_cast<double>(focusedEval.correct) /
@@ -4808,11 +8709,15 @@ int main(int argc, char* argv[]) {
                 printHemisphereAgreementSummary(focusedEval);
                 printHemisphereStage1Summary(focusedEval, config);
                 printBilateralAttributionSummary(focusedEval, config);
+                printActiveInferenceSummary(focusedEval, config);
                 printFocusAdjustmentSummary(focusedEval);
                 printOnlineCorrectionSummary(focusedEval);
                 printSeparabilitySummary(focusedEval, config);
                 printOrientationFlowSummary(hemispheres);
                 printPatchInputSummary(hemispheres);
+                if (flowAuditRuntime.enabled) {
+                    writeFlowAuditArtifacts(flowAuditRuntime, "focus");
+                }
 
                 printPerClassAccuracy(focusedEval.confusion, config);
                 printTopConfusions(focusedEval.confusion, config);

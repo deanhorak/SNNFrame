@@ -29,6 +29,8 @@ set(LIB_SOURCES
     encoding/EncodingStrategyFactory.cpp
     features/SobelOperator.cpp
     features/GaborOperator.cpp
+    features/QuadratureGaborOperator.cpp
+    features/OrientationEnergyOperator.cpp
     features/DoGOperator.cpp
     features/EdgeOperatorFactory.cpp
     classification/MajorityVoting.cpp

@@ -151,6 +151,11 @@ public:
         }
     };
 
+    struct RelayBandImageSet {
+        std::vector<Image> orientationBands;
+        std::vector<Image> auxiliaryBands;
+    };
+
     /**
      * @brief Constructor
      * @param config Adapter configuration
@@ -248,6 +253,9 @@ public:
     void resetPatchInputDiagnostics() {
         patchInputDiagnostics_ = PatchInputDiagnostics{};
     }
+    void setHomeostaticLearningEnabled(bool enabled) {
+        homeostaticLearningEnabled_ = enabled;
+    }
 
 private:
     size_t getFrequencyBandCount() const {
@@ -296,6 +304,51 @@ private:
     int auxiliaryAnalysisRegionSize_;     ///< Optional higher-resolution patch for auxiliary features
     int localContrastRadius_;             ///< Local contrast normalization radius in pixels
     double localContrastStrength_;        ///< Strength of local contrast normalization
+    bool lgnRelayEnabled_;                ///< Enable a mild LGN-style center-surround prefilter
+    double lgnCenterSigma_;               ///< LGN center blur sigma
+    double lgnSurroundSigma_;             ///< LGN surround blur sigma
+    double lgnCenterSurroundStrength_;    ///< Gain on center-surround sharpening
+    bool lgnParallelRelayEnabled_;        ///< Enable a dual magno/parvo-like relay for band images
+    double lgnMagnoCenterSigma_;          ///< Center blur for the coarse achromatic relay
+    double lgnMagnoSurroundSigma_;        ///< Surround blur for the coarse achromatic relay
+    double lgnMagnoCenterSurroundStrength_; ///< Gain on the coarse achromatic relay
+    double lgnMagnoAchromaticMix_;        ///< Blend toward luminance before the magno relay
+    double lgnMagnoExtraBlur_;            ///< Extra blur added to the coarse relay bands
+    double lgnParvoCenterSigma_;          ///< Center blur for the fine-detail relay
+    double lgnParvoSurroundSigma_;        ///< Surround blur for the fine-detail relay
+    double lgnParvoCenterSurroundStrength_; ///< Gain on the fine-detail relay
+    double lgnParvoOriginalMix_;          ///< Blend original image back into the fine-detail relay
+    double lgnBandMagnoFloor_;            ///< Minimum coarse contribution on every frequency band
+    double lgnAuxiliaryMagnoMix_;         ///< Coarse contribution retained for auxiliary channels
+    bool eccentricitySamplingEnabled_;    ///< Warp receptive-field placement toward the fovea
+    double eccentricitySamplingStrength_; ///< Mix between uniform and foveated sampling
+    double eccentricitySamplingGamma_;    ///< Strength of foveal compression
+    std::string retinalMaskMode_;         ///< Optional full/foveal/peripheral region masking
+    double retinalMaskRadiusFraction_;    ///< Radius of the foveal mask in normalized coordinates
+    double retinalMaskSoftnessFraction_;  ///< Transition width of the mask boundary
+    double retinalMaskCenterX_;           ///< Horizontal center of the retinal mask
+    double retinalMaskCenterY_;           ///< Vertical center of the retinal mask
+    std::string temporalStreamBranchMode_; ///< Optional full/transient/sustained branch split
+    double temporalStreamFloor_;           ///< Minimum retained signal for a stream branch
+    double temporalStreamDriveGain_;       ///< Gain on preferred stream drive
+    double temporalStreamOpponentSuppression_; ///< Suppress the opposing stream contribution
+    double temporalStreamAuxiliaryFloor_;  ///< Minimum retained weight on non-preferred aux channels
+    std::string luminanceBranchMode_;      ///< Optional full/on/off/luminance branch split
+    double luminanceBranchFloor_;          ///< Minimum retained signal for an ON/OFF/luminance branch
+    double luminanceBranchDriveGain_;      ///< Gain on preferred ON/OFF/luminance drive
+    double luminanceBranchOpponentSuppression_; ///< Suppress the non-preferred ON/OFF drive
+    double luminanceBranchAuxiliaryFloor_; ///< Minimum retained weight on non-preferred luminance aux channels
+    bool temporalCoarseToFineEnabled_;    ///< Blend low-band fast drive with fine sustained drive
+    double temporalCoarseBias_;           ///< Base boost applied to the coarse low-frequency pass
+    double temporalTransientGain_;        ///< Gain from transient activity onto the coarse pass
+    double temporalSustainedGain_;        ///< Gain from sustained activity onto the fine pass
+    double temporalCrossBandGain_;        ///< Coarse support propagated into the fine pass
+    bool complexCellEnabled_;            ///< Enable simple-to-complex pooling before output
+    double complexCellPoolBlend_;        ///< Blend between raw local responses and pooled invariant drive
+    double complexCellMaxMix_;           ///< Mix between max pooling and energy pooling across local blocks
+    double complexCellDivisiveGain_;     ///< Strength of orientation-wise divisive normalization
+    double complexCellDivisiveFloor_;    ///< Minimum suppressive pool used by divisive normalization
+    double complexCellNeighborMix_;      ///< Weight on adjacent-orientation context in suppression
     bool edgePatchNormalizationEnabled_;  ///< Normalize each edge-analysis patch before filtering
     double edgePatchContrastStrength_;    ///< Strength of edge patch contrast normalization
     double edgePatchMinStd_;              ///< Floor on patch stddev during edge normalization
@@ -314,6 +367,13 @@ private:
     bool mirrorY_;                        ///< Optional vertical mirror
     bool orientationFlowDiagnosticsEnabled_; ///< Collect pre/post threshold orientation stats
     int orientationFlowDiagnosticsSampleLimit_; ///< Max response groups to sample for diagnostics
+    bool homeostaticScalingEnabled_;      ///< Apply local feature-gain homeostasis
+    bool homeostaticLearningEnabled_;     ///< Update homeostatic gains during training
+    double homeostaticTargetActivation_;  ///< Target mean activation per feature
+    double homeostaticLearningRate_;      ///< Gain adaptation rate
+    double homeostaticActivityDecay_;     ///< EMA decay for feature activity
+    double homeostaticGainMin_;           ///< Lower bound on homeostatic gain
+    double homeostaticGainMax_;           ///< Upper bound on homeostatic gain
 
     // Pluggable strategies
     std::unique_ptr<features::EdgeOperator> edgeOperator_;      ///< Edge detection strategy
@@ -354,11 +414,35 @@ private:
 
     std::vector<double> parseFrequencyBands(const std::string& csv) const;
     void configureFrequencyBands();
+    std::vector<int> computeAxisSamplingBoundaries(int axisSize) const;
+    double computeRegionMaskWeight(int row, int col) const;
+    void applyLuminanceOnOffBranchSplit(std::vector<std::vector<double>>& bandFeatures,
+                                        std::vector<std::vector<double>>& auxiliaryFeatures) const;
+    void applyTemporalStreamBranchSplit(std::vector<std::vector<double>>& bandFeatures,
+                                        std::vector<std::vector<double>>& auxiliaryFeatures) const;
+    double estimateTransientDrive(const std::vector<double>& auxiliary) const;
+    double estimateSustainedDrive(const std::vector<double>& auxiliary) const;
+    double estimateDetailDrive(const std::vector<double>& auxiliary) const;
+    void applyTemporalCoarseToFineDualPass(
+        std::vector<std::vector<double>>& bandFeatures,
+        const std::vector<std::vector<double>>& auxiliaryFeatures) const;
+    void applyComplexCellStage(std::vector<std::vector<double>>& bandFeatures) const;
+    void applyContourSupportBank(const std::vector<std::vector<double>>& bandFeatures,
+                                 std::vector<std::vector<double>>& auxiliaryFeatures) const;
     Image blurImage(const Image& image, double sigma) const;
+    Image applyLgnRelayWithParams(const Image& image,
+                                  double centerSigma,
+                                  double surroundSigma,
+                                  double centerSurroundStrength) const;
+    Image applyLgnRelay(const Image& image) const;
+    Image makeAchromaticImage(const Image& image, double achromaticMix) const;
+    Image blendImages(const Image& base, const Image& overlay, double overlayWeight) const;
+    RelayBandImageSet buildRelayBandImages(const Image& image) const;
     Image applyViewTransform(const Image& image) const;
     Image applyLocalContrastNormalization(const Image& image) const;
     std::vector<uint8_t> normalizeEdgeRegion(const std::vector<uint8_t>& region) const;
     void applyOrientationCompetition(std::vector<double>& responses) const;
+    void applyHomeostaticScaling(std::vector<double>& features);
     std::vector<double> computeColorOpponentFeatures(const Image& image,
                                                      int regionRow,
                                                      int regionCol,
@@ -386,6 +470,8 @@ private:
 
     OrientationFlowDiagnostics orientationFlowDiagnostics_;
     PatchInputDiagnostics patchInputDiagnostics_;
+    std::vector<double> featureHomeostaticGains_;
+    std::vector<double> featureActivityAverages_;
 };
 
 } // namespace adapters

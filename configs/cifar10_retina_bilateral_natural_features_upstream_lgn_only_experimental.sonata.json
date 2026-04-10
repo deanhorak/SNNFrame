@@ -1,10 +1,10 @@
 {
-  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesExperimental",
+  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesUpstreamLgnOnlyExperimental",
   "snnframe": {
     "classification": {
       "type": "weighted_distance",
       "k": 9,
-      "distance_exponent": 1.0,
+      "distance_exponent": 1,
       "string_params": {
         "fusion_mode": "bilateral",
         "stage1_strategy": "majority",
@@ -21,32 +21,15 @@
         "fusion_holdout_per_class": 75,
         "input_apply_transform": 0,
         "separability_diagnostics": 1,
-        "separability_sample_limit": 500,
-        "online_correction_repeats": 3,
-        "online_exemplar_budget_per_class": 16,
-        "online_replay_queue_capacity": 384,
-        "online_replay_delay_steps": 0,
-        "online_replay_pause_interval": 4,
-        "online_replay_batch_size": 1,
-        "saccade_fixations": 4,
-        "saccade_training_only": 1
+        "separability_sample_limit": 500
       },
       "double_params": {
-        "stage1_distance_exponent": 1.0,
-        "fusion_distance_exponent": 1.0,
+        "stage1_distance_exponent": 1,
+        "fusion_distance_exponent": 1,
         "corpus_vote_gain": 0.25,
         "corpus_margin_gain": 0.6,
         "corpus_centroid_gain": 0.12,
-        "corpus_disagreement_gain": 0.15,
-        "online_centroid_lr": 0.25,
-        "online_positive_reward_gain": 0.5,
-        "online_negative_reward_gain": 1.1,
-        "online_replay_uncertainty_threshold": 0.35,
-        "online_eligibility_trace_decay": 0.88,
-        "online_context_uncertainty_gain": 1.0,
-        "online_context_disagreement_gain": 0.75,
-        "saccade_jitter_px": 0.45,
-        "saccade_zoom": 1.03
+        "corpus_disagreement_gain": 0.15
       }
     },
     "brain": {
@@ -235,7 +218,7 @@
         "name": "left_retina_g9",
         "type": "retina",
         "role": "sensory",
-        "temporal_window_ms": 200.0,
+        "temporal_window_ms": 200,
         "int_params": {
           "grid_size": 9,
           "num_orientations": 8,
@@ -246,7 +229,7 @@
         },
         "double_params": {
           "edge_threshold": 0.12,
-          "neuron_window_size": 200.0,
+          "neuron_window_size": 200,
           "neuron_threshold": 0.68,
           "rotation_deg": -0.8,
           "shift_x_px": -0.18,
@@ -254,7 +237,7 @@
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
-          "fusion_weight": 1.0
+          "fusion_weight": 1
         },
         "string_params": {
           "edge_operator": "sobel",
@@ -271,7 +254,7 @@
         "name": "left_retina_g10",
         "type": "retina",
         "role": "sensory",
-        "temporal_window_ms": 200.0,
+        "temporal_window_ms": 200,
         "int_params": {
           "grid_size": 10,
           "num_orientations": 8,
@@ -286,7 +269,7 @@
         },
         "double_params": {
           "edge_threshold": 0.14,
-          "neuron_window_size": 200.0,
+          "neuron_window_size": 200,
           "neuron_threshold": 0.68,
           "rotation_deg": -0.4,
           "shift_x_px": -0.1,
@@ -294,9 +277,9 @@
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
-          "fusion_weight": 1.0,
-          "edge_patch_contrast_strength": 1.0,
-          "edge_patch_min_std": 6.0,
+          "fusion_weight": 1,
+          "edge_patch_contrast_strength": 1,
+          "edge_patch_min_std": 6,
           "orientation_feature_gain": 0.35,
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
@@ -318,7 +301,7 @@
         "name": "left_retina_dog_g9",
         "type": "retina",
         "role": "sensory",
-        "temporal_window_ms": 200.0,
+        "temporal_window_ms": 200,
         "int_params": {
           "grid_size": 9,
           "num_orientations": 8,
@@ -329,7 +312,7 @@
         },
         "double_params": {
           "edge_threshold": 0.08,
-          "neuron_window_size": 200.0,
+          "neuron_window_size": 200,
           "neuron_threshold": 0.68,
           "fusion_weight": 0.35,
           "sigma1": 0.8,
@@ -356,7 +339,7 @@
         "name": "right_retina_g9",
         "type": "retina",
         "role": "sensory",
-        "temporal_window_ms": 200.0,
+        "temporal_window_ms": 200,
         "int_params": {
           "grid_size": 9,
           "num_orientations": 8,
@@ -367,7 +350,7 @@
         },
         "double_params": {
           "edge_threshold": 0.12,
-          "neuron_window_size": 200.0,
+          "neuron_window_size": 200,
           "neuron_threshold": 0.68,
           "rotation_deg": 0.8,
           "shift_x_px": 0.18,
@@ -375,7 +358,7 @@
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
-          "fusion_weight": 1.0
+          "fusion_weight": 1
         },
         "string_params": {
           "edge_operator": "sobel",
@@ -392,7 +375,7 @@
         "name": "right_retina_g10",
         "type": "retina",
         "role": "sensory",
-        "temporal_window_ms": 200.0,
+        "temporal_window_ms": 200,
         "int_params": {
           "grid_size": 10,
           "num_orientations": 8,
@@ -407,7 +390,7 @@
         },
         "double_params": {
           "edge_threshold": 0.14,
-          "neuron_window_size": 200.0,
+          "neuron_window_size": 200,
           "neuron_threshold": 0.68,
           "rotation_deg": 0.4,
           "shift_x_px": 0.1,
@@ -415,9 +398,9 @@
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
-          "fusion_weight": 1.0,
-          "edge_patch_contrast_strength": 1.0,
-          "edge_patch_min_std": 6.0,
+          "fusion_weight": 1,
+          "edge_patch_contrast_strength": 1,
+          "edge_patch_min_std": 6,
           "orientation_feature_gain": 0.35,
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
@@ -439,7 +422,7 @@
         "name": "right_retina_dog_g9",
         "type": "retina",
         "role": "sensory",
-        "temporal_window_ms": 200.0,
+        "temporal_window_ms": 200,
         "int_params": {
           "grid_size": 9,
           "num_orientations": 8,
@@ -450,7 +433,7 @@
         },
         "double_params": {
           "edge_threshold": 0.08,
-          "neuron_window_size": 200.0,
+          "neuron_window_size": 200,
           "neuron_threshold": 0.68,
           "fusion_weight": 0.35,
           "sigma1": 0.8,

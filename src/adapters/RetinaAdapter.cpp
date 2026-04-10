@@ -789,6 +789,51 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , auxiliaryAnalysisRegionSize_(0)
     , localContrastRadius_(0)
     , localContrastStrength_(1.0)
+    , lgnRelayEnabled_(false)
+    , lgnCenterSigma_(0.6)
+    , lgnSurroundSigma_(1.4)
+    , lgnCenterSurroundStrength_(0.0)
+    , lgnParallelRelayEnabled_(false)
+    , lgnMagnoCenterSigma_(0.45)
+    , lgnMagnoSurroundSigma_(1.8)
+    , lgnMagnoCenterSurroundStrength_(0.35)
+    , lgnMagnoAchromaticMix_(1.0)
+    , lgnMagnoExtraBlur_(0.35)
+    , lgnParvoCenterSigma_(0.3)
+    , lgnParvoSurroundSigma_(0.95)
+    , lgnParvoCenterSurroundStrength_(0.12)
+    , lgnParvoOriginalMix_(0.4)
+    , lgnBandMagnoFloor_(0.1)
+    , lgnAuxiliaryMagnoMix_(0.15)
+    , eccentricitySamplingEnabled_(false)
+    , eccentricitySamplingStrength_(0.0)
+    , eccentricitySamplingGamma_(1.0)
+    , retinalMaskMode_("full")
+    , retinalMaskRadiusFraction_(0.30)
+    , retinalMaskSoftnessFraction_(0.08)
+    , retinalMaskCenterX_(0.5)
+    , retinalMaskCenterY_(0.5)
+    , temporalStreamBranchMode_("full")
+    , temporalStreamFloor_(0.20)
+    , temporalStreamDriveGain_(0.85)
+    , temporalStreamOpponentSuppression_(0.20)
+    , temporalStreamAuxiliaryFloor_(0.25)
+    , luminanceBranchMode_("full")
+    , luminanceBranchFloor_(0.20)
+    , luminanceBranchDriveGain_(0.90)
+    , luminanceBranchOpponentSuppression_(0.15)
+    , luminanceBranchAuxiliaryFloor_(0.18)
+    , temporalCoarseToFineEnabled_(false)
+    , temporalCoarseBias_(0.0)
+    , temporalTransientGain_(0.0)
+    , temporalSustainedGain_(0.0)
+    , temporalCrossBandGain_(0.0)
+    , complexCellEnabled_(false)
+    , complexCellPoolBlend_(0.0)
+    , complexCellMaxMix_(0.5)
+    , complexCellDivisiveGain_(0.0)
+    , complexCellDivisiveFloor_(0.0)
+    , complexCellNeighborMix_(0.5)
     , edgePatchNormalizationEnabled_(false)
     , edgePatchContrastStrength_(1.0)
     , edgePatchMinStd_(1.0)
@@ -807,6 +852,13 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , mirrorY_(false)
     , orientationFlowDiagnosticsEnabled_(false)
     , orientationFlowDiagnosticsSampleLimit_(0)
+    , homeostaticScalingEnabled_(false)
+    , homeostaticLearningEnabled_(false)
+    , homeostaticTargetActivation_(0.08)
+    , homeostaticLearningRate_(0.01)
+    , homeostaticActivityDecay_(0.97)
+    , homeostaticGainMin_(0.75)
+    , homeostaticGainMax_(1.25)
     , imageRows_(0)
     , imageCols_(0)
     , imageChannels_(1)
@@ -840,6 +892,82 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     auxiliaryAnalysisRegionSize_ = std::max(0, getIntParam("auxiliary_analysis_region_size", 0));
     localContrastRadius_ = std::max(0, getIntParam("local_contrast_radius", 0));
     localContrastStrength_ = std::max(0.0, getDoubleParam("local_contrast_strength", 1.0));
+    lgnRelayEnabled_ = getIntParam("lgn_relay_enabled", 0) != 0;
+    lgnCenterSigma_ = std::max(0.0, getDoubleParam("lgn_center_sigma", 0.6));
+    lgnSurroundSigma_ =
+        std::max(lgnCenterSigma_ + 1e-3, getDoubleParam("lgn_surround_sigma", 1.4));
+    lgnCenterSurroundStrength_ =
+        std::max(0.0, getDoubleParam("lgn_center_surround_strength", 0.0));
+    lgnParallelRelayEnabled_ = getIntParam("lgn_parallel_relay_enabled", 0) != 0;
+    lgnMagnoCenterSigma_ =
+        std::max(0.0, getDoubleParam("lgn_magno_center_sigma", 0.45));
+    lgnMagnoSurroundSigma_ = std::max(
+        lgnMagnoCenterSigma_ + 1e-3, getDoubleParam("lgn_magno_surround_sigma", 1.8));
+    lgnMagnoCenterSurroundStrength_ =
+        std::max(0.0, getDoubleParam("lgn_magno_center_surround_strength", 0.35));
+    lgnMagnoAchromaticMix_ =
+        std::clamp(getDoubleParam("lgn_magno_achromatic_mix", 1.0), 0.0, 1.0);
+    lgnMagnoExtraBlur_ =
+        std::max(0.0, getDoubleParam("lgn_magno_extra_blur", 0.35));
+    lgnParvoCenterSigma_ =
+        std::max(0.0, getDoubleParam("lgn_parvo_center_sigma", 0.30));
+    lgnParvoSurroundSigma_ = std::max(
+        lgnParvoCenterSigma_ + 1e-3, getDoubleParam("lgn_parvo_surround_sigma", 0.95));
+    lgnParvoCenterSurroundStrength_ =
+        std::max(0.0, getDoubleParam("lgn_parvo_center_surround_strength", 0.12));
+    lgnParvoOriginalMix_ =
+        std::clamp(getDoubleParam("lgn_parvo_original_mix", 0.40), 0.0, 1.0);
+    lgnBandMagnoFloor_ =
+        std::clamp(getDoubleParam("lgn_band_magno_floor", 0.10), 0.0, 1.0);
+    lgnAuxiliaryMagnoMix_ =
+        std::clamp(getDoubleParam("lgn_auxiliary_magno_mix", 0.15), 0.0, 1.0);
+    eccentricitySamplingEnabled_ = getIntParam("eccentricity_sampling_enabled", 0) != 0;
+    eccentricitySamplingStrength_ =
+        std::clamp(getDoubleParam("eccentricity_sampling_strength", 0.0), 0.0, 1.0);
+    eccentricitySamplingGamma_ =
+        std::max(1.0, getDoubleParam("eccentricity_sampling_gamma", 1.0));
+    retinalMaskMode_ = getStringParam("retinal_mask_mode", "full");
+    retinalMaskRadiusFraction_ =
+        std::clamp(getDoubleParam("retinal_mask_radius_fraction", 0.30), 0.0, 1.0);
+    retinalMaskSoftnessFraction_ =
+        std::clamp(getDoubleParam("retinal_mask_softness_fraction", 0.08), 0.0, 1.0);
+    retinalMaskCenterX_ = std::clamp(getDoubleParam("retinal_mask_center_x", 0.5), 0.0, 1.0);
+    retinalMaskCenterY_ = std::clamp(getDoubleParam("retinal_mask_center_y", 0.5), 0.0, 1.0);
+    temporalStreamBranchMode_ = getStringParam("temporal_stream_branch_mode", "full");
+    temporalStreamFloor_ = std::clamp(getDoubleParam("temporal_stream_floor", 0.20), 0.0, 1.0);
+    temporalStreamDriveGain_ =
+        std::max(0.0, getDoubleParam("temporal_stream_drive_gain", 0.85));
+    temporalStreamOpponentSuppression_ =
+        std::clamp(getDoubleParam("temporal_stream_opponent_suppression", 0.20), 0.0, 1.0);
+    temporalStreamAuxiliaryFloor_ =
+        std::clamp(getDoubleParam("temporal_stream_auxiliary_floor", 0.25), 0.0, 1.0);
+    luminanceBranchMode_ = getStringParam("luminance_branch_mode", "full");
+    luminanceBranchFloor_ = std::clamp(getDoubleParam("luminance_branch_floor", 0.20), 0.0, 1.0);
+    luminanceBranchDriveGain_ =
+        std::max(0.0, getDoubleParam("luminance_branch_drive_gain", 0.90));
+    luminanceBranchOpponentSuppression_ =
+        std::clamp(getDoubleParam("luminance_branch_opponent_suppression", 0.15), 0.0, 1.0);
+    luminanceBranchAuxiliaryFloor_ =
+        std::clamp(getDoubleParam("luminance_branch_auxiliary_floor", 0.18), 0.0, 1.0);
+    temporalCoarseToFineEnabled_ = getIntParam("temporal_coarse_to_fine_enabled", 0) != 0;
+    temporalCoarseBias_ = std::max(0.0, getDoubleParam("temporal_coarse_bias", 0.0));
+    temporalTransientGain_ =
+        std::max(0.0, getDoubleParam("temporal_transient_gain", 0.0));
+    temporalSustainedGain_ =
+        std::max(0.0, getDoubleParam("temporal_sustained_gain", 0.0));
+    temporalCrossBandGain_ =
+        std::max(0.0, getDoubleParam("temporal_cross_band_gain", 0.0));
+    complexCellEnabled_ = getIntParam("complex_cell_enabled", 0) != 0;
+    complexCellPoolBlend_ =
+        std::clamp(getDoubleParam("complex_cell_pool_blend", 0.55), 0.0, 1.0);
+    complexCellMaxMix_ =
+        std::clamp(getDoubleParam("complex_cell_max_mix", 0.45), 0.0, 1.0);
+    complexCellDivisiveGain_ =
+        std::max(0.0, getDoubleParam("complex_cell_divisive_gain", 0.55));
+    complexCellDivisiveFloor_ =
+        std::clamp(getDoubleParam("complex_cell_divisive_floor", 0.08), 0.0, 1.0);
+    complexCellNeighborMix_ =
+        std::clamp(getDoubleParam("complex_cell_neighbor_mix", 0.65), 0.0, 1.0);
     edgePatchNormalizationEnabled_ = getIntParam("edge_patch_normalization", 0) != 0;
     edgePatchContrastStrength_ =
         std::max(0.0, getDoubleParam("edge_patch_contrast_strength", 1.0));
@@ -861,6 +989,16 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     orientationFlowDiagnosticsEnabled_ = getIntParam("orientation_flow_diagnostics", 0) != 0;
     orientationFlowDiagnosticsSampleLimit_ =
         std::max(0, getIntParam("orientation_flow_sample_limit", 0));
+    homeostaticScalingEnabled_ = getIntParam("homeostatic_scaling_enabled", 0) != 0;
+    homeostaticLearningEnabled_ = homeostaticScalingEnabled_;
+    homeostaticTargetActivation_ =
+        std::clamp(getDoubleParam("homeostatic_target_activation", 0.08), 0.0, 1.0);
+    homeostaticLearningRate_ = std::max(0.0, getDoubleParam("homeostatic_learning_rate", 0.01));
+    homeostaticActivityDecay_ =
+        std::clamp(getDoubleParam("homeostatic_activity_decay", 0.97), 0.0, 0.9999);
+    homeostaticGainMin_ = std::max(0.05, getDoubleParam("homeostatic_gain_min", 0.75));
+    homeostaticGainMax_ =
+        std::max(homeostaticGainMin_, getDoubleParam("homeostatic_gain_max", 1.25));
     frequencyBands_ = parseFrequencyBands(getStringParam("frequency_values", ""));
     configureFrequencyBands();
 
@@ -880,6 +1018,18 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     edgeConfig.doubleParams["phase_offset"] = getDoubleParam("phase_offset", 0.0);
     edgeConfig.doubleParams["sigma1"] = getDoubleParam("sigma1", 1.0);
     edgeConfig.doubleParams["sigma2"] = getDoubleParam("sigma2", 1.6);
+    edgeConfig.doubleParams["quadrature_energy_gamma"] =
+        getDoubleParam("quadrature_energy_gamma", 1.0);
+    edgeConfig.doubleParams["orientation_energy_magnitude_gamma"] =
+        getDoubleParam("orientation_energy_magnitude_gamma", 1.0);
+    edgeConfig.doubleParams["orientation_energy_sharpness"] =
+        getDoubleParam("orientation_energy_sharpness", 6.0);
+    edgeConfig.doubleParams["orientation_energy_tensor_mix"] =
+        getDoubleParam("orientation_energy_tensor_mix", 0.35);
+    edgeConfig.doubleParams["orientation_energy_tensor_sharpness"] =
+        getDoubleParam("orientation_energy_tensor_sharpness", 8.0);
+    edgeConfig.doubleParams["orientation_energy_tensor_floor"] =
+        getDoubleParam("orientation_energy_tensor_floor", 0.2);
     edgeConfig.intParams["kernel_size"] = getIntParam("kernel_size", 5);
 
     edgeOperator_ = features::EdgeOperatorFactory::create(edgeOperatorType_, edgeConfig);
@@ -1007,6 +1157,662 @@ void RetinaAdapter::configureFrequencyBands() {
     }
 }
 
+std::vector<int> RetinaAdapter::computeAxisSamplingBoundaries(int axisSize) const {
+    std::vector<int> boundaries(static_cast<size_t>(std::max(0, gridSize_)) + 1, 0);
+    if (boundaries.empty()) {
+        return boundaries;
+    }
+    boundaries.front() = 0;
+    boundaries.back() = std::max(0, axisSize);
+    if (gridSize_ <= 0 || axisSize <= 0) {
+        return boundaries;
+    }
+
+    if (!eccentricitySamplingEnabled_ ||
+        eccentricitySamplingStrength_ <= 1e-6 ||
+        std::abs(eccentricitySamplingGamma_ - 1.0) <= 1e-6) {
+        for (int i = 1; i < gridSize_; ++i) {
+            boundaries[static_cast<size_t>(i)] =
+                (i * axisSize) / std::max(1, gridSize_);
+        }
+        return boundaries;
+    }
+
+    auto warpCoordinate = [&](double normalized) {
+        normalized = std::clamp(normalized, 0.0, 1.0);
+        const double centered = (2.0 * normalized) - 1.0;
+        const double warpedCentered = std::copysign(
+            std::pow(std::abs(centered), eccentricitySamplingGamma_), centered);
+        const double warped = 0.5 * (1.0 + warpedCentered);
+        return std::clamp((1.0 - eccentricitySamplingStrength_) * normalized +
+                              eccentricitySamplingStrength_ * warped,
+                          0.0,
+                          1.0);
+    };
+
+    std::vector<double> desiredWidths(static_cast<size_t>(gridSize_), 1.0);
+    double desiredWidthSum = 0.0;
+    double previous = 0.0;
+    for (int i = 1; i <= gridSize_; ++i) {
+        const double warped = warpCoordinate(
+            static_cast<double>(i) / static_cast<double>(gridSize_));
+        const double width = std::max(1e-6, warped - previous);
+        desiredWidths[static_cast<size_t>(i - 1)] = width;
+        desiredWidthSum += width;
+        previous = warped;
+    }
+
+    std::vector<int> widths(static_cast<size_t>(gridSize_), 0);
+    int allocated = 0;
+    if (axisSize >= gridSize_) {
+        std::fill(widths.begin(), widths.end(), 1);
+        allocated = gridSize_;
+    }
+
+    const int remaining = std::max(0, axisSize - allocated);
+    std::vector<double> remainders(static_cast<size_t>(gridSize_), 0.0);
+    int assignedExtra = 0;
+    for (int i = 0; i < gridSize_; ++i) {
+        const double exact =
+            desiredWidthSum > 0.0
+                ? (static_cast<double>(remaining) *
+                   desiredWidths[static_cast<size_t>(i)] / desiredWidthSum)
+                : 0.0;
+        const int extra = static_cast<int>(std::floor(exact));
+        widths[static_cast<size_t>(i)] += extra;
+        assignedExtra += extra;
+        remainders[static_cast<size_t>(i)] = exact - static_cast<double>(extra);
+    }
+
+    int leftover = remaining - assignedExtra;
+    std::vector<int> order(static_cast<size_t>(gridSize_));
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](int lhs, int rhs) {
+        return remainders[static_cast<size_t>(lhs)] > remainders[static_cast<size_t>(rhs)];
+    });
+    for (int i = 0; i < leftover && i < static_cast<int>(order.size()); ++i) {
+        widths[static_cast<size_t>(order[static_cast<size_t>(i)])]++;
+    }
+
+    int cursor = 0;
+    for (int i = 0; i < gridSize_; ++i) {
+        boundaries[static_cast<size_t>(i)] = cursor;
+        cursor += widths[static_cast<size_t>(i)];
+    }
+    boundaries.back() = axisSize;
+    return boundaries;
+}
+
+double RetinaAdapter::computeRegionMaskWeight(int row, int col) const {
+    if (retinalMaskMode_ != "foveal" && retinalMaskMode_ != "peripheral") {
+        return 1.0;
+    }
+
+    const double x =
+        (static_cast<double>(clampIndex(col, 0, std::max(0, gridSize_ - 1))) + 0.5) /
+        static_cast<double>(std::max(1, gridSize_));
+    const double y =
+        (static_cast<double>(clampIndex(row, 0, std::max(0, gridSize_ - 1))) + 0.5) /
+        static_cast<double>(std::max(1, gridSize_));
+    const double dx = x - retinalMaskCenterX_;
+    const double dy = y - retinalMaskCenterY_;
+    const double distance = std::sqrt((dx * dx) + (dy * dy));
+
+    const double radius = std::clamp(retinalMaskRadiusFraction_, 0.0, 1.0);
+    const double softness = std::max(1e-6, retinalMaskSoftnessFraction_);
+    const double inner = std::max(0.0, radius - softness);
+    const double outer = std::min(1.5, radius + softness);
+
+    double fovealWeight = 0.0;
+    if (distance <= inner) {
+        fovealWeight = 1.0;
+    } else if (distance >= outer) {
+        fovealWeight = 0.0;
+    } else {
+        const double t = std::clamp((distance - inner) / std::max(1e-6, outer - inner), 0.0, 1.0);
+        const double smooth = t * t * (3.0 - (2.0 * t));
+        fovealWeight = 1.0 - smooth;
+    }
+
+    if (retinalMaskMode_ == "peripheral") {
+        return std::clamp(1.0 - fovealWeight, 0.0, 1.0);
+    }
+    return std::clamp(fovealWeight, 0.0, 1.0);
+}
+
+void RetinaAdapter::applyLuminanceOnOffBranchSplit(
+    std::vector<std::vector<double>>& bandFeatures,
+    std::vector<std::vector<double>>& auxiliaryFeatures) const {
+    const bool onBranch = luminanceBranchMode_ == "on";
+    const bool offBranch = luminanceBranchMode_ == "off";
+    const bool luminanceBranch = luminanceBranchMode_ == "luminance";
+    if ((!onBranch && !offBranch && !luminanceBranch) || bandFeatures.empty()) {
+        return;
+    }
+
+    for (size_t bandIdx = 0; bandIdx < bandFeatures.size(); ++bandIdx) {
+        const auto& auxiliary =
+            bandIdx < auxiliaryFeatures.size() ? auxiliaryFeatures[bandIdx] : std::vector<double>{};
+        if (auxiliary.size() < 7) {
+            continue;
+        }
+
+        const double luminanceMean = auxiliary[0];
+        const double luminanceContrast = auxiliary[1];
+        const double luminanceGradient = auxiliary[2];
+        const double sustainedOn = auxiliary[3];
+        const double sustainedOff = auxiliary[4];
+        const double transientOn = auxiliary[5];
+        const double transientOff = auxiliary[6];
+
+        const double onDrive = std::clamp(
+            (0.50 * transientOn) + (0.30 * sustainedOn) + (0.20 * luminanceGradient), 0.0, 1.0);
+        const double offDrive = std::clamp(
+            (0.50 * transientOff) + (0.30 * sustainedOff) + (0.20 * luminanceGradient), 0.0, 1.0);
+        const double achromaticDrive = std::clamp(
+            (0.40 * luminanceGradient) + (0.35 * luminanceContrast) +
+                (0.25 * std::abs((2.0 * luminanceMean) - 1.0)),
+            0.0, 1.0);
+
+        const double preferred =
+            onBranch ? onDrive : (offBranch ? offDrive : achromaticDrive);
+        const double opposing =
+            onBranch ? offDrive
+                     : (offBranch ? onDrive : (0.5 * (onDrive + offDrive)));
+        const double scale = std::clamp(
+            luminanceBranchFloor_ + (luminanceBranchDriveGain_ * preferred) -
+                (luminanceBranchOpponentSuppression_ * opposing),
+            0.0, 1.25);
+        for (double& value : bandFeatures[bandIdx]) {
+            value = std::clamp(value * scale, 0.0, 1.0);
+        }
+
+        if (bandIdx >= auxiliaryFeatures.size()) {
+            continue;
+        }
+
+        auto& branchAuxiliary = auxiliaryFeatures[bandIdx];
+        if (branchAuxiliary.size() < 7) {
+            continue;
+        }
+        std::array<double, 7> weights{};
+        weights.fill(luminanceBranchAuxiliaryFloor_);
+        if (onBranch) {
+            weights[0] = 0.55;
+            weights[1] = 0.70;
+            weights[2] = 0.95;
+            weights[3] = 0.95;
+            weights[4] = luminanceBranchAuxiliaryFloor_;
+            weights[5] = 1.00;
+            weights[6] = luminanceBranchAuxiliaryFloor_;
+            const double preferredAuxWeight =
+                std::clamp(luminanceBranchAuxiliaryFloor_ + (0.75 * preferred), 0.0, 1.0);
+            const double opposingAuxWeight =
+                std::clamp(luminanceBranchAuxiliaryFloor_ * (1.0 - (0.50 * opposing)), 0.0, 1.0);
+            weights[3] = std::max(weights[3], preferredAuxWeight);
+            weights[5] = std::max(weights[5], preferredAuxWeight);
+            weights[4] = std::min(weights[4], opposingAuxWeight);
+            weights[6] = std::min(weights[6], opposingAuxWeight);
+        } else if (offBranch) {
+            weights[0] = 0.55;
+            weights[1] = 0.70;
+            weights[2] = 0.95;
+            weights[3] = luminanceBranchAuxiliaryFloor_;
+            weights[4] = 0.95;
+            weights[5] = luminanceBranchAuxiliaryFloor_;
+            weights[6] = 1.00;
+            const double preferredAuxWeight =
+                std::clamp(luminanceBranchAuxiliaryFloor_ + (0.75 * preferred), 0.0, 1.0);
+            const double opposingAuxWeight =
+                std::clamp(luminanceBranchAuxiliaryFloor_ * (1.0 - (0.50 * opposing)), 0.0, 1.0);
+            weights[4] = std::max(weights[4], preferredAuxWeight);
+            weights[6] = std::max(weights[6], preferredAuxWeight);
+            weights[3] = std::min(weights[3], opposingAuxWeight);
+            weights[5] = std::min(weights[5], opposingAuxWeight);
+        } else {
+            weights[0] = 1.00;
+            weights[1] = 1.00;
+            weights[2] = 1.00;
+            weights[3] = 0.35;
+            weights[4] = 0.35;
+            weights[5] = luminanceBranchAuxiliaryFloor_;
+            weights[6] = luminanceBranchAuxiliaryFloor_;
+            const double preferredAuxWeight =
+                std::clamp(luminanceBranchAuxiliaryFloor_ + (0.80 * preferred), 0.0, 1.0);
+            weights[0] = std::max(weights[0], preferredAuxWeight);
+            weights[1] = std::max(weights[1], preferredAuxWeight);
+            weights[2] = std::max(weights[2], preferredAuxWeight);
+        }
+        for (size_t idx = 0; idx < branchAuxiliary.size(); ++idx) {
+            branchAuxiliary[idx] =
+                std::clamp(branchAuxiliary[idx] * weights[idx], 0.0, 1.0);
+        }
+    }
+}
+
+void RetinaAdapter::applyTemporalStreamBranchSplit(
+    std::vector<std::vector<double>>& bandFeatures,
+    std::vector<std::vector<double>>& auxiliaryFeatures) const {
+    const bool transientBranch = temporalStreamBranchMode_ == "transient";
+    const bool sustainedBranch = temporalStreamBranchMode_ == "sustained";
+    if ((!transientBranch && !sustainedBranch) || bandFeatures.empty()) {
+        return;
+    }
+
+    for (size_t bandIdx = 0; bandIdx < bandFeatures.size(); ++bandIdx) {
+        const auto& auxiliary =
+            bandIdx < auxiliaryFeatures.size() ? auxiliaryFeatures[bandIdx] : std::vector<double>{};
+        const double transient = estimateTransientDrive(auxiliary);
+        const double sustained = estimateSustainedDrive(auxiliary);
+        const double detail = estimateDetailDrive(auxiliary);
+        const double preferred =
+            transientBranch ? std::clamp((0.80 * transient) + (0.20 * detail), 0.0, 1.0)
+                            : std::clamp((0.80 * sustained) + (0.20 * detail), 0.0, 1.0);
+        const double opposing = transientBranch ? sustained : transient;
+        const double scale = std::clamp(
+            temporalStreamFloor_ + (temporalStreamDriveGain_ * preferred) -
+                (temporalStreamOpponentSuppression_ * opposing),
+            0.0, 1.25);
+        for (double& value : bandFeatures[bandIdx]) {
+            value = std::clamp(value * scale, 0.0, 1.0);
+        }
+
+        if (bandIdx >= auxiliaryFeatures.size()) {
+            continue;
+        }
+
+        auto& branchAuxiliary = auxiliaryFeatures[bandIdx];
+        if (auxiliaryFeatureMode_ == "appearance_stream_bank" && branchAuxiliary.size() >= 10) {
+            std::array<double, 10> weights{};
+            weights.fill(temporalStreamAuxiliaryFloor_);
+            weights[0] = 0.55;
+            weights[1] = 0.55;
+            weights[2] = 0.55;
+            weights[3] = sustainedBranch ? 0.85 : 0.60;
+            weights[4] = 0.85;
+            weights[5] = transientBranch ? 1.00 : 0.85;
+            weights[6] = sustainedBranch ? 1.00 : temporalStreamAuxiliaryFloor_;
+            weights[7] = sustainedBranch ? 1.00 : temporalStreamAuxiliaryFloor_;
+            weights[8] = transientBranch ? 1.00 : temporalStreamAuxiliaryFloor_;
+            weights[9] = transientBranch ? 1.00 : temporalStreamAuxiliaryFloor_;
+            const double preferredAuxWeight =
+                std::clamp(temporalStreamAuxiliaryFloor_ + (0.80 * preferred), 0.0, 1.0);
+            const double opposingAuxWeight =
+                std::clamp(temporalStreamAuxiliaryFloor_ * (1.0 - (0.50 * opposing)), 0.0, 1.0);
+            if (transientBranch) {
+                weights[8] = std::max(weights[8], preferredAuxWeight);
+                weights[9] = std::max(weights[9], preferredAuxWeight);
+                weights[6] = std::min(weights[6], opposingAuxWeight);
+                weights[7] = std::min(weights[7], opposingAuxWeight);
+            } else {
+                weights[6] = std::max(weights[6], preferredAuxWeight);
+                weights[7] = std::max(weights[7], preferredAuxWeight);
+                weights[8] = std::min(weights[8], opposingAuxWeight);
+                weights[9] = std::min(weights[9], opposingAuxWeight);
+            }
+            for (size_t idx = 0; idx < branchAuxiliary.size(); ++idx) {
+                branchAuxiliary[idx] =
+                    std::clamp(branchAuxiliary[idx] * weights[idx], 0.0, 1.0);
+            }
+        } else if (auxiliaryFeatureMode_ == "luminance_stream_bank" && branchAuxiliary.size() >= 7) {
+            std::array<double, 7> weights{};
+            weights.fill(temporalStreamAuxiliaryFloor_);
+            weights[0] = sustainedBranch ? 0.85 : 0.60;
+            weights[1] = 0.75;
+            weights[2] = transientBranch ? 1.00 : 0.85;
+            weights[3] = sustainedBranch ? 1.00 : temporalStreamAuxiliaryFloor_;
+            weights[4] = sustainedBranch ? 1.00 : temporalStreamAuxiliaryFloor_;
+            weights[5] = transientBranch ? 1.00 : temporalStreamAuxiliaryFloor_;
+            weights[6] = transientBranch ? 1.00 : temporalStreamAuxiliaryFloor_;
+            for (size_t idx = 0; idx < branchAuxiliary.size(); ++idx) {
+                branchAuxiliary[idx] =
+                    std::clamp(branchAuxiliary[idx] * weights[idx], 0.0, 1.0);
+            }
+        }
+    }
+}
+
+double RetinaAdapter::estimateTransientDrive(const std::vector<double>& auxiliary) const {
+    if (auxiliaryFeatureMode_ == "appearance_stream_bank" && auxiliary.size() >= 10) {
+        return 0.5 * (auxiliary[8] + auxiliary[9]);
+    }
+    if (auxiliaryFeatureMode_ == "luminance_stream_bank" && auxiliary.size() >= 7) {
+        return 0.5 * (auxiliary[5] + auxiliary[6]);
+    }
+    return 0.0;
+}
+
+double RetinaAdapter::estimateSustainedDrive(const std::vector<double>& auxiliary) const {
+    if (auxiliaryFeatureMode_ == "appearance_stream_bank" && auxiliary.size() >= 10) {
+        return 0.5 * (auxiliary[6] + auxiliary[7]);
+    }
+    if (auxiliaryFeatureMode_ == "luminance_stream_bank" && auxiliary.size() >= 7) {
+        return 0.5 * (auxiliary[3] + auxiliary[4]);
+    }
+    return 0.0;
+}
+
+double RetinaAdapter::estimateDetailDrive(const std::vector<double>& auxiliary) const {
+    if (auxiliaryFeatureMode_ == "appearance_stream_bank" && auxiliary.size() >= 10) {
+        return std::clamp(0.65 * auxiliary[5] + 0.35 * auxiliary[4], 0.0, 1.0);
+    }
+    if (auxiliaryFeatureMode_ == "luminance_stream_bank" && auxiliary.size() >= 7) {
+        return std::clamp(0.65 * auxiliary[2] + 0.35 * auxiliary[1], 0.0, 1.0);
+    }
+    if (auxiliaryFeatureMode_ == "appearance_bank" && auxiliary.size() >= 6) {
+        return std::clamp(0.65 * auxiliary[5] + 0.35 * auxiliary[4], 0.0, 1.0);
+    }
+    return 0.0;
+}
+
+void RetinaAdapter::applyTemporalCoarseToFineDualPass(
+    std::vector<std::vector<double>>& bandFeatures,
+    const std::vector<std::vector<double>>& auxiliaryFeatures) const {
+    if (!temporalCoarseToFineEnabled_ || bandFeatures.size() <= 1 || bandFeatures.empty()) {
+        return;
+    }
+
+    const size_t lowBand = 0;
+    const size_t highBand = bandFeatures.size() - 1;
+    const double lowTransient =
+        lowBand < auxiliaryFeatures.size() ? estimateTransientDrive(auxiliaryFeatures[lowBand]) : 0.0;
+    const double lowDetail =
+        lowBand < auxiliaryFeatures.size() ? estimateDetailDrive(auxiliaryFeatures[lowBand]) : 0.0;
+    const double highSustained =
+        highBand < auxiliaryFeatures.size() ? estimateSustainedDrive(auxiliaryFeatures[highBand]) : 0.0;
+    const double highDetail =
+        highBand < auxiliaryFeatures.size() ? estimateDetailDrive(auxiliaryFeatures[highBand]) : 0.0;
+
+    const double coarseScale = std::max(
+        0.0, 1.0 + temporalCoarseBias_ + temporalTransientGain_ * (0.70 * lowTransient + 0.30 * lowDetail));
+    const double fineDrive = std::clamp(0.65 * highSustained + 0.35 * highDetail, 0.0, 1.0);
+
+    for (size_t channel = 0; channel < bandFeatures[lowBand].size(); ++channel) {
+        const double coarseValue = bandFeatures[lowBand][channel];
+        const double supportedCoarse = std::clamp(coarseValue * coarseScale, 0.0, 1.0);
+        bandFeatures[lowBand][channel] = supportedCoarse;
+
+        double fineSupport = 0.0;
+        if (highBand < bandFeatures.size() && channel < bandFeatures[highBand].size()) {
+            fineSupport = bandFeatures[highBand][channel];
+            const double fineScale = std::max(
+                0.0, 1.0 + temporalSustainedGain_ * fineDrive +
+                         temporalCrossBandGain_ * supportedCoarse);
+            bandFeatures[highBand][channel] = std::clamp(fineSupport * fineScale, 0.0, 1.0);
+        }
+
+        for (size_t bandIdx = 1; bandIdx + 1 < bandFeatures.size(); ++bandIdx) {
+            if (channel >= bandFeatures[bandIdx].size()) {
+                continue;
+            }
+            const double mix =
+                static_cast<double>(bandIdx) / static_cast<double>(highBand);
+            const double mixedDrive =
+                ((1.0 - mix) * (0.50 * lowTransient + 0.20 * lowDetail)) +
+                (mix * (0.50 * highSustained + 0.20 * highDetail));
+            const double support =
+                ((1.0 - mix) * supportedCoarse) + (mix * fineSupport);
+            const double scale =
+                std::max(0.0, 1.0 + 0.5 * temporalTransientGain_ * mixedDrive +
+                                 0.5 * temporalCrossBandGain_ * support);
+            bandFeatures[bandIdx][channel] =
+                std::clamp(bandFeatures[bandIdx][channel] * scale, 0.0, 1.0);
+        }
+    }
+}
+
+void RetinaAdapter::applyComplexCellStage(
+    std::vector<std::vector<double>>& bandFeatures) const {
+    if (!complexCellEnabled_ || bandFeatures.empty() || numOrientations_ <= 0) {
+        return;
+    }
+
+    const size_t orientationCount = static_cast<size_t>(numOrientations_);
+    const size_t blockCount = getOrientationChannelBlocks();
+    const size_t colorChannelCount = getColorEdgeChannelCount();
+    if (blockCount == 0 || colorChannelCount == 0) {
+        return;
+    }
+    const size_t expectedChannels = orientationCount * blockCount * colorChannelCount;
+
+    auto channelIndex = [&](size_t blockIdx, size_t colorIdx, size_t orientationIdx) {
+        return (((blockIdx * colorChannelCount) + colorIdx) * orientationCount) + orientationIdx;
+    };
+
+    for (auto& band : bandFeatures) {
+        if (band.size() != expectedChannels) {
+            continue;
+        }
+
+        const std::vector<double> original = band;
+        for (size_t colorIdx = 0; colorIdx < colorChannelCount; ++colorIdx) {
+            std::vector<double> pooled(orientationCount, 0.0);
+            double pooledMax = 0.0;
+
+            for (size_t orientationIdx = 0; orientationIdx < orientationCount; ++orientationIdx) {
+                double energySumSq = 0.0;
+                double maxValue = 0.0;
+                for (size_t blockIdx = 0; blockIdx < blockCount; ++blockIdx) {
+                    const double value = original[channelIndex(blockIdx, colorIdx, orientationIdx)];
+                    energySumSq += value * value;
+                    maxValue = std::max(maxValue, value);
+                }
+                const double rmsValue = std::sqrt(energySumSq / static_cast<double>(blockCount));
+                pooled[orientationIdx] =
+                    (complexCellMaxMix_ * maxValue) + ((1.0 - complexCellMaxMix_) * rmsValue);
+                pooledMax = std::max(pooledMax, pooled[orientationIdx]);
+            }
+
+            if (complexCellDivisiveGain_ > 1e-9 && pooledMax > 1e-9) {
+                const double pooledMean =
+                    std::accumulate(pooled.begin(), pooled.end(), 0.0) /
+                    static_cast<double>(orientationCount);
+                std::vector<double> normalized = pooled;
+                double normalizedMax = 0.0;
+                for (size_t orientationIdx = 0; orientationIdx < orientationCount; ++orientationIdx) {
+                    const size_t prevIdx =
+                        (orientationIdx + orientationCount - 1) % orientationCount;
+                    const size_t nextIdx = (orientationIdx + 1) % orientationCount;
+                    const double neighborContext =
+                        0.5 * (pooled[prevIdx] + pooled[nextIdx]);
+                    const double suppressivePool =
+                        ((1.0 - complexCellNeighborMix_) * pooledMean) +
+                        (complexCellNeighborMix_ * neighborContext);
+                    const double denom =
+                        1.0 + complexCellDivisiveGain_ *
+                                  std::max(complexCellDivisiveFloor_, suppressivePool);
+                    normalized[orientationIdx] = pooled[orientationIdx] / std::max(1e-6, denom);
+                    normalizedMax = std::max(normalizedMax, normalized[orientationIdx]);
+                }
+                if (normalizedMax > 1e-9) {
+                    const double restoreScale = pooledMax / normalizedMax;
+                    for (double& value : normalized) {
+                        value = std::clamp(value * restoreScale, 0.0, 1.0);
+                    }
+                }
+                pooled.swap(normalized);
+            }
+
+            for (size_t blockIdx = 0; blockIdx < blockCount; ++blockIdx) {
+                for (size_t orientationIdx = 0; orientationIdx < orientationCount; ++orientationIdx) {
+                    const size_t idx = channelIndex(blockIdx, colorIdx, orientationIdx);
+                    band[idx] = std::clamp(
+                        ((1.0 - complexCellPoolBlend_) * original[idx]) +
+                            (complexCellPoolBlend_ * pooled[orientationIdx]),
+                        0.0,
+                        1.0);
+                }
+            }
+        }
+    }
+}
+
+void RetinaAdapter::applyContourSupportBank(
+    const std::vector<std::vector<double>>& bandFeatures,
+    std::vector<std::vector<double>>& auxiliaryFeatures) const {
+    if (auxiliaryFeatureMode_ != "contour_support_bank" ||
+        bandFeatures.empty() ||
+        auxiliaryFeatures.size() != bandFeatures.size() ||
+        numOrientations_ <= 0) {
+        return;
+    }
+
+    const size_t orientationCount = static_cast<size_t>(numOrientations_);
+    const size_t blockCount = getOrientationChannelBlocks();
+    const size_t colorChannelCount = getColorEdgeChannelCount();
+    const size_t subfieldCount = getSubfieldCount();
+    if (blockCount == 0 || colorChannelCount == 0) {
+        return;
+    }
+    const size_t expectedChannels = orientationCount * blockCount * colorChannelCount;
+    const bool hasPooledBlock = subfieldIncludePooled_ && subfieldCount > 0;
+    const size_t firstSubfieldBlock = hasPooledBlock ? 1u : 0u;
+
+    auto wrapOrientation = [&](int idx) {
+        int wrapped = idx % static_cast<int>(orientationCount);
+        if (wrapped < 0) {
+            wrapped += static_cast<int>(orientationCount);
+        }
+        return static_cast<size_t>(wrapped);
+    };
+
+    auto channelIndex = [&](size_t blockIdx, size_t colorIdx, size_t orientationIdx) {
+        return (((blockIdx * colorChannelCount) + colorIdx) * orientationCount) + orientationIdx;
+    };
+
+    auto smoothSupport = [&](const std::vector<double>& values, size_t centerIdx) {
+        return std::clamp(
+            values[centerIdx] +
+                0.5 * (values[wrapOrientation(static_cast<int>(centerIdx) - 1)] +
+                       values[wrapOrientation(static_cast<int>(centerIdx) + 1)]),
+            0.0,
+            1.5);
+    };
+
+    for (size_t bandIdx = 0; bandIdx < bandFeatures.size(); ++bandIdx) {
+        const auto& band = bandFeatures[bandIdx];
+        auto& auxiliary = auxiliaryFeatures[bandIdx];
+        if (band.size() != expectedChannels || auxiliary.size() < 6) {
+            continue;
+        }
+
+        std::vector<std::vector<double>> blockOrientations;
+        blockOrientations.reserve(blockCount);
+        for (size_t blockIdx = 0; blockIdx < blockCount; ++blockIdx) {
+            std::vector<double> block(orientationCount, 0.0);
+            for (size_t orientationIdx = 0; orientationIdx < orientationCount; ++orientationIdx) {
+                block[orientationIdx] = band[channelIndex(blockIdx, 0, orientationIdx)];
+            }
+            blockOrientations.push_back(std::move(block));
+        }
+
+        std::vector<double> pooledOrientation(orientationCount, 0.0);
+        if (hasPooledBlock) {
+            pooledOrientation = blockOrientations[0];
+        } else {
+            for (const auto& block : blockOrientations) {
+                for (size_t orient = 0; orient < orientationCount; ++orient) {
+                    pooledOrientation[orient] += block[orient] / static_cast<double>(blockCount);
+                }
+            }
+        }
+
+        const auto dominantIt = std::max_element(pooledOrientation.begin(), pooledOrientation.end());
+        const size_t dominantIdx =
+            static_cast<size_t>(std::distance(pooledOrientation.begin(), dominantIt));
+        const double dominantSupport = smoothSupport(pooledOrientation, dominantIdx);
+        const size_t orthIdx = wrapOrientation(static_cast<int>(dominantIdx) +
+                                              static_cast<int>(orientationCount / 4));
+        const double orthSupport = smoothSupport(pooledOrientation, orthIdx);
+        const double prevSupport =
+            pooledOrientation[wrapOrientation(static_cast<int>(dominantIdx) - 1)];
+        const double nextSupport =
+            pooledOrientation[wrapOrientation(static_cast<int>(dominantIdx) + 1)];
+        const double junctionness =
+            dominantSupport * std::max(orthSupport, 0.5 * (prevSupport + nextSupport));
+
+        if (subfieldCount == 0 || subfieldGridSize_ <= 1 || blockCount <= firstSubfieldBlock) {
+            auxiliary[0] = std::clamp(dominantSupport * auxiliaryFeatureGain_, 0.0, 1.0);
+            auxiliary[1] = std::clamp(0.5 * (prevSupport + nextSupport) * auxiliaryFeatureGain_,
+                                      0.0,
+                                      1.0);
+            auxiliary[2] = 0.0;
+            auxiliary[3] = std::clamp(junctionness * auxiliaryFeatureGain_, 0.0, 1.0);
+            auxiliary[4] = 0.0;
+            auxiliary[5] = 0.0;
+            continue;
+        }
+
+        const double theta =
+            (static_cast<double>(dominantIdx) * M_PI) / static_cast<double>(orientationCount);
+        const double axisX = std::cos(theta);
+        const double axisY = std::sin(theta);
+        const double normalX = -axisY;
+        const double normalY = axisX;
+
+        double positiveAlong = 0.0;
+        double negativeAlong = 0.0;
+        double positiveAcross = 0.0;
+        double negativeAcross = 0.0;
+        double curvePositive = 0.0;
+        double curveNegative = 0.0;
+
+        for (size_t blockIdx = firstSubfieldBlock; blockIdx < blockOrientations.size(); ++blockIdx) {
+            const size_t localIdx = blockIdx - firstSubfieldBlock;
+            const int subRow = static_cast<int>(localIdx / static_cast<size_t>(subfieldGridSize_));
+            const int subCol = static_cast<int>(localIdx % static_cast<size_t>(subfieldGridSize_));
+            const double x =
+                ((static_cast<double>(subCol) + 0.5) / static_cast<double>(subfieldGridSize_)) - 0.5;
+            const double y =
+                ((static_cast<double>(subRow) + 0.5) / static_cast<double>(subfieldGridSize_)) - 0.5;
+            const double along = x * axisX + y * axisY;
+            const double across = x * normalX + y * normalY;
+            const auto& block = blockOrientations[blockIdx];
+            const double blockDominant = smoothSupport(block, dominantIdx);
+            const double blockCurve = std::max(
+                smoothSupport(block, wrapOrientation(static_cast<int>(dominantIdx) - 1)),
+                smoothSupport(block, wrapOrientation(static_cast<int>(dominantIdx) + 1)));
+
+            if (along >= 0.0) {
+                positiveAlong += blockDominant * std::abs(along);
+                curvePositive += blockCurve * std::abs(along);
+            } else {
+                negativeAlong += blockDominant * std::abs(along);
+                curveNegative += blockCurve * std::abs(along);
+            }
+            if (across >= 0.0) {
+                positiveAcross += blockDominant * std::abs(across);
+            } else {
+                negativeAcross += blockDominant * std::abs(across);
+            }
+        }
+
+        const double alongTotal = positiveAlong + negativeAlong;
+        const double acrossTotal = positiveAcross + negativeAcross;
+        const double continuation =
+            alongTotal > 1e-9 ? (2.0 * std::min(positiveAlong, negativeAlong) / alongTotal) : 0.0;
+        const double endstop =
+            alongTotal > 1e-9 ? (std::abs(positiveAlong - negativeAlong) / alongTotal) : 0.0;
+        const double curveTotal = curvePositive + curveNegative;
+        const double cocircular =
+            curveTotal > 1e-9 ? (2.0 * std::min(curvePositive, curveNegative) / curveTotal) : 0.0;
+        const double borderLeft =
+            acrossTotal > 1e-9 ? (negativeAcross / acrossTotal) : 0.0;
+        const double borderRight =
+            acrossTotal > 1e-9 ? (positiveAcross / acrossTotal) : 0.0;
+
+        auxiliary[0] = std::clamp(continuation * dominantSupport * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[1] = std::clamp(cocircular * 0.5 * (prevSupport + nextSupport) *
+                                      auxiliaryFeatureGain_,
+                                  0.0,
+                                  1.0);
+        auxiliary[2] = std::clamp(endstop * dominantSupport * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[3] = std::clamp(junctionness * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[4] = std::clamp(borderLeft * dominantSupport * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[5] = std::clamp(borderRight * dominantSupport * auxiliaryFeatureGain_, 0.0, 1.0);
+    }
+}
+
 size_t RetinaAdapter::getAuxiliaryChannelCount() const {
     if (auxiliaryFeatureMode_ == "none") {
         return 0u;
@@ -1030,6 +1836,15 @@ size_t RetinaAdapter::getAuxiliaryChannelCount() const {
         return 3u;
     }
     if (auxiliaryFeatureMode_ == "appearance_bank") {
+        return 6u;
+    }
+    if (auxiliaryFeatureMode_ == "appearance_stream_bank") {
+        return 10u;
+    }
+    if (auxiliaryFeatureMode_ == "luminance_stream_bank") {
+        return 7u;
+    }
+    if (auxiliaryFeatureMode_ == "contour_support_bank") {
         return 6u;
     }
     return 1u;
@@ -1093,6 +1908,174 @@ RetinaAdapter::Image RetinaAdapter::blurImage(const Image& image, double sigma) 
         }
     }
     return blurred;
+}
+
+RetinaAdapter::Image RetinaAdapter::applyLgnRelayWithParams(const Image& image,
+                                                            double centerSigma,
+                                                            double surroundSigma,
+                                                            double centerSurroundStrength) const {
+    if (centerSurroundStrength <= 0.0) {
+        return image;
+    }
+
+    const auto centerImage = blurImage(image, centerSigma);
+    const auto surroundImage = blurImage(image, surroundSigma);
+    Image relayed = centerImage;
+    const int channels = std::max(1, image.channels);
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            for (int channel = 0; channel < channels; ++channel) {
+                const double centerValue =
+                    static_cast<double>(centerImage.getPixel(row, col, channel));
+                const double surroundValue =
+                    static_cast<double>(surroundImage.getPixel(row, col, channel));
+                const double sharpened =
+                    centerValue + centerSurroundStrength * (centerValue - surroundValue);
+                relayed.pixels[(static_cast<size_t>(row * image.cols + col) *
+                                static_cast<size_t>(channels)) +
+                               static_cast<size_t>(channel)] =
+                    static_cast<uint8_t>(std::clamp(std::lround(sharpened), 0L, 255L));
+            }
+        }
+    }
+
+    return relayed;
+}
+
+RetinaAdapter::Image RetinaAdapter::applyLgnRelay(const Image& image) const {
+    if (!lgnRelayEnabled_ || lgnCenterSurroundStrength_ <= 0.0) {
+        return image;
+    }
+
+    return applyLgnRelayWithParams(
+        image, lgnCenterSigma_, lgnSurroundSigma_, lgnCenterSurroundStrength_);
+}
+
+RetinaAdapter::Image RetinaAdapter::makeAchromaticImage(const Image& image,
+                                                        double achromaticMix) const {
+    if (achromaticMix <= 1e-6 || image.channels <= 1) {
+        return image;
+    }
+
+    Image achromatic = image;
+    const int channels = std::max(1, image.channels);
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            const double luminance = static_cast<double>(image.getPixel(row, col));
+            for (int channel = 0; channel < channels; ++channel) {
+                const double source = static_cast<double>(image.getPixel(row, col, channel));
+                const double blended =
+                    ((1.0 - achromaticMix) * source) + (achromaticMix * luminance);
+                achromatic.pixels[(static_cast<size_t>(row * image.cols + col) *
+                                   static_cast<size_t>(channels)) +
+                                  static_cast<size_t>(channel)] =
+                    static_cast<uint8_t>(std::clamp(std::lround(blended), 0L, 255L));
+            }
+        }
+    }
+    return achromatic;
+}
+
+RetinaAdapter::Image RetinaAdapter::blendImages(const Image& base,
+                                                const Image& overlay,
+                                                double overlayWeight) const {
+    if (overlayWeight <= 1e-6) {
+        return base;
+    }
+    if (overlayWeight >= 1.0 - 1e-6) {
+        return overlay;
+    }
+
+    Image blended = base;
+    const int rows = std::min(base.rows, overlay.rows);
+    const int cols = std::min(base.cols, overlay.cols);
+    const int channels = std::min(std::max(1, base.channels), std::max(1, overlay.channels));
+    for (int row = 0; row < rows; ++row) {
+        for (int col = 0; col < cols; ++col) {
+            for (int channel = 0; channel < channels; ++channel) {
+                const double baseValue = static_cast<double>(base.getPixel(row, col, channel));
+                const double overlayValue =
+                    static_cast<double>(overlay.getPixel(row, col, channel));
+                const double value =
+                    ((1.0 - overlayWeight) * baseValue) + (overlayWeight * overlayValue);
+                blended.pixels[(static_cast<size_t>(row * base.cols + col) *
+                                static_cast<size_t>(std::max(1, base.channels))) +
+                               static_cast<size_t>(channel)] =
+                    static_cast<uint8_t>(std::clamp(std::lround(value), 0L, 255L));
+            }
+        }
+    }
+    return blended;
+}
+
+RetinaAdapter::RelayBandImageSet RetinaAdapter::buildRelayBandImages(const Image& image) const {
+    RelayBandImageSet bands;
+    const size_t bandCount = blurSigmas_.empty() ? 1u : blurSigmas_.size();
+    bands.orientationBands.reserve(bandCount);
+    bands.auxiliaryBands.reserve(bandCount);
+
+    if (!lgnParallelRelayEnabled_) {
+        Image processed = applyLgnRelay(image);
+        processed = applyLocalContrastNormalization(processed);
+        if (blurSigmas_.empty()) {
+            bands.orientationBands.push_back(processed);
+            bands.auxiliaryBands.push_back(processed);
+        } else {
+            for (double sigma : blurSigmas_) {
+                auto bandImage = blurImage(processed, sigma);
+                bands.orientationBands.push_back(bandImage);
+                bands.auxiliaryBands.push_back(std::move(bandImage));
+            }
+        }
+        return bands;
+    }
+
+    auto magnoInput = makeAchromaticImage(image, lgnMagnoAchromaticMix_);
+    auto magnoRelay = applyLgnRelayWithParams(
+        magnoInput,
+        lgnMagnoCenterSigma_,
+        lgnMagnoSurroundSigma_,
+        lgnMagnoCenterSurroundStrength_);
+    magnoRelay = applyLocalContrastNormalization(magnoRelay);
+
+    auto parvoRelay = applyLgnRelayWithParams(
+        image,
+        lgnParvoCenterSigma_,
+        lgnParvoSurroundSigma_,
+        lgnParvoCenterSurroundStrength_);
+    parvoRelay = blendImages(parvoRelay, image, lgnParvoOriginalMix_);
+    parvoRelay = applyLocalContrastNormalization(parvoRelay);
+
+    if (blurSigmas_.empty()) {
+        const double magnoWeight = std::clamp(0.5 + (0.5 * lgnBandMagnoFloor_), 0.0, 1.0);
+        const double auxiliaryMagnoWeight =
+            std::clamp(lgnAuxiliaryMagnoMix_ * magnoWeight, 0.0, 1.0);
+        bands.orientationBands.push_back(blendImages(parvoRelay, magnoRelay, magnoWeight));
+        bands.auxiliaryBands.push_back(
+            blendImages(parvoRelay, magnoRelay, auxiliaryMagnoWeight));
+        return bands;
+    }
+
+    for (size_t bandIdx = 0; bandIdx < blurSigmas_.size(); ++bandIdx) {
+        const double sigma = blurSigmas_[bandIdx];
+        const auto magnoBand = blurImage(magnoRelay, sigma + lgnMagnoExtraBlur_);
+        const auto parvoBand = blurImage(parvoRelay, sigma);
+        const double detailPosition = blurSigmas_.size() <= 1
+                                          ? 0.5
+                                          : static_cast<double>(bandIdx) /
+                                                static_cast<double>(blurSigmas_.size() - 1);
+        const double magnoWeight = std::clamp(
+            lgnBandMagnoFloor_ + ((1.0 - lgnBandMagnoFloor_) * (1.0 - detailPosition)),
+            0.0,
+            1.0);
+        const double auxiliaryMagnoWeight =
+            std::clamp(lgnAuxiliaryMagnoMix_ * magnoWeight, 0.0, 1.0);
+        bands.orientationBands.push_back(blendImages(parvoBand, magnoBand, magnoWeight));
+        bands.auxiliaryBands.push_back(
+            blendImages(parvoBand, magnoBand, auxiliaryMagnoWeight));
+    }
+
+    return bands;
 }
 
 RetinaAdapter::Image RetinaAdapter::applyViewTransform(const Image& image) const {
@@ -1281,10 +2264,14 @@ std::vector<uint8_t> RetinaAdapter::extractRegion(const Image& image,
     const int effectiveSize = std::max(1, targetSize);
     std::vector<uint8_t> region(static_cast<size_t>(effectiveSize * effectiveSize));
 
-    const int startRow = (regionRow * image.rows) / gridSize_;
-    const int endRow = ((regionRow + 1) * image.rows) / gridSize_;
-    const int startCol = (regionCol * image.cols) / gridSize_;
-    const int endCol = ((regionCol + 1) * image.cols) / gridSize_;
+    const auto rowBoundaries = computeAxisSamplingBoundaries(image.rows);
+    const auto colBoundaries = computeAxisSamplingBoundaries(image.cols);
+    const int safeRow = clampIndex(regionRow, 0, std::max(0, gridSize_ - 1));
+    const int safeCol = clampIndex(regionCol, 0, std::max(0, gridSize_ - 1));
+    const int startRow = rowBoundaries[static_cast<size_t>(safeRow)];
+    const int endRow = rowBoundaries[static_cast<size_t>(safeRow + 1)];
+    const int startCol = colBoundaries[static_cast<size_t>(safeCol)];
+    const int endCol = colBoundaries[static_cast<size_t>(safeCol + 1)];
     const int sourceHeight = std::max(1, endRow - startRow);
     const int sourceWidth = std::max(1, endCol - startCol);
 
@@ -1313,16 +2300,23 @@ std::vector<double> RetinaAdapter::computeColorOpponentFeatures(const Image& ima
                                                                 int targetSize) const {
     std::vector<double> auxiliary(getAuxiliaryChannelCount(), 0.0);
     const bool colorOpponentMode =
-        auxiliaryFeatureMode_ == "color_opponent" || auxiliaryFeatureMode_ == "appearance_bank";
+        auxiliaryFeatureMode_ == "color_opponent" ||
+        auxiliaryFeatureMode_ == "appearance_bank" ||
+        auxiliaryFeatureMode_ == "appearance_stream_bank" ||
+        auxiliaryFeatureMode_ == "luminance_stream_bank";
     if (!colorOpponentMode || auxiliary.empty()) {
         return auxiliary;
     }
 
     const int effectiveSize = std::max(1, targetSize);
-    const int startRow = (regionRow * image.rows) / gridSize_;
-    const int endRow = ((regionRow + 1) * image.rows) / gridSize_;
-    const int startCol = (regionCol * image.cols) / gridSize_;
-    const int endCol = ((regionCol + 1) * image.cols) / gridSize_;
+    const auto rowBoundaries = computeAxisSamplingBoundaries(image.rows);
+    const auto colBoundaries = computeAxisSamplingBoundaries(image.cols);
+    const int safeRow = clampIndex(regionRow, 0, std::max(0, gridSize_ - 1));
+    const int safeCol = clampIndex(regionCol, 0, std::max(0, gridSize_ - 1));
+    const int startRow = rowBoundaries[static_cast<size_t>(safeRow)];
+    const int endRow = rowBoundaries[static_cast<size_t>(safeRow + 1)];
+    const int startCol = colBoundaries[static_cast<size_t>(safeCol)];
+    const int endCol = colBoundaries[static_cast<size_t>(safeCol + 1)];
     const int sourceHeight = std::max(1, endRow - startRow);
     const int sourceWidth = std::max(1, endCol - startCol);
 
@@ -1332,7 +2326,11 @@ std::vector<double> RetinaAdapter::computeColorOpponentFeatures(const Image& ima
     double luminanceSum = 0.0;
     double luminanceSqSum = 0.0;
     double gradientSum = 0.0;
+    double transientOnSum = 0.0;
+    double transientOffSum = 0.0;
     const double sampleCount = static_cast<double>(effectiveSize * effectiveSize);
+    std::vector<double> luminanceSamples;
+    luminanceSamples.reserve(static_cast<size_t>(effectiveSize * effectiveSize));
 
     for (int r = 0; r < effectiveSize; ++r) {
         for (int c = 0; c < effectiveSize; ++c) {
@@ -1359,24 +2357,44 @@ std::vector<double> RetinaAdapter::computeColorOpponentFeatures(const Image& ima
             blueSum += blue;
             luminanceSum += luminance;
             luminanceSqSum += luminance * luminance;
+            luminanceSamples.push_back(luminance);
 
+            const int leftCol = std::max(0, imgCol - 1);
+            const int upRow = std::max(0, imgRow - 1);
             const int rightCol = std::min(image.cols - 1, imgCol + 1);
             const int downRow = std::min(image.rows - 1, imgRow + 1);
+            const double leftRed = image.channels >= 3 ? image.getNormalizedPixel(imgRow, leftCol, 0)
+                                                       : image.getNormalizedPixel(imgRow, leftCol);
+            const double leftGreen = image.channels >= 3 ? image.getNormalizedPixel(imgRow, leftCol, 1)
+                                                         : leftRed;
+            const double leftBlue = image.channels >= 3 ? image.getNormalizedPixel(imgRow, leftCol, 2)
+                                                        : leftRed;
             const double rightRed = image.channels >= 3 ? image.getNormalizedPixel(imgRow, rightCol, 0)
                                                         : image.getNormalizedPixel(imgRow, rightCol);
             const double rightGreen = image.channels >= 3 ? image.getNormalizedPixel(imgRow, rightCol, 1)
                                                           : rightRed;
             const double rightBlue = image.channels >= 3 ? image.getNormalizedPixel(imgRow, rightCol, 2)
                                                          : rightRed;
+            const double upRed = image.channels >= 3 ? image.getNormalizedPixel(upRow, imgCol, 0)
+                                                     : image.getNormalizedPixel(upRow, imgCol);
+            const double upGreen = image.channels >= 3 ? image.getNormalizedPixel(upRow, imgCol, 1)
+                                                       : upRed;
+            const double upBlue = image.channels >= 3 ? image.getNormalizedPixel(upRow, imgCol, 2)
+                                                      : upRed;
             const double downRed = image.channels >= 3 ? image.getNormalizedPixel(downRow, imgCol, 0)
                                                        : image.getNormalizedPixel(downRow, imgCol);
             const double downGreen = image.channels >= 3 ? image.getNormalizedPixel(downRow, imgCol, 1)
                                                          : downRed;
             const double downBlue = image.channels >= 3 ? image.getNormalizedPixel(downRow, imgCol, 2)
                                                         : downRed;
+            const double leftLum = 0.299 * leftRed + 0.587 * leftGreen + 0.114 * leftBlue;
             const double rightLum = 0.299 * rightRed + 0.587 * rightGreen + 0.114 * rightBlue;
+            const double upLum = 0.299 * upRed + 0.587 * upGreen + 0.114 * upBlue;
             const double downLum = 0.299 * downRed + 0.587 * downGreen + 0.114 * downBlue;
             gradientSum += 0.5 * (std::abs(rightLum - luminance) + std::abs(downLum - luminance));
+            const double surroundLum = 0.25 * (leftLum + rightLum + upLum + downLum);
+            transientOnSum += std::max(0.0, luminance - surroundLum);
+            transientOffSum += std::max(0.0, surroundLum - luminance);
         }
     }
 
@@ -1388,6 +2406,26 @@ std::vector<double> RetinaAdapter::computeColorOpponentFeatures(const Image& ima
                                                   (luminanceMean * luminanceMean));
     const double luminanceStd = std::sqrt(luminanceVar);
     const double gradientMean = gradientSum / sampleCount;
+    double sustainedOnSum = 0.0;
+    double sustainedOffSum = 0.0;
+    for (double sample : luminanceSamples) {
+        sustainedOnSum += std::max(0.0, sample - luminanceMean);
+        sustainedOffSum += std::max(0.0, luminanceMean - sample);
+    }
+    const double sustainedOnMean = sustainedOnSum / sampleCount;
+    const double sustainedOffMean = sustainedOffSum / sampleCount;
+    const double transientOnMean = transientOnSum / sampleCount;
+    const double transientOffMean = transientOffSum / sampleCount;
+    if (auxiliaryFeatureMode_ == "luminance_stream_bank" && auxiliary.size() >= 7) {
+        auxiliary[0] = std::clamp(luminanceMean * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[1] = std::clamp(2.0 * luminanceStd * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[2] = std::clamp(4.0 * gradientMean * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[3] = std::clamp(2.0 * sustainedOnMean * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[4] = std::clamp(2.0 * sustainedOffMean * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[5] = std::clamp(4.0 * transientOnMean * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[6] = std::clamp(4.0 * transientOffMean * auxiliaryFeatureGain_, 0.0, 1.0);
+        return auxiliary;
+    }
     const double yellowMean = 0.5 * (redMean + greenMean);
     const double rgOpponent = std::clamp(0.5 + 0.5 * (redMean - greenMean), 0.0, 1.0);
     const double byOpponent = std::clamp(0.5 + 0.5 * (blueMean - yellowMean), 0.0, 1.0);
@@ -1401,10 +2439,18 @@ std::vector<double> RetinaAdapter::computeColorOpponentFeatures(const Image& ima
     if (auxiliary.size() > 2) {
         auxiliary[2] = std::clamp(chroma * auxiliaryFeatureGain_, 0.0, 1.0);
     }
-    if (auxiliaryFeatureMode_ == "appearance_bank" && auxiliary.size() >= 6) {
+    if ((auxiliaryFeatureMode_ == "appearance_bank" ||
+         auxiliaryFeatureMode_ == "appearance_stream_bank") &&
+        auxiliary.size() >= 6) {
         auxiliary[3] = std::clamp(luminanceMean * auxiliaryFeatureGain_, 0.0, 1.0);
         auxiliary[4] = std::clamp(2.0 * luminanceStd * auxiliaryFeatureGain_, 0.0, 1.0);
         auxiliary[5] = std::clamp(4.0 * gradientMean * auxiliaryFeatureGain_, 0.0, 1.0);
+    }
+    if (auxiliaryFeatureMode_ == "appearance_stream_bank" && auxiliary.size() >= 10) {
+        auxiliary[6] = std::clamp(2.0 * sustainedOnMean * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[7] = std::clamp(2.0 * sustainedOffMean * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[8] = std::clamp(4.0 * transientOnMean * auxiliaryFeatureGain_, 0.0, 1.0);
+        auxiliary[9] = std::clamp(4.0 * transientOffMean * auxiliaryFeatureGain_, 0.0, 1.0);
     }
     return auxiliary;
 }
@@ -1912,6 +2958,37 @@ std::vector<double> RetinaAdapter::computeAuxiliaryFeatures(
     return auxiliary;
 }
 
+void RetinaAdapter::applyHomeostaticScaling(std::vector<double>& features) {
+    if (!homeostaticScalingEnabled_ || features.empty()) {
+        return;
+    }
+
+    if (featureHomeostaticGains_.size() != features.size()) {
+        featureHomeostaticGains_.assign(features.size(), 1.0);
+        featureActivityAverages_.assign(features.size(), homeostaticTargetActivation_);
+    }
+
+    for (size_t i = 0; i < features.size(); ++i) {
+        features[i] = std::clamp(features[i] * featureHomeostaticGains_[i], 0.0, 1.0);
+    }
+
+    if (!homeostaticLearningEnabled_) {
+        return;
+    }
+
+    const double decay = homeostaticActivityDecay_;
+    const double mix = 1.0 - decay;
+    for (size_t i = 0; i < features.size(); ++i) {
+        featureActivityAverages_[i] =
+            decay * featureActivityAverages_[i] + mix * features[i];
+        const double error = homeostaticTargetActivation_ - featureActivityAverages_[i];
+        const double nextGain =
+            featureHomeostaticGains_[i] * (1.0 + homeostaticLearningRate_ * error);
+        featureHomeostaticGains_[i] =
+            std::clamp(nextGain, homeostaticGainMin_, homeostaticGainMax_);
+    }
+}
+
 SensoryAdapter::SpikePattern RetinaAdapter::processData(const DataSample& data) {
     // Convert raw data to image
     Image image;
@@ -1956,19 +3033,12 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
     image.cols = (data.cols > 0 ? data.cols : imageCols_);
     image.channels = std::max(1, data.channels > 0 ? data.channels : imageChannels_);
     image = applyViewTransform(image);
-    image = applyLocalContrastNormalization(image);
-
-    std::vector<Image> bandImages;
-    bandImages.reserve(std::max<size_t>(1, getFrequencyBandCount()));
-    if (blurSigmas_.empty()) {
-        bandImages.push_back(image);
-    } else {
-        for (double sigma : blurSigmas_) {
-            bandImages.push_back(blurImage(image, sigma));
-        }
-    }
+    auto bandImageSet = buildRelayBandImages(image);
+    auto& bandImages = bandImageSet.orientationBands;
+    auto& auxiliaryBandImages = bandImageSet.auxiliaryBands;
     const size_t frequencyBandCount = bandImages.size();
     const size_t auxiliaryChannels = getAuxiliaryChannelCount();
+    const size_t regionFeatureCount = getChannelsPerBand() * frequencyBandCount;
     const size_t subfieldCount = getSubfieldCount();
     const size_t colorEdgeChannels = getColorEdgeChannelCount();
     const size_t orientationBlocks = getOrientationChannelBlocks();
@@ -2007,6 +3077,8 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
             analysisRegionSize += subfieldGridSize_ - (analysisRegionSize % subfieldGridSize_);
         }
     }
+    const auto rowBoundaries = computeAxisSamplingBoundaries(image.rows);
+    const auto colBoundaries = computeAxisSamplingBoundaries(image.cols);
 
     auto buildColorEdgeRegions = [&](const Image& sourceImage,
                                      int regionRow,
@@ -2016,10 +3088,12 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
         std::vector<std::vector<uint8_t>> regions(
             colorEdgeChannels,
             std::vector<uint8_t>(static_cast<size_t>(effectiveSize * effectiveSize), 128));
-        const int startRow = (regionRow * sourceImage.rows) / gridSize_;
-        const int endRow = ((regionRow + 1) * sourceImage.rows) / gridSize_;
-        const int startCol = (regionCol * sourceImage.cols) / gridSize_;
-        const int endCol = ((regionCol + 1) * sourceImage.cols) / gridSize_;
+        const int safeRow = clampIndex(regionRow, 0, std::max(0, gridSize_ - 1));
+        const int safeCol = clampIndex(regionCol, 0, std::max(0, gridSize_ - 1));
+        const int startRow = rowBoundaries[static_cast<size_t>(safeRow)];
+        const int endRow = rowBoundaries[static_cast<size_t>(safeRow + 1)];
+        const int startCol = colBoundaries[static_cast<size_t>(safeCol)];
+        const int endCol = colBoundaries[static_cast<size_t>(safeCol + 1)];
         const int sourceHeight = std::max(1, endRow - startRow);
         const int sourceWidth = std::max(1, endCol - startCol);
 
@@ -2055,6 +3129,11 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
     // Extract features for each region
     for (int row = 0; row < gridSize_; ++row) {
         for (int col = 0; col < gridSize_; ++col) {
+            const double regionMaskWeight = computeRegionMaskWeight(row, col);
+            if (regionMaskWeight <= 1e-6) {
+                result.features.insert(result.features.end(), regionFeatureCount, 0.0);
+                continue;
+            }
             std::vector<std::vector<double>> bandFeatures(
                 frequencyBandCount, std::vector<double>(orientationFeatureCount, 0.0));
             std::vector<std::vector<double>> auxiliaryFeatures(
@@ -2171,23 +3250,33 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
                     auxiliaryFeatures[bandIdx] =
                         poolContourSequenceFeatures(contourSequenceMaps[bandIdx], gridSize_,
                                                     row, col, auxiliaryFeatureGain_);
+                } else if (auxiliaryFeatureMode_ == "contour_support_bank") {
+                    auxiliaryFeatures[bandIdx].assign(auxiliaryChannels, 0.0);
                 } else if (auxiliaryFeatureMode_ == "color_opponent" ||
-                           auxiliaryFeatureMode_ == "appearance_bank") {
+                           auxiliaryFeatureMode_ == "appearance_bank" ||
+                           auxiliaryFeatureMode_ == "appearance_stream_bank" ||
+                           auxiliaryFeatureMode_ == "luminance_stream_bank") {
                     auxiliaryFeatures[bandIdx] =
-                        computeColorOpponentFeatures(bandImages[bandIdx], row, col,
+                        computeColorOpponentFeatures(auxiliaryBandImages[bandIdx], row, col,
                                                      auxiliaryAnalysisRegionSize_ > regionSize_
                                                          ? auxiliaryAnalysisRegionSize_
                                                          : regionSize_);
                 } else {
                     if (auxiliaryAnalysisRegionSize_ > regionSize_) {
                         auxiliaryRegion = extractRegion(
-                            bandImages[bandIdx], row, col, auxiliaryAnalysisRegionSize_);
+                            auxiliaryBandImages[bandIdx], row, col, auxiliaryAnalysisRegionSize_);
                         auxiliaryRegionSize = auxiliaryAnalysisRegionSize_;
                     }
                     auxiliaryFeatures[bandIdx] = computeAuxiliaryFeatures(
                         pooledResponses, auxiliaryRegion, auxiliaryRegionSize);
                 }
             }
+
+            applyLuminanceOnOffBranchSplit(bandFeatures, auxiliaryFeatures);
+            applyTemporalStreamBranchSplit(bandFeatures, auxiliaryFeatures);
+            applyTemporalCoarseToFineDualPass(bandFeatures, auxiliaryFeatures);
+            applyComplexCellStage(bandFeatures);
+            applyContourSupportBank(bandFeatures, auxiliaryFeatures);
 
             for (size_t orientChannel = 0; orientChannel < orientationFeatureCount; ++orientChannel) {
                 std::vector<std::pair<double, size_t>> ranked;
@@ -2212,18 +3301,21 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
                 }
                 for (double feature : selected) {
                     result.features.push_back(
-                        std::clamp(feature * orientationFeatureGain_, 0.0, 1.0));
+                        std::clamp(feature * orientationFeatureGain_ * regionMaskWeight, 0.0, 1.0));
                 }
             }
 
             for (size_t auxIdx = 0; auxIdx < auxiliaryChannels; ++auxIdx) {
                 for (size_t bandIdx = 0; bandIdx < frequencyBandCount; ++bandIdx) {
-                    result.features.push_back(auxiliaryFeatures[bandIdx][auxIdx]);
+                    result.features.push_back(
+                        std::clamp(auxiliaryFeatures[bandIdx][auxIdx] * regionMaskWeight, 0.0, 1.0));
                 }
             }
         }
     }
-    
+
+    applyHomeostaticScaling(result.features);
+
     return result;
 }
 

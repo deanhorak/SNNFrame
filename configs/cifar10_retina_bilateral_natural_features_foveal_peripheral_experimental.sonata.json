@@ -77,7 +77,16 @@
                               ]
                             },
                             {
-                              "name": "SobelG10",
+                              "name": "SobelG10Foveal",
+                              "populations": [
+                                {
+                                  "name": "Branch",
+                                  "count": 1
+                                }
+                              ]
+                            },
+                            {
+                              "name": "SobelG10Peripheral",
                               "populations": [
                                 {
                                   "name": "Branch",
@@ -148,7 +157,16 @@
                               ]
                             },
                             {
-                              "name": "SobelG10",
+                              "name": "SobelG10Foveal",
+                              "populations": [
+                                {
+                                  "name": "Branch",
+                                  "count": 1
+                                }
+                              ]
+                            },
+                            {
+                              "name": "SobelG10Peripheral",
                               "populations": [
                                 {
                                   "name": "Branch",
@@ -268,7 +286,7 @@
         }
       },
       {
-        "name": "left_retina_g10",
+        "name": "left_retina_g10_foveal",
         "type": "retina",
         "role": "sensory",
         "temporal_window_ms": 200.0,
@@ -294,22 +312,75 @@
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
-          "fusion_weight": 1.0,
+          "fusion_weight": 0.65,
           "edge_patch_contrast_strength": 1.0,
           "edge_patch_min_std": 6.0,
           "orientation_feature_gain": 0.35,
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
           "lgn_surround_sigma": 1.5,
-          "lgn_center_surround_strength": 0.25
+          "lgn_center_surround_strength": 0.25,
+          "retinal_mask_radius_fraction": 0.26,
+          "retinal_mask_softness_fraction": 0.08
         },
         "string_params": {
           "edge_operator": "sobel",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
           "hemisphere": "left",
-          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10",
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10Foveal",
           "auxiliary_feature_mode": "appearance_bank",
+          "retinal_mask_mode": "foveal",
+          "color_edge_mode": "opponent",
+          "frequency_values": "1.0,2.0"
+        }
+      },
+      {
+        "name": "left_retina_g10_peripheral",
+        "type": "retina",
+        "role": "sensory",
+        "temporal_window_ms": 200.0,
+        "int_params": {
+          "grid_size": 10,
+          "num_orientations": 8,
+          "subfield_grid_size": 2,
+          "subfield_include_pooled": 1,
+          "max_frequency_bands_per_feature": 2,
+          "minimum_region_size": 2,
+          "edge_patch_normalization": 1,
+          "edge_analysis_region_size": 5,
+          "lgn_relay_enabled": 1,
+          "local_contrast_radius": 2
+        },
+        "double_params": {
+          "edge_threshold": 0.14,
+          "neuron_window_size": 200.0,
+          "neuron_threshold": 0.68,
+          "rotation_deg": -0.4,
+          "shift_x_px": -0.1,
+          "auxiliary_feature_gain": 0.85,
+          "orientation_lateral_inhibition": 0.18,
+          "orientation_response_gamma": 1.2,
+          "frequency_blur_base_sigma": 0.85,
+          "fusion_weight": 0.45,
+          "edge_patch_contrast_strength": 1.0,
+          "edge_patch_min_std": 6.0,
+          "orientation_feature_gain": 0.35,
+          "local_contrast_strength": 0.3,
+          "lgn_center_sigma": 0.6,
+          "lgn_surround_sigma": 1.5,
+          "lgn_center_surround_strength": 0.25,
+          "retinal_mask_radius_fraction": 0.26,
+          "retinal_mask_softness_fraction": 0.08
+        },
+        "string_params": {
+          "edge_operator": "sobel",
+          "encoding_strategy": "rate",
+          "activation_mode": "binary",
+          "hemisphere": "left",
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10Peripheral",
+          "auxiliary_feature_mode": "appearance_bank",
+          "retinal_mask_mode": "peripheral",
           "color_edge_mode": "opponent",
           "frequency_values": "1.0,2.0"
         }
@@ -389,7 +460,7 @@
         }
       },
       {
-        "name": "right_retina_g10",
+        "name": "right_retina_g10_foveal",
         "type": "retina",
         "role": "sensory",
         "temporal_window_ms": 200.0,
@@ -415,22 +486,75 @@
           "orientation_lateral_inhibition": 0.18,
           "orientation_response_gamma": 1.2,
           "frequency_blur_base_sigma": 0.85,
-          "fusion_weight": 1.0,
+          "fusion_weight": 0.65,
           "edge_patch_contrast_strength": 1.0,
           "edge_patch_min_std": 6.0,
           "orientation_feature_gain": 0.35,
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
           "lgn_surround_sigma": 1.5,
-          "lgn_center_surround_strength": 0.25
+          "lgn_center_surround_strength": 0.25,
+          "retinal_mask_radius_fraction": 0.26,
+          "retinal_mask_softness_fraction": 0.08
         },
         "string_params": {
           "edge_operator": "sobel",
           "encoding_strategy": "rate",
           "activation_mode": "binary",
           "hemisphere": "right",
-          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10",
+          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10Foveal",
           "auxiliary_feature_mode": "appearance_bank",
+          "retinal_mask_mode": "foveal",
+          "color_edge_mode": "opponent",
+          "frequency_values": "1.0,2.0"
+        }
+      },
+      {
+        "name": "right_retina_g10_peripheral",
+        "type": "retina",
+        "role": "sensory",
+        "temporal_window_ms": 200.0,
+        "int_params": {
+          "grid_size": 10,
+          "num_orientations": 8,
+          "subfield_grid_size": 2,
+          "subfield_include_pooled": 1,
+          "max_frequency_bands_per_feature": 2,
+          "minimum_region_size": 2,
+          "edge_patch_normalization": 1,
+          "edge_analysis_region_size": 5,
+          "lgn_relay_enabled": 1,
+          "local_contrast_radius": 2
+        },
+        "double_params": {
+          "edge_threshold": 0.14,
+          "neuron_window_size": 200.0,
+          "neuron_threshold": 0.68,
+          "rotation_deg": 0.4,
+          "shift_x_px": 0.1,
+          "auxiliary_feature_gain": 0.85,
+          "orientation_lateral_inhibition": 0.18,
+          "orientation_response_gamma": 1.2,
+          "frequency_blur_base_sigma": 0.85,
+          "fusion_weight": 0.45,
+          "edge_patch_contrast_strength": 1.0,
+          "edge_patch_min_std": 6.0,
+          "orientation_feature_gain": 0.35,
+          "local_contrast_strength": 0.3,
+          "lgn_center_sigma": 0.6,
+          "lgn_surround_sigma": 1.5,
+          "lgn_center_surround_strength": 0.25,
+          "retinal_mask_radius_fraction": 0.26,
+          "retinal_mask_softness_fraction": 0.08
+        },
+        "string_params": {
+          "edge_operator": "sobel",
+          "encoding_strategy": "rate",
+          "activation_mode": "binary",
+          "hemisphere": "right",
+          "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10Peripheral",
+          "auxiliary_feature_mode": "appearance_bank",
+          "retinal_mask_mode": "peripheral",
           "color_edge_mode": "opponent",
           "frequency_values": "1.0,2.0"
         }

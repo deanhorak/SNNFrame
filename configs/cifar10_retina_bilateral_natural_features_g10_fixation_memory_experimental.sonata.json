@@ -309,6 +309,7 @@
           "activation_mode": "binary",
           "hemisphere": "left",
           "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10",
+          "stage1_fixation_memory_mode": "mean_max_summary",
           "auxiliary_feature_mode": "appearance_bank",
           "color_edge_mode": "opponent",
           "frequency_values": "1.0,2.0"
@@ -430,6 +431,7 @@
           "activation_mode": "binary",
           "hemisphere": "right",
           "attach_path": "Right Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG10",
+          "stage1_fixation_memory_mode": "mean_max_summary",
           "auxiliary_feature_mode": "appearance_bank",
           "color_edge_mode": "opponent",
           "frequency_values": "1.0,2.0"

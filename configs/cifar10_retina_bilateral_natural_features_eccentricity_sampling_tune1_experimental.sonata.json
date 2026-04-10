@@ -282,7 +282,8 @@
           "edge_patch_normalization": 1,
           "edge_analysis_region_size": 5,
           "lgn_relay_enabled": 1,
-          "local_contrast_radius": 2
+          "local_contrast_radius": 2,
+          "eccentricity_sampling_enabled": 1
         },
         "double_params": {
           "edge_threshold": 0.14,
@@ -301,7 +302,9 @@
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
           "lgn_surround_sigma": 1.5,
-          "lgn_center_surround_strength": 0.25
+          "lgn_center_surround_strength": 0.25,
+          "eccentricity_sampling_strength": 0.35,
+          "eccentricity_sampling_gamma": 1.40
         },
         "string_params": {
           "edge_operator": "sobel",
@@ -403,7 +406,8 @@
           "edge_patch_normalization": 1,
           "edge_analysis_region_size": 5,
           "lgn_relay_enabled": 1,
-          "local_contrast_radius": 2
+          "local_contrast_radius": 2,
+          "eccentricity_sampling_enabled": 1
         },
         "double_params": {
           "edge_threshold": 0.14,
@@ -422,7 +426,9 @@
           "local_contrast_strength": 0.3,
           "lgn_center_sigma": 0.6,
           "lgn_surround_sigma": 1.5,
-          "lgn_center_surround_strength": 0.25
+          "lgn_center_surround_strength": 0.25,
+          "eccentricity_sampling_strength": 0.35,
+          "eccentricity_sampling_gamma": 1.40
         },
         "string_params": {
           "edge_operator": "sobel",

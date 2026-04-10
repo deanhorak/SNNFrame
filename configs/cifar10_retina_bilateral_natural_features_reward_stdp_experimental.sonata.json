@@ -1,5 +1,5 @@
 {
-  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesExperimental",
+  "network_name": "CIFAR10RetinaBilateralNaturalFeaturesRewardStdpExperimental",
   "snnframe": {
     "classification": {
       "type": "weighted_distance",
@@ -24,6 +24,7 @@
         "separability_sample_limit": 500,
         "online_correction_repeats": 3,
         "online_exemplar_budget_per_class": 16,
+        "online_reward_stdp_enabled": 1,
         "online_replay_queue_capacity": 384,
         "online_replay_delay_steps": 0,
         "online_replay_pause_interval": 4,
@@ -41,6 +42,9 @@
         "online_centroid_lr": 0.25,
         "online_positive_reward_gain": 0.5,
         "online_negative_reward_gain": 1.1,
+        "online_reward_stdp_gain": 0.06,
+        "online_reward_stdp_ltp": 0.12,
+        "online_reward_stdp_ltd": 0.06,
         "online_replay_uncertainty_threshold": 0.35,
         "online_eligibility_trace_decay": 0.88,
         "online_context_uncertainty_gain": 1.0,
