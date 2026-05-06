@@ -1,6 +1,7 @@
 #include "snnfw/ConnectivityPattern.h"
 #include "snnfw/Logger.h"
 #include <cmath>
+#include <numeric>
 #include <stdexcept>
 #include <algorithm>
 
@@ -317,5 +318,138 @@ std::vector<Connection> SmallWorldPattern::generateConnections(
     return connections;
 }
 
-} // namespace snnfw
+// ============================================================================
+// TiledReceptiveFieldPattern
+// ============================================================================
 
+TiledReceptiveFieldPattern::TiledReceptiveFieldPattern(
+    int partitionInputSize, int inputRows, int inputCols,
+    int tilesPerSide, int tilesPerColumn,
+    int l4GridSize, int columnIndex, double weight, double delay)
+    : partitionInputSize_(partitionInputSize), inputRows_(inputRows), inputCols_(inputCols),
+      partitionCount_(1), partitionsHorizontal_(true), tilesPerSide_(tilesPerSide),
+      tilesPerColumn_(tilesPerColumn), l4GridSize_(l4GridSize),
+      columnIndex_(columnIndex), weight_(weight), delay_(delay) {
+    if (tilesPerSide_ <= 0 || l4GridSize_ <= 0 || partitionInputSize_ <= 0 ||
+        inputRows_ <= 0 || inputCols_ <= 0) {
+        throw std::invalid_argument("Grid dimensions must be positive");
+    }
+
+    if (inputRows_ == partitionInputSize_ && (inputCols_ % partitionInputSize_) == 0) {
+        partitionCount_ = std::max(1, inputCols_ / partitionInputSize_);
+        partitionsHorizontal_ = true;
+    } else if (inputCols_ == partitionInputSize_ && (inputRows_ % partitionInputSize_) == 0) {
+        partitionCount_ = std::max(1, inputRows_ / partitionInputSize_);
+        partitionsHorizontal_ = false;
+    } else if (inputRows_ == partitionInputSize_ && inputCols_ == partitionInputSize_) {
+        partitionCount_ = 1;
+        partitionsHorizontal_ = true;
+    } else {
+        throw std::invalid_argument(
+            "TiledReceptiveFieldPattern expects square input partitions tiled horizontally or vertically");
+    }
+    computeTileSelection();
+}
+
+void TiledReceptiveFieldPattern::computeTileSelection() {
+    int totalTiles = tilesPerSide_ * tilesPerSide_;
+    int numTiles = std::min(tilesPerColumn_, totalTiles);
+    int tileSize = partitionInputSize_ / tilesPerSide_;
+
+    // Deterministic per-column tile selection (matches original experiment)
+    std::mt19937 tileGen(static_cast<uint32_t>(columnIndex_ * 9973 + 17));
+    std::vector<int> allTileIndices(totalTiles);
+    std::iota(allTileIndices.begin(), allTileIndices.end(), 0);
+    std::shuffle(allTileIndices.begin(), allTileIndices.end(), tileGen);
+    tileIndices_.assign(allTileIndices.begin(), allTileIndices.begin() + numTiles);
+
+    // Build input mask for column gating using the first partition only.
+    // In the 4-partition visual-front-end path this is the raw luminance partition,
+    // which preserves the original maskMinActive semantics.
+    std::vector<double> mask(static_cast<size_t>(inputRows_ * inputCols_), 0.0);
+    inputMaskActiveIdx_.clear();
+    const int maskPartition = 0;
+    for (int tileIndex : tileIndices_) {
+        int tileRow = tileIndex / tilesPerSide_;
+        int tileCol = tileIndex % tilesPerSide_;
+        int startR = tileRow * tileSize;
+        int startC = tileCol * tileSize;
+        for (int r = 0; r < tileSize; ++r) {
+            for (int c = 0; c < tileSize; ++c) {
+                const int idx = mapPartitionIndex(maskPartition, startR + r, startC + c);
+                if (idx >= 0 &&
+                    idx < static_cast<int>(mask.size()) &&
+                    mask[static_cast<size_t>(idx)] == 0.0) {
+                    mask[static_cast<size_t>(idx)] = 1.0;
+                    inputMaskActiveIdx_.push_back(idx);
+                }
+            }
+        }
+    }
+}
+
+int TiledReceptiveFieldPattern::mapPartitionIndex(int partition, int localRow, int localCol) const {
+    if (localRow < 0 || localRow >= partitionInputSize_ ||
+        localCol < 0 || localCol >= partitionInputSize_) {
+        return -1;
+    }
+
+    if (partitionsHorizontal_) {
+        const int globalCol = (partition * partitionInputSize_) + localCol;
+        return (localRow * inputCols_) + globalCol;
+    }
+
+    const int globalRow = (partition * partitionInputSize_) + localRow;
+    return (globalRow * inputCols_) + localCol;
+}
+
+std::vector<Connection> TiledReceptiveFieldPattern::generateConnections(
+    const std::vector<uint64_t>& sourceNeurons,
+    const std::vector<uint64_t>& targetNeurons) {
+
+    std::vector<Connection> connections;
+    int tileSize = partitionInputSize_ / tilesPerSide_;
+    int numTiles = static_cast<int>(tileIndices_.size());
+
+    if (numTiles == 0 || sourceNeurons.empty() || targetNeurons.empty()) {
+        return connections;
+    }
+
+    const double effectiveWeight = weight_ / static_cast<double>(std::max(1, partitionCount_));
+
+    // Each target neuron (L4) connects to specific input pixels based on
+    // its grid position and the column's tile selection, replicated across
+    // every feature partition of the input grid.
+    for (size_t j = 0; j < targetNeurons.size(); ++j) {
+        int tileChoice = tileIndices_[static_cast<int>(j) % numTiles];
+        int tileRow = tileChoice / tilesPerSide_;
+        int tileCol = tileChoice % tilesPerSide_;
+        int tileStartR = tileRow * tileSize;
+        int tileStartC = tileCol * tileSize;
+        int l4Row = static_cast<int>(j) / l4GridSize_;
+        int l4Col = static_cast<int>(j) % l4GridSize_;
+        int patchSize = std::max(1, tileSize / l4GridSize_);
+        int startR = tileStartR + l4Row * patchSize;
+        int startC = tileStartC + l4Col * patchSize;
+
+        for (int pr = 0; pr < patchSize; ++pr) {
+            for (int pc = 0; pc < patchSize; ++pc) {
+                for (int partition = 0; partition < partitionCount_; ++partition) {
+                    const int idx = mapPartitionIndex(partition, startR + pr, startC + pc);
+                    if (idx >= 0 && idx < static_cast<int>(sourceNeurons.size())) {
+                        connections.emplace_back(sourceNeurons[static_cast<size_t>(idx)],
+                                                 targetNeurons[j], effectiveWeight, delay_);
+                    }
+                }
+            }
+        }
+    }
+
+    SNNFW_DEBUG("TiledReceptiveFieldPattern: Generated {} connections for column {} "
+                "({} tiles, {}x{} L4 grid)",
+                connections.size(), columnIndex_, numTiles, l4GridSize_, l4GridSize_);
+
+    return connections;
+}
+
+} // namespace snnfw

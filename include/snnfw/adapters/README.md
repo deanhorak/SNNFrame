@@ -192,6 +192,68 @@ std::cout << visualization << std::endl;
 
 ---
 
+### InterneuronReceiverAdapter / InterneuronTransmitterAdapter (Network I/O)
+
+**Purpose**: Exchange spike activity between separate SNNFrame instances over TCP/IP.
+
+**Features**:
+- Transmit spike-active channels from one process/host to another
+- Receive spike frames and expose them as a sensory spike pattern
+- Works across machines (TCP sockets)
+
+**Protocol** (line-based):
+```
+SNNFW_SPIKES v1 <window_start_ms> <window_end_ms> <index_csv_or_->
+```
+
+**Factory types**:
+- Receiver (sensory): `interneuron_rx`
+- Transmitter (motor): `interneuron_tx`
+
+**Configuration example**:
+```cpp
+BaseAdapter::Config rxCfg;
+rxCfg.type = "interneuron_rx";
+rxCfg.name = "rx";
+rxCfg.setStringParam("bind_host", "0.0.0.0");
+rxCfg.setIntParam("bind_port", 5000);
+rxCfg.setIntParam("neuron_count", 256);
+
+BaseAdapter::Config txCfg;
+txCfg.type = "interneuron_tx";
+txCfg.name = "tx";
+txCfg.setStringParam("remote_host", "192.168.1.20");
+txCfg.setIntParam("remote_port", 5000);
+txCfg.setDoubleParam("update_interval_ms", 10.0);
+```
+
+**Declarative JSON (SONATA `snnframe.adapters` or native `adapters`)**:
+```json
+[
+  {
+    "name": "rx_bridge",
+    "type": "interneuron_rx",
+    "role": "sensory",
+    "bind_to": "input",
+    "temporal_window_ms": 10.0,
+    "int_params": { "bind_port": 5000, "neuron_count": 784 },
+    "string_params": { "bind_host": "0.0.0.0" }
+  },
+  {
+    "name": "tx_bridge",
+    "type": "interneuron_tx",
+    "role": "motor",
+    "bind_to": "output",
+    "temporal_window_ms": 10.0,
+    "int_params": { "remote_port": 5050 },
+    "double_params": { "update_interval_ms": 10.0 },
+    "string_params": { "remote_host": "127.0.0.1" }
+  }
+]
+```
+
+---
+
 ## Creating Custom Adapters
 
 ### Step 1: Define Adapter Class
@@ -372,4 +434,3 @@ See the `examples/adapters/` directory for complete examples:
 - [Configuration System Documentation](../../../docs/CONFIGURATION_SYSTEM.md)
 - [MNIST Experiments](../../../MNIST_EXPERIMENTS.md)
 - [Main README](../../../README.md)
-

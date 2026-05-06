@@ -23,6 +23,9 @@
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <filesystem>
+#include <map>
+#include <unordered_map>
 
 // Core SNNFW
 #include "snnfw/NeuralObjectFactory.h"
@@ -255,16 +258,21 @@ int main(int argc, char* argv[]) {
     // Parse Command-Line Arguments
     // ========================================================================
     snnfw::SimulationConfig simConfig;
-    simConfig.enableVisualization = true;  // Default: visualization enabled
-    simConfig.enableRecording = false;     // Default: no recording
-    simConfig.realTimeSync = true;         // Default: real-time sync for visualization
+    simConfig.enableVisualization = false;  // Default: no visualization (will be set based on mode)
+    simConfig.enableRecording = false;      // Default: no recording
+    simConfig.realTimeSync = true;          // Default: real-time sync for visualization
 
     VisualizationConfig config;
+    std::string configFile;
+    bool startPaused = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
 
-        if (arg == "--record" && i + 1 < argc) {
+        if (arg == "--config" && i + 1 < argc) {
+            configFile = argv[++i];
+        }
+        else if (arg == "--record" && i + 1 < argc) {
             simConfig.enableRecording = true;
             simConfig.recordingFilename = argv[++i];
             std::cout << "Recording enabled: " << simConfig.recordingFilename << std::endl;
@@ -280,13 +288,53 @@ int main(int argc, char* argv[]) {
         else if (arg == "--playback" && i + 1 < argc) {
             simConfig.playbackMode = true;
             simConfig.playbackFilename = argv[++i];
+            simConfig.enableVisualization = false;  // Playback uses visualization window, not live viz
             std::cout << "Playback mode: " << simConfig.playbackFilename << std::endl;
+        }
+        else if (arg == "--start-paused") {
+            startPaused = true;
         }
         else if (i == 1) {
             config.trainImagesPath = arg;
         }
         else if (i == 2) {
             config.trainLabelsPath = arg;
+        }
+    }
+
+    // If not in playback mode and not explicitly disabled, enable visualization
+    if (!simConfig.playbackMode && !simConfig.enableVisualization) {
+        simConfig.enableVisualization = true;
+    }
+
+    // Load configuration from file if provided
+    if (!configFile.empty()) {
+        try {
+            ConfigLoader cfgLoader(configFile);
+
+            // Load recording configuration (only if not in playback mode)
+            if (!simConfig.playbackMode) {
+                simConfig.enableRecording = cfgLoader.get<bool>("/recording/enabled", false);
+                simConfig.recordingFilename = cfgLoader.get<std::string>("/recording/filename", "emnist_training.snnr");
+                simConfig.recordingPath = cfgLoader.get<std::string>("/recording/path", "");
+                simConfig.autoSaveRecording = cfgLoader.get<bool>("/recording/auto_save", true);
+            }
+
+            // Load network structure configuration
+            simConfig.networkStructurePath = cfgLoader.get<std::string>("/network_structure/path", "");
+
+            // Load spike processor configuration
+            simConfig.realTimeSync = cfgLoader.get<bool>("/spike_processor/real_time_sync", true);
+
+            // Load neuron configuration
+            config.neuronWindow = cfgLoader.get<double>("/neuron/window_size_ms", 500.0);
+            config.neuronThreshold = cfgLoader.get<double>("/neuron/similarity_threshold", 0.93);
+            config.neuronMaxPatterns = cfgLoader.get<int>("/neuron/max_patterns", 500);
+
+            std::cout << "Configuration loaded from: " << configFile << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to load config file: " << e.what() << std::endl;
+            std::cerr << "Using default configuration" << std::endl;
         }
     }
 
@@ -307,12 +355,14 @@ int main(int argc, char* argv[]) {
     NetworkInspector inspector;
     ActivityMonitor activityMonitor(datastore, simConfig);
 
-    // Set up recording if enabled
+    // Set up recording/playback manager if needed
     snnfw::RecordingManager* recordingManager = nullptr;
-    if (simConfig.enableRecording) {
+    if (simConfig.enableRecording || simConfig.playbackMode) {
         recordingManager = new snnfw::RecordingManager();
-        activityMonitor.setRecordingManager(recordingManager);
-        std::cout << "Recording manager initialized" << std::endl;
+        if (simConfig.enableRecording) {
+            activityMonitor.setRecordingManager(recordingManager);
+            std::cout << "Recording manager initialized" << std::endl;
+        }
     }
     
     // ========================================================================
@@ -787,6 +837,13 @@ int main(int argc, char* argv[]) {
         std::cout << "Real-time synchronization disabled (fast mode)" << std::endl;
     }
 
+    // Connect SpikeProcessor to ActivityMonitor for spike recording
+    if (simConfig.enableRecording) {
+        spikeProcessor->setActivityMonitor(&activityMonitor);
+        activityMonitor.startMonitoring();
+        std::cout << "Spike recording connected and monitoring started" << std::endl;
+    }
+
     auto networkPropagator = std::make_shared<NetworkPropagator>(spikeProcessor);
     spikeProcessor->start();
 
@@ -968,6 +1025,28 @@ int main(int argc, char* argv[]) {
     PatternDetector patternDetector;
     ActivityHistogram activityHistogram(shaderManager);
 
+    if (simConfig.playbackMode && recordingManager) {
+        if (!recordingManager->loadRecording(simConfig.playbackFilename, true)) {
+            std::cerr << "Failed to load recording: " << simConfig.playbackFilename << std::endl;
+            return 1;
+        }
+        recordingManager->setPlaybackCallback([&activityVisualizer](uint64_t source,
+                                                                    uint64_t target,
+                                                                    uint64_t synapse,
+                                                                    uint64_t timestamp) {
+            activityVisualizer.recordSpike(source, target, synapse, timestamp);
+        });
+        recordingManager->setSpeed(simConfig.playbackSpeed);
+        recordingManager->setLooping(simConfig.playbackLooping);
+        if (startPaused) {
+            recordingManager->stop();
+            activityVisualizer.clear();
+            rasterPlotRenderer.clearSpikes();
+        } else {
+            recordingManager->play();
+        }
+    }
+
     // Flush all objects to disk to ensure they're available for extraction
     std::cout << "Flushing datastore..." << std::endl;
     size_t flushed = datastore.flushAll();
@@ -980,6 +1059,7 @@ int main(int argc, char* argv[]) {
     std::vector<uint64_t> allClusterIds;
     std::vector<uint64_t> layer1ClusterIds, layer23ClusterIds, layer4ClusterIds;
     std::vector<uint64_t> layer5ClusterIds, layer6ClusterIds, outputClusterIds;
+    std::unordered_map<uint64_t, uint64_t> neuronToCluster;
 
     for (const auto& col : corticalColumns) {
         // Get cluster IDs from each layer
@@ -1047,6 +1127,11 @@ int main(int argc, char* argv[]) {
     std::cout << "Extracted " << adapter.getNeurons().size() << " neurons" << std::endl;
     std::cout << "Extracted " << adapter.getSynapses().size() << " synapses" << std::endl;
 
+    activityVisualizer.rebuildFromAdapter();
+    for (const auto& neuron : adapter.getNeurons()) {
+        neuronToCluster[neuron.id] = neuron.clusterId;
+    }
+
     // Use stored positions (neurons already have explicit 3D positions set above)
     std::cout << "Using pre-set 3D positions for spatial organization!" << std::endl;
 
@@ -1061,10 +1146,11 @@ int main(int argc, char* argv[]) {
     // Setup raster plot
     rasterPlotRenderer.setNeuronMapping(allNeuronIds);
 
-    // Create camera - position closer to see neurons better
+    const glm::vec3 initialCamPos(0.0f, 120.0f, 260.0f);
+    const glm::vec3 initialCamTarget(0.0f, 20.0f, 0.0f);
     Camera camera;
-    camera.setPosition(glm::vec3(0.0f, 30.0f, 80.0f));
-    camera.lookAt(glm::vec3(0.0f, 20.0f, 0.0f));
+    camera.setPosition(initialCamPos);
+    camera.lookAt(initialCamTarget);
 
     // Set custom scroll callback for camera zoom
     GLFWwindow* window = vizManager.getWindow();
@@ -1114,7 +1200,7 @@ int main(int argc, char* argv[]) {
     // Training progress
     std::vector<int> trainCount(NUM_LETTERS, 0);
     size_t currentImageIdx = 0;
-    bool trainingPaused = false;
+    bool trainingPaused = startPaused;
     bool trainingComplete = false;
     bool testingPhase = false;
     bool testingComplete = false;
@@ -1156,13 +1242,26 @@ int main(int argc, char* argv[]) {
     // Current image being displayed
     int currentDisplayLabel = -1;
     std::vector<uint8_t> currentDisplayImage;
+    if (simConfig.playbackMode && trainLoader.size() > 0) {
+        const auto& emnistImg = trainLoader.getImage(0);
+        currentDisplayLabel = emnistImg.label - 1;
+        currentDisplayImage = emnistImg.pixels;
+        glBindTexture(GL_TEXTURE_2D, emnistTexture);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 28, 28, GL_RED, GL_UNSIGNED_BYTE,
+                       emnistImg.pixels.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 
     // ========================================================================
     // Visualization Update Callback
     // ========================================================================
     vizManager.setUpdateCallback([&](double deltaTime) {
-        // Get current simulation time from SpikeProcessor (synchronized with real-time)
-        simulationTime = spikeProcessor->getCurrentTime();
+        // Get current simulation time
+        if (simConfig.playbackMode && recordingManager) {
+            simulationTime = recordingManager->getPlaybackState().currentTime;
+        } else {
+            simulationTime = spikeProcessor->getCurrentTime();
+        }
 
         // Get window size and mouse position
         glfwGetFramebufferSize(vizManager.getWindow(), &screenWidth, &screenHeight);
@@ -1231,7 +1330,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Process training (one image per frame if not paused)
-        if (!trainingPaused && !trainingComplete && currentImageIdx < trainLoader.size()) {
+        if (!simConfig.playbackMode && !trainingPaused && !trainingComplete && currentImageIdx < trainLoader.size()) {
             auto imageStart = std::chrono::high_resolution_clock::now();
 
             const auto& emnistImg = trainLoader.getImage(currentImageIdx);
@@ -1353,7 +1452,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Process testing (one image per frame if training complete and not paused)
-        if (!trainingPaused && trainingComplete && testingPhase && !testingComplete
+        if (!simConfig.playbackMode && !trainingPaused && trainingComplete && testingPhase && !testingComplete
             && currentTestIdx < testLoader.size()) {
             auto imageStart = std::chrono::high_resolution_clock::now();
 
@@ -1513,9 +1612,25 @@ int main(int argc, char* argv[]) {
 
         // Render clusters with activity-based coloring
         if (renderConfig.renderClusters) {
-            // Get cluster activity from activity monitor
-            auto snapshot = activityMonitor.getLatestSnapshot();
-            networkRenderer.renderClusters(adapter, camera, renderConfig, snapshot.clusterSpikeCount);
+            if (simConfig.playbackMode) {
+                std::map<uint64_t, size_t> playbackClusterCounts;
+                for (const auto& activity : activityVisualizer.getNeuronActivity()) {
+                    if (activity.activityLevel <= 0.0f) {
+                        continue;
+                    }
+                    auto it = neuronToCluster.find(activity.neuronId);
+                    if (it == neuronToCluster.end()) {
+                        continue;
+                    }
+                    size_t scaled = static_cast<size_t>(activity.activityLevel * 100.0f);
+                    playbackClusterCounts[it->second] += std::max<size_t>(1, scaled);
+                }
+                networkRenderer.renderClusters(adapter, camera, renderConfig, playbackClusterCounts);
+            } else {
+                // Get cluster activity from activity monitor
+                auto snapshot = activityMonitor.getLatestSnapshot();
+                networkRenderer.renderClusters(adapter, camera, renderConfig, snapshot.clusterSpikeCount);
+            }
         }
 
         // Render selection highlighting
@@ -1634,7 +1749,7 @@ int main(int argc, char* argv[]) {
             // Display the EMNIST image (scaled up for visibility)
             ImGui::Text("Input Image:");
             ImTextureID texId = (ImTextureID)(intptr_t)emnistTexture;
-            ImGui::Image(texId, ImVec2(168, 168), ImVec2(0, 0), ImVec2(1, 1),
+            ImGui::Image(texId, ImVec2(168, 168), ImVec2(1, 0), ImVec2(0, 1),
                         ImVec4(1, 1, 1, 1), ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
         } else {
             ImGui::Text("No image loaded");
@@ -1819,11 +1934,6 @@ int main(int argc, char* argv[]) {
         // ====================================================================
         if (playbackControls) {
             playbackControls->render();
-
-            // Update playback
-            if (recordingManager) {
-                recordingManager->update(static_cast<uint64_t>(deltaTime * 1000.0));
-            }
         }
 
         // ====================================================================
@@ -1835,8 +1945,8 @@ int main(int argc, char* argv[]) {
         ImGui::Text("Position: (%.1f, %.1f, %.1f)", camPos.x, camPos.y, camPos.z);
 
         if (ImGui::Button("Reset Camera")) {
-            camera.setPosition(glm::vec3(0.0f, 50.0f, 150.0f));
-            camera.lookAt(glm::vec3(0.0f, 0.0f, 0.0f));
+            camera.setPosition(initialCamPos);
+            camera.lookAt(initialCamTarget);
         }
 
         if (ImGui::Button("Top View")) {
@@ -1895,8 +2005,29 @@ int main(int argc, char* argv[]) {
             filename = simConfig.generateRecordingFilename();
         }
 
-        std::cout << "Saving recording to " << filename << "..." << std::endl;
-        if (activityMonitor.saveRecording(filename)) {
+        // Construct full recording path
+        std::string recordingPath = filename;
+        if (!simConfig.recordingPath.empty()) {
+            std::filesystem::path fullPath(simConfig.recordingPath);
+
+            // Try to create the directory if it's a local path (not SMB)
+            if (simConfig.recordingPath.find("://") == std::string::npos) {
+                try {
+                    std::filesystem::create_directories(fullPath);
+                    std::cout << "Recording directory created/verified: " << simConfig.recordingPath << std::endl;
+                } catch (const std::exception& e) {
+                    std::cerr << "Warning: Could not create recording directory: " << e.what() << std::endl;
+                }
+            } else {
+                std::cout << "Recording path is remote (SMB/network): " << simConfig.recordingPath << std::endl;
+            }
+
+            fullPath /= filename;
+            recordingPath = fullPath.string();
+        }
+
+        std::cout << "Saving recording to " << recordingPath << "..." << std::endl;
+        if (activityMonitor.saveRecording(recordingPath)) {
             std::cout << "Recording saved successfully!" << std::endl;
 
             const auto& metadata = recordingManager->getMetadata();
@@ -1942,4 +2073,3 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
-

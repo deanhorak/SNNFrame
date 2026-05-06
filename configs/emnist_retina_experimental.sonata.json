@@ -1,0 +1,75 @@
+{
+  "network_name": "EMNISTRetinaMultiscale_dog_g9_w020",
+  "snnframe": {
+    "classification": {
+      "type": "majority",
+      "k": 7,
+      "distance_exponent": 1.0
+    },
+    "adapters": [
+      {
+        "name": "retina_g9",
+        "type": "retina",
+        "role": "sensory",
+        "temporal_window_ms": 200.0,
+        "int_params": {
+          "grid_size": 9,
+          "num_orientations": 8
+        },
+        "double_params": {
+          "edge_threshold": 0.22,
+          "neuron_window_size": 200.0,
+          "neuron_threshold": 0.7
+        },
+        "string_params": {
+          "edge_operator": "sobel",
+          "encoding_strategy": "rate",
+          "activation_mode": "binary"
+        }
+      },
+      {
+        "name": "retina_g10",
+        "type": "retina",
+        "role": "sensory",
+        "temporal_window_ms": 200.0,
+        "int_params": {
+          "grid_size": 10,
+          "num_orientations": 8
+        },
+        "double_params": {
+          "edge_threshold": 0.24,
+          "neuron_window_size": 200.0,
+          "neuron_threshold": 0.7
+        },
+        "string_params": {
+          "edge_operator": "sobel",
+          "encoding_strategy": "rate",
+          "activation_mode": "binary"
+        }
+      },
+      {
+        "name": "retina_dog_g9",
+        "type": "retina",
+        "role": "sensory",
+        "temporal_window_ms": 200.0,
+        "int_params": {
+          "grid_size": 9,
+          "num_orientations": 8
+        },
+        "double_params": {
+          "edge_threshold": 0.16,
+          "neuron_window_size": 200.0,
+          "neuron_threshold": 0.7,
+          "fusion_weight": 0.2,
+          "sigma1": 1.0,
+          "sigma2": 1.8
+        },
+        "string_params": {
+          "edge_operator": "dog",
+          "encoding_strategy": "rate",
+          "activation_mode": "binary"
+        }
+      }
+    ]
+  }
+}

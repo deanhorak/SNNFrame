@@ -1,0 +1,64 @@
+// Example HOC file for SNNFrame declarative loader
+// Defines a simple network with cortical cell templates
+
+// Cell template for layer 4 cortical neurons
+begintemplate CorticalL4
+    proc init() {
+        window_size_ms = 200
+        similarity_threshold = 0.93
+        max_reference_patterns = 500
+    }
+    create soma, axon, dendrite
+endtemplate CorticalL4
+
+// Cell template for layer 5 integration neurons
+begintemplate CorticalL5
+    proc init() {
+        window_size_ms = 300
+        similarity_threshold = 0.85
+        max_reference_patterns = 300
+    }
+    create soma, axon, dendrite
+endtemplate CorticalL5
+
+// Cell template for output classification neurons
+begintemplate OutputCell
+    proc init() {
+        window_size_ms = 500
+        similarity_threshold = 0.8
+        max_reference_patterns = 100
+    }
+    create soma, dendrite
+endtemplate OutputCell
+
+// Create cell populations
+objref l4_cells, l5_cells, output_cells
+l4_cells = new List()
+l5_cells = new List()
+output_cells = new List()
+
+// Instantiate L4 neurons
+for i = 0, 48 {
+    l4_cells.append(new CorticalL4())
+}
+
+// Instantiate L5 neurons
+for i = 0, 48 {
+    l5_cells.append(new CorticalL5())
+}
+
+// Instantiate output neurons
+for i = 0, 25 {
+    output_cells.append(new OutputCell())
+}
+
+// Create L4 -> L5 connections
+for i = 0, 48 {
+    nc = new NetCon(l4_cells.o(i).soma(0.5), l5_cells.o(i).syn, 0, 1.5, 0.5)
+}
+
+// Create L5 -> Output connections
+for i = 0, 25 {
+    nc = new NetCon(l5_cells.o(i).soma(0.5), output_cells.o(i).syn, 0, 1.0, 0.8)
+}
+

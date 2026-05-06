@@ -78,6 +78,8 @@ private:
     double gamma_;         ///< Spatial aspect ratio
     double phaseOffset_;   ///< Phase offset (radians)
     int kernelSize_;       ///< Size of Gabor kernel (must be odd)
+    double gamma_sq_;      ///< Cached gamma^2
+    double two_sigma_sq_;  ///< Cached 2*sigma^2
 
     /**
      * @brief Compute Gabor filter response for a specific orientation
@@ -121,4 +123,3 @@ private:
 } // namespace snnfw
 
 #endif // SNNFW_GABOR_OPERATOR_H
-

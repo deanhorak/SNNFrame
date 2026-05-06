@@ -24,6 +24,7 @@
 #include "snnfw/classification/MajorityVoting.h"
 #include "snnfw/classification/WeightedDistance.h"
 #include "snnfw/classification/WeightedSimilarity.h"
+#include "snnfw/classification/HierarchicalKNN.h"
 #include <stdexcept>
 #include <algorithm>
 
@@ -47,6 +48,9 @@ std::unique_ptr<ClassificationStrategy> ClassificationStrategyFactory::create(
     else if (lowerType == "weighted_similarity") {
         return std::make_unique<WeightedSimilarity>(config);
     }
+    else if (lowerType == "hierarchical" || lowerType == "hierarchical_knn") {
+        return std::make_unique<HierarchicalKNN>(config);
+    }
     else {
         throw std::invalid_argument("Unknown classification strategy type: " + type);
     }
@@ -56,6 +60,8 @@ std::vector<std::string> ClassificationStrategyFactory::getAvailableStrategies()
     return {
         "majority",
         "majority_voting",
+        "hierarchical",
+        "hierarchical_knn",
         "weighted_distance",
         "weighted_similarity"
     };
@@ -63,4 +69,3 @@ std::vector<std::string> ClassificationStrategyFactory::getAvailableStrategies()
 
 } // namespace classification
 } // namespace snnfw
-

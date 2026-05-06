@@ -194,9 +194,118 @@ WeightedDistance classifier;
 int label = classifier.classify(neuronOutputs, weights);
 ```
 
+## Declarative Network Loading
+
+### DeclarativeLoader
+
+Main entry-point for loading networks from configuration files.
+
+```cpp
+#include "snnfw/declarative/DeclarativeLoader.h"
+
+NeuralObjectFactory factory;
+Datastore datastore("./db");
+DeclarativeLoader loader(factory, datastore);
+
+// Load network — format auto-detected from extension
+auto network = loader.loadNetwork("configs/my_network.snnf.json");
+
+// Parse only (returns NetworkIR without constructing)
+auto ir = loader.parseOnly("configs/my_network.snnf.json");
+
+// Register a custom parser
+loader.registerParser(std::make_unique<MyCustomParser>());
+```
+
+**Key Methods:**
+- `loadNetwork(filepath)` - Parse file and construct the full network
+- `parseOnly(filepath)` - Parse file into NetworkIR without construction
+- `registerParser(parser)` - Register a custom format parser
+
+**Returned `ConstructedNetwork` contains:**
+- `brain` - Fully constructed Brain hierarchy
+- `spikeProcessor` - SpikeProcessor ready to start()
+- `propagator` - NetworkPropagator with all synapses registered
+- `inputNeurons` - Input grid neurons for spike injection
+- `outputPopulations` - Output neurons grouped by class
+- `columns` - Per-column neuron groups
+
+### NetworkIR
+
+Common intermediate representation shared by all format parsers.
+
+```cpp
+#include "snnfw/declarative/NetworkIR.h"
+
+NetworkIR ir;
+ir.brain.name = "MyBrain";
+// ... populate hierarchy, projections, etc.
+
+// Validate the IR
+auto errors = ir.validate();
+for (const auto& err : errors) {
+    std::cerr << err << std::endl;
+}
+```
+
+**Key Structures:**
+- `NeuronParamsIR` - Neuron parameters (window_size_ms, similarity_threshold, max_reference_patterns, similarity_metric)
+- `PopulationIR` - Group of neurons (name, count, neuron_params_ref, grid_layout)
+- `LayerIR` - Layer containing populations
+- `ColumnIR` - Column containing layers
+- `ColumnTemplateIR` - Template for generating multiple columns (orientations, frequencies)
+- `NucleusIR` - Nucleus containing columns or column templates
+- `RegionIR`, `LobeIR`, `HemisphereIR`, `BrainIR` - Hierarchy levels
+- `ProjectionIR` - Connection between populations (source, target, pattern, weight, delay, scope)
+- `InputLayerIR` - Input layer definition (rows, cols, latency_ms)
+- `OutputLayerIR` - Output layer definition (num_classes, neurons_per_class)
+- `GaborConfigIR` - Gabor filter parameters
+- `SaccadeConfigIR` - Saccade region definitions
+- `SimulationConfigIR` - Spike processor and STDP parameters
+
+### NetworkConstructor
+
+Builds the actual SNNFrame hierarchy from a NetworkIR.
+
+```cpp
+#include "snnfw/declarative/NetworkConstructor.h"
+
+NetworkConstructor constructor(factory, datastore);
+auto network = constructor.construct(ir);
+```
+
+**Key Methods:**
+- `construct(ir)` - Four-phase construction: build hierarchy → create neurons → create connectivity → initialize runtime
+
+### FormatParser
+
+Abstract interface for implementing custom format parsers.
+
+```cpp
+#include "snnfw/declarative/FormatParser.h"
+
+class MyParser : public FormatParser {
+public:
+    NetworkIR parse(const std::string& filepath) override;
+    bool canParse(const std::string& filepath) const override;
+    std::string formatName() const override;
+};
+```
+
+### Built-in Parsers
+
+| Parser | Class | Extensions | Description |
+|--------|-------|------------|-------------|
+| Native JSON | `NativeJSONParser` | `.snnf.json` | Full SNNFrame format with column templates |
+| SONATA | `SONATAParser` | `circuit_config.json`, `.sonata.json` | HDF5-based Blue Brain / Allen Institute format |
+| NeuroML | `NeuroMLParser` | `.nml`, `.neuroml` | XML community standard with `snnfw:` extensions |
+| HOC | `HOCParser` | `.hoc` | NEURON simulator scripting language |
+
 ## See Also
 
 - [Architecture Guide](ARCHITECTURE.md)
 - [Configuration Guide](CONFIGURATION.md)
+- [Developer Manual - Declarative Loading](DEVELOPER_MANUAL.md#declarative-network-loading)
+- [Format Reference](FORMAT_REFERENCE.md)
 - [Examples](../examples/)
 

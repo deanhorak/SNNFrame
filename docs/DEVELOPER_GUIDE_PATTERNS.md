@@ -5,13 +5,14 @@ This guide covers common patterns and recipes for developing with SNNFrame.
 ## Table of Contents
 
 1. [Creating Networks](#creating-networks)
-2. [Spike Injection](#spike-injection)
-3. [Pattern Learning](#pattern-learning)
-4. [Classification](#classification)
-5. [Monitoring and Debugging](#monitoring-and-debugging)
-6. [Data Encoding](#data-encoding)
-7. [Multi-Column Architectures](#multi-column-architectures)
-8. [Training vs Testing](#training-vs-testing)
+2. [Declarative Loading Patterns](#declarative-loading-patterns)
+3. [Spike Injection](#spike-injection)
+4. [Pattern Learning](#pattern-learning)
+5. [Classification](#classification)
+6. [Monitoring and Debugging](#monitoring-and-debugging)
+7. [Data Encoding](#data-encoding)
+8. [Multi-Column Architectures](#multi-column-architectures)
+9. [Training vs Testing](#training-vs-testing)
 
 ---
 
@@ -78,6 +79,115 @@ for (int l = 0; l < 5; ++l) {
         }
     }
 }
+```
+
+---
+
+## Declarative Loading Patterns
+
+### Load and Run a Network
+
+```cpp
+#include "snnfw/declarative/DeclarativeLoader.h"
+
+NeuralObjectFactory factory;
+Datastore datastore("./db");
+DeclarativeLoader loader(factory, datastore);
+
+// Load from any supported format
+auto network = loader.loadNetwork("configs/my_network.snnf.json");
+
+// Start processing
+network.spikeProcessor->start();
+
+// Inject input spikes
+for (size_t i = 0; i < network.inputNeurons.size(); ++i) {
+    network.inputNeurons[i]->injectSpike(10.0);
+}
+
+// Read output
+for (const auto& [classId, neurons] : network.outputPopulations) {
+    for (auto& neuron : neurons) {
+        if (neuron->hasFired()) {
+            std::cout << "Class " << classId << " detected" << std::endl;
+        }
+    }
+}
+```
+
+### Validate Before Loading
+
+```cpp
+auto ir = loader.parseOnly("my_network.snnf.json");
+auto errors = ir.validate();
+if (!errors.empty()) {
+    for (const auto& err : errors) {
+        std::cerr << "Error: " << err << std::endl;
+    }
+    return 1;
+}
+auto network = loader.loadNetwork("my_network.snnf.json");
+```
+
+### Use Column Templates for Multi-Column Networks
+
+In Native JSON, column templates generate multiple columns from a single definition:
+
+```json
+{
+  "column_template": {
+    "orientations": [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5],
+    "frequencies": [3.0, 8.0],
+    "naming_pattern": "Orient_{orientation}_Freq_{frequency}",
+    "layers": [
+      { "name": "L4", "populations": [
+        { "name": "L4_stellate", "count": 49, "neuron_params": "cortical" }
+      ]}
+    ]
+  }
+}
+```
+
+This generates 8 × 2 = 16 columns, each with its own L4 layer of 49 neurons.
+
+### Path-Based Connectivity
+
+Use glob paths to connect across columns:
+
+```json
+{
+  "projections": [
+    {
+      "name": "L4_to_L5",
+      "source": "V1/*/L4",
+      "target": "V1/*/L5",
+      "scope": "intra_column",
+      "pattern": "random_sparse",
+      "probability": 0.25,
+      "weight": 0.1
+    }
+  ]
+}
+```
+
+- `"scope": "intra_column"` — connects L4→L5 within the same column only
+- `"scope": "global"` — connects all L4 neurons to all L5 neurons across columns
+
+### Convert Between Formats
+
+Parse from one format, inspect or modify the IR, then use it:
+
+```cpp
+// Parse a NeuroML file into IR
+auto ir = loader.parseOnly("model.nml");
+
+// Modify the IR
+ir.simulation.spike_processor_threads = 32;
+ir.simulation.stdp_enabled = true;
+
+// Construct from the modified IR
+NetworkConstructor constructor(factory, datastore);
+auto network = constructor.construct(ir);
 ```
 
 ---
@@ -535,6 +645,6 @@ std::cout << "Time: " << duration.count() << "ms\n";
 
 ---
 
-**Last Updated**: 2026-01-10
-**Version**: 1.0.0
+**Last Updated**: 2026-02-06
+**Version**: 1.1.0
 

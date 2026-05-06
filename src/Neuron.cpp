@@ -7,7 +7,6 @@
 #include <iostream>
 #include <cmath>
 #include <limits>
-#include <cstdlib>
 #include <algorithm>
 #include <random>
 
@@ -15,14 +14,84 @@ using json = nlohmann::json;
 
 namespace snnfw {
 
-Neuron::Neuron(double windowSizeMs, double similarityThreshold, size_t maxReferencePatterns, uint64_t neuronId)
+namespace {
+size_t deterministicReplacementIndex(const BinaryPattern& pattern,
+                                     size_t patternCount,
+                                     uint64_t neuronId) {
+    if (patternCount == 0) return 0;
+    // FNV-1a over pattern bins + neuron id yields deterministic replacement.
+    uint64_t hash = 1469598103934665603ULL;
+    for (uint8_t bin : pattern.getData()) {
+        hash ^= static_cast<uint64_t>(bin);
+        hash *= 1099511628211ULL;
+    }
+    hash ^= neuronId + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    return static_cast<size_t>(hash % static_cast<uint64_t>(patternCount));
+}
+
+constexpr double kPrototypeReinforcementAlpha = 0.15;
+constexpr double kExemplarReinforcementAlpha = 0.05;
+constexpr double kPrototypeMatchMargin = 0.10;
+constexpr double kExemplarAllocationMargin = 0.05;
+constexpr double kPrototypePromotionMargin = 0.03;
+constexpr uint16_t kPrototypeInitialSupport = 3;
+constexpr uint16_t kExemplarPromotionSupport = 3;
+constexpr uint16_t kProtectedPrototypeSupport = 6;
+
+void clampSupportVector(std::vector<uint16_t>& supports,
+                        size_t expectedSize,
+                        uint16_t defaultValue) {
+    if (supports.size() < expectedSize) {
+        supports.resize(expectedSize, defaultValue);
+    } else if (supports.size() > expectedSize) {
+        supports.resize(expectedSize);
+    }
+}
+
+size_t pickWeakestPatternIndex(const BinaryPattern& pattern,
+                               const std::vector<BinaryPattern>& patterns,
+                               const std::vector<uint16_t>& supports,
+                               uint64_t neuronId) {
+    if (patterns.empty()) {
+        return 0;
+    }
+
+    size_t bestIndex = 0;
+    uint16_t bestSupport = std::numeric_limits<uint16_t>::max();
+    double bestSimilarity = std::numeric_limits<double>::max();
+    for (size_t i = 0; i < patterns.size(); ++i) {
+        const uint16_t support = (i < supports.size()) ? supports[i] : 1;
+        const double similarity = BinaryPattern::cosineSimilarity(pattern, patterns[i]);
+        if (support < bestSupport ||
+            (support == bestSupport && similarity < bestSimilarity) ||
+            (support == bestSupport && std::abs(similarity - bestSimilarity) < 1e-9 &&
+             deterministicReplacementIndex(pattern, patterns.size(), neuronId) == i)) {
+            bestSupport = support;
+            bestSimilarity = similarity;
+            bestIndex = i;
+        }
+    }
+    return bestIndex;
+}
+} // namespace
+
+Neuron::Neuron(double windowSizeMs,
+               double similarityThreshold,
+               size_t maxReferencePatterns,
+               uint64_t neuronId,
+               bool preserveSpikeLatency)
     : NeuralObject(neuronId),
       windowSize(windowSizeMs),
+      maxSpikeTime_(-std::numeric_limits<double>::infinity()),  // Initialize to -infinity
       threshold(similarityThreshold),
       maxPatterns(maxReferencePatterns),
+      preserveSpikeLatency_(preserveSpikeLatency),
+      latencyMemory_(),
+      latencyMemoryPatternCount_(0),
       axonId(0),
       similarityMetric_(SimilarityMetric::COSINE),  // Default to cosine similarity
       inhibition_(0.0),
+      incomingSpikeCount_(0),
       firingRate_(0.0),
       targetFiringRate_(5.0),  // Default target: 5 Hz
       intrinsicExcitability_(1.0),
@@ -36,7 +105,14 @@ Neuron::Neuron(double windowSizeMs, double similarityThreshold, size_t maxRefere
 void Neuron::insertSpike(double spikeTime) {
     std::lock_guard<std::mutex> lock(spikesMutex_);
     spikes.push_back(spikeTime);
-    removeOldSpikesUnsafe(spikeTime);
+
+    // OPTIMIZATION: Track max spike time instead of recomputing with std::max_element
+    // Spikes may arrive out-of-order under async delivery.
+    // Maintain the rolling window relative to the newest spike we have seen.
+    if (spikes.size() == 1 || spikeTime > maxSpikeTime_) {
+        maxSpikeTime_ = spikeTime;
+    }
+    removeOldSpikesUnsafe(maxSpikeTime_);
 
     // NOTE: Removed shouldFire() check here because it causes issues during training
     // When learning patterns, we don't want the neuron to fire based on previously
@@ -60,8 +136,13 @@ void Neuron::learnCurrentPattern() {
         spikesCopy = spikes;
     }
 
+    if (preserveSpikeLatency_) {
+        learnLatencyMemory(spikesCopy);
+        return;
+    }
+
     // Convert current spike window to BinaryPattern (200 bytes, fixed size)
-    BinaryPattern newPattern(spikesCopy, windowSize);
+    BinaryPattern newPattern(spikesCopy, windowSize, true);
 
     SNNFW_DEBUG("Neuron {}: Converting {} spike times to BinaryPattern ({} total spikes)",
                 getId(), spikesCopy.size(), newPattern.getTotalSpikes());
@@ -74,42 +155,114 @@ void Neuron::learnCurrentPattern() {
         };
 
         // Call the BinaryPattern version of updatePatterns (efficient, no conversion!)
-        patternStrategy_->updatePatterns(referencePatterns, newPattern, similarityMetric);
+        auto existingPatterns = getLearnedPatterns();
+        std::vector<BinaryPattern> updatedPatterns = existingPatterns;
+        patternStrategy_->updatePatterns(updatedPatterns, newPattern, similarityMetric);
+        prototypePatterns_.clear();
+        prototypeSupports_.clear();
+        exemplarPatterns_.clear();
+        exemplarSupports_.clear();
+        exemplarPatterns_ = std::move(updatedPatterns);
+        exemplarSupports_.assign(exemplarPatterns_.size(), 1);
 
         SNNFW_DEBUG("Neuron {}: Updated patterns using {} strategy ({} patterns stored)",
-                    getId(), patternStrategy_->getName(), referencePatterns.size());
+                    getId(), patternStrategy_->getName(), getLearnedPatternCount());
         return;
     }
 
-    // Default behavior - work directly with BinaryPattern (MUCH more efficient!)
-    if (referencePatterns.size() < maxPatterns) {
-        referencePatterns.push_back(newPattern);
-        SNNFW_DEBUG("Neuron {}: Learned new BinaryPattern ({} total spikes, {} patterns stored)",
-                    getId(), newPattern.getTotalSpikes(), referencePatterns.size());
-    } else {
-        // Find most similar pattern using selected similarity metric
-        int bestIndex = -1;
-        double bestSim = -1.0;
+    const double effectiveThreshold = std::clamp(threshold, 0.0, 1.0);
+    clampSupportVector(prototypeSupports_, prototypePatterns_.size(), kPrototypeInitialSupport);
+    clampSupportVector(exemplarSupports_, exemplarPatterns_.size(), 1);
+    int bestPrototypeIndex = -1;
+    int bestExemplarIndex = -1;
+    const double bestPrototypeSim =
+        findBestSimilarity(newPattern, prototypePatterns_, &bestPrototypeIndex);
+    const double bestExemplarSim =
+        findBestSimilarity(newPattern, exemplarPatterns_, &bestExemplarIndex);
 
-        for (size_t i = 0; i < referencePatterns.size(); ++i) {
-            double sim = computeSimilarity(referencePatterns[i], newPattern);
-            if (sim > bestSim) {
-                bestSim = sim;
-                bestIndex = static_cast<int>(i);
-            }
+    if (bestPrototypeIndex != -1 &&
+        bestPrototypeSim >= std::min(1.0, effectiveThreshold + kPrototypeMatchMargin)) {
+        BinaryPattern::blend(
+            prototypePatterns_[static_cast<size_t>(bestPrototypeIndex)],
+            newPattern,
+            kPrototypeReinforcementAlpha);
+        prototypeSupports_[static_cast<size_t>(bestPrototypeIndex)] = static_cast<uint16_t>(
+            std::min<int>(std::numeric_limits<uint16_t>::max(),
+                          prototypeSupports_[static_cast<size_t>(bestPrototypeIndex)] + 1));
+        SNNFW_DEBUG("Neuron {}: Reinforced prototype #{} (similarity={:.3f}, total memories={})",
+                    getId(), bestPrototypeIndex, bestPrototypeSim, getLearnedPatternCount());
+    } else if (bestExemplarIndex != -1 && bestExemplarSim >= effectiveThreshold) {
+        const size_t exemplarIndex = static_cast<size_t>(bestExemplarIndex);
+        BinaryPattern::blend(
+            exemplarPatterns_[exemplarIndex],
+            newPattern,
+            kExemplarReinforcementAlpha);
+        exemplarSupports_[exemplarIndex] = static_cast<uint16_t>(
+            std::min<int>(std::numeric_limits<uint16_t>::max(), exemplarSupports_[exemplarIndex] + 1));
+        const size_t prototypeCapacity = std::max<size_t>(1, maxPatterns / 3);
+        if (exemplarSupports_[exemplarIndex] >= kExemplarPromotionSupport &&
+            bestExemplarSim >= std::min(1.0, effectiveThreshold + kPrototypePromotionMargin) &&
+            prototypePatterns_.size() < prototypeCapacity) {
+            prototypePatterns_.push_back(exemplarPatterns_[exemplarIndex]);
+            prototypeSupports_.push_back(
+                std::max<uint16_t>(kPrototypeInitialSupport, exemplarSupports_[exemplarIndex]));
+            exemplarPatterns_.erase(exemplarPatterns_.begin() + static_cast<std::ptrdiff_t>(exemplarIndex));
+            exemplarSupports_.erase(exemplarSupports_.begin() + static_cast<std::ptrdiff_t>(exemplarIndex));
+            SNNFW_DEBUG("Neuron {}: Promoted exemplar #{} to prototype (prototypes={}, exemplars={})",
+                        getId(), exemplarIndex, prototypePatterns_.size(), exemplarPatterns_.size());
         }
+        SNNFW_DEBUG("Neuron {}: Reinforced exemplar #{} (similarity={:.3f}, total memories={})",
+                    getId(), bestExemplarIndex, bestExemplarSim, getLearnedPatternCount());
+    } else {
+        const size_t totalPatterns = getLearnedPatternCount();
+        const size_t prototypeCapacity = std::max<size_t>(1, maxPatterns / 3);
 
-        if (bestIndex != -1 && bestSim >= threshold) {
-            // Blend new pattern into most similar existing pattern
-            BinaryPattern::blend(referencePatterns[bestIndex], newPattern, 0.2);
-            SNNFW_DEBUG("Neuron {}: Blended new pattern into pattern #{} (similarity={:.3f})",
-                        getId(), bestIndex, bestSim);
-        } else {
-            // Replace random pattern (novel pattern, low similarity to all existing)
-            size_t randIndex = rand() % referencePatterns.size();
-            referencePatterns[randIndex] = newPattern;
-            SNNFW_DEBUG("Neuron {}: Replaced pattern #{} with new pattern (best similarity={:.3f})",
-                        getId(), randIndex, bestSim);
+        if (bestExemplarIndex != -1 &&
+            bestExemplarSim >= std::max(0.0, effectiveThreshold - kExemplarAllocationMargin) &&
+            prototypePatterns_.size() < prototypeCapacity &&
+            exemplarSupports_[static_cast<size_t>(bestExemplarIndex)] >= (kExemplarPromotionSupport - 1)) {
+            const size_t exemplarIndex = static_cast<size_t>(bestExemplarIndex);
+            prototypePatterns_.push_back(exemplarPatterns_[exemplarIndex]);
+            prototypeSupports_.push_back(
+                std::max<uint16_t>(kPrototypeInitialSupport, exemplarSupports_[exemplarIndex]));
+            exemplarPatterns_.erase(exemplarPatterns_.begin() + static_cast<std::ptrdiff_t>(exemplarIndex));
+            exemplarSupports_.erase(exemplarSupports_.begin() + static_cast<std::ptrdiff_t>(exemplarIndex));
+            exemplarPatterns_.push_back(newPattern);
+            exemplarSupports_.push_back(1);
+            SNNFW_DEBUG("Neuron {}: Consolidated exemplar into prototype and stored new exemplar (similarity={:.3f})",
+                        getId(), bestExemplarSim);
+        } else if (totalPatterns < maxPatterns) {
+            exemplarPatterns_.push_back(newPattern);
+            exemplarSupports_.push_back(1);
+            SNNFW_DEBUG("Neuron {}: Stored new exemplar ({} total spikes, prototypes={}, exemplars={})",
+                        getId(), newPattern.getTotalSpikes(),
+                        prototypePatterns_.size(), exemplarPatterns_.size());
+        } else if (!exemplarPatterns_.empty()) {
+            const size_t replaceIndex =
+                pickWeakestPatternIndex(newPattern, exemplarPatterns_, exemplarSupports_, getId());
+            exemplarPatterns_[replaceIndex] = newPattern;
+            exemplarSupports_[replaceIndex] = 1;
+            SNNFW_DEBUG("Neuron {}: Replaced exemplar #{} with new pattern", getId(), replaceIndex);
+        } else if (!prototypePatterns_.empty()) {
+            size_t replaceIndex =
+                pickWeakestPatternIndex(newPattern, prototypePatterns_, prototypeSupports_, getId());
+            if (prototypeSupports_[replaceIndex] <= kProtectedPrototypeSupport) {
+                prototypePatterns_[replaceIndex] = newPattern;
+                prototypeSupports_[replaceIndex] = kPrototypeInitialSupport;
+                SNNFW_DEBUG("Neuron {}: Replaced prototype #{} with new pattern", getId(), replaceIndex);
+            } else if (totalPatterns < maxPatterns) {
+                exemplarPatterns_.push_back(newPattern);
+                exemplarSupports_.push_back(1);
+                if (exemplarPatterns_.size() > std::max<size_t>(1, maxPatterns / 2)) {
+                    const size_t trimIndex =
+                        pickWeakestPatternIndex(newPattern, exemplarPatterns_, exemplarSupports_, getId());
+                    exemplarPatterns_.erase(exemplarPatterns_.begin() + static_cast<std::ptrdiff_t>(trimIndex));
+                    exemplarSupports_.erase(exemplarSupports_.begin() + static_cast<std::ptrdiff_t>(trimIndex));
+                }
+                SNNFW_DEBUG("Neuron {}: Preserved mature prototype set and recycled exemplar slot", getId());
+            } else {
+                SNNFW_DEBUG("Neuron {}: Skipped overwrite because all prototype memories are mature", getId());
+            }
         }
     }
 }
@@ -129,9 +282,10 @@ void Neuron::printSpikes() const {
 }
 
 void Neuron::printReferencePatterns() const {
-    SNNFW_INFO("Neuron {}: Stored reference patterns ({})", getId(), referencePatterns.size());
-    for (size_t i = 0; i < referencePatterns.size(); ++i) {
-        SNNFW_INFO("  Pattern #{}: {}", i, referencePatterns[i].toString());
+    const auto& patterns = getLearnedPatterns();
+    SNNFW_INFO("Neuron {}: Stored reference patterns ({})", getId(), patterns.size());
+    for (size_t i = 0; i < patterns.size(); ++i) {
+        SNNFW_INFO("  Pattern #{}: {}", i, patterns[i].toString());
     }
 }
 
@@ -142,8 +296,19 @@ void Neuron::removeOldSpikes(double currentTime) {
 
 void Neuron::removeOldSpikesUnsafe(double currentTime) {
     // Note: Caller must hold spikesMutex_ lock
-    while (!spikes.empty() && (currentTime - spikes.front() > windowSize)) {
-        spikes.erase(spikes.begin());
+    // Do not assume insertion order (async delivery can insert out-of-order).
+    size_t oldSize = spikes.size();
+    spikes.erase(
+        std::remove_if(spikes.begin(), spikes.end(),
+                       [this, currentTime](double t) { return (currentTime - t) > windowSize; }),
+        spikes.end());
+
+    // If we removed spikes and the max was removed, recompute it
+    if (spikes.size() < oldSize && !spikes.empty()) {
+        // Only recompute if we actually removed spikes
+        maxSpikeTime_ = *std::max_element(spikes.begin(), spikes.end());
+    } else if (spikes.empty()) {
+        maxSpikeTime_ = -std::numeric_limits<double>::infinity();
     }
 }
 
@@ -245,18 +410,128 @@ double Neuron::computeSimilarity(const BinaryPattern& a, const BinaryPattern& b)
     }
 }
 
-bool Neuron::shouldFire() const {
-    // Convert current spikes to BinaryPattern for comparison
-    BinaryPattern currentPattern(spikes, windowSize);
-
-    for (const auto& refPattern : referencePatterns) {
-        // Compare using selected similarity metric
-        double similarity = computeSimilarity(currentPattern, refPattern);
-        if (similarity >= threshold) {
-            return true;
+double Neuron::findBestSimilarity(const BinaryPattern& currentPattern,
+                                  const std::vector<BinaryPattern>& patterns,
+                                  int* bestIndex) const {
+    double bestSim = -1.0;
+    int idx = -1;
+    for (size_t i = 0; i < patterns.size(); ++i) {
+        if (patterns[i].isEmpty()) continue;
+        double similarity = computeSimilarity(currentPattern, patterns[i]);
+        if (similarity > bestSim) {
+            bestSim = similarity;
+            idx = static_cast<int>(i);
         }
     }
-    return false;
+    if (bestIndex) {
+        *bestIndex = idx;
+    }
+    return bestSim;
+}
+
+void Neuron::learnLatencyMemory(const std::vector<double>& spikes) {
+    if (spikes.empty() || windowSize <= 0.0) {
+        return;
+    }
+
+    bool storedAny = false;
+    for (double spikeTime : spikes) {
+        if (spikeTime < 0.0 || spikeTime >= windowSize) {
+            continue;
+        }
+        const double scaled =
+            (std::abs(windowSize - static_cast<double>(BinaryPattern::PATTERN_SIZE)) < 1e-9)
+                ? spikeTime
+                : ((spikeTime / windowSize) * static_cast<double>(BinaryPattern::PATTERN_SIZE));
+        int binIndex = static_cast<int>(std::round(scaled));
+        binIndex = std::clamp(binIndex, 0, static_cast<int>(BinaryPattern::PATTERN_SIZE) - 1);
+        auto& count = latencyMemory_[static_cast<size_t>(binIndex)];
+        if (count < std::numeric_limits<uint16_t>::max()) {
+            ++count;
+        }
+        storedAny = true;
+    }
+    if (storedAny) {
+        ++latencyMemoryPatternCount_;
+    }
+}
+
+double Neuron::getLatencyMemorySimilarity(const std::vector<double>& spikes) const {
+    if (spikes.empty() || latencyMemoryPatternCount_ == 0 || windowSize <= 0.0) {
+        return 0.0;
+    }
+
+    constexpr int kRadius = 6;
+    constexpr double kSigma = 3.0;
+    double similaritySum = 0.0;
+    size_t validSpikes = 0;
+
+    for (double spikeTime : spikes) {
+        if (spikeTime < 0.0 || spikeTime >= windowSize) {
+            continue;
+        }
+        const double scaled =
+            (std::abs(windowSize - static_cast<double>(BinaryPattern::PATTERN_SIZE)) < 1e-9)
+                ? spikeTime
+                : ((spikeTime / windowSize) * static_cast<double>(BinaryPattern::PATTERN_SIZE));
+        const int centerBin = std::clamp(
+            static_cast<int>(std::round(scaled)),
+            0,
+            static_cast<int>(BinaryPattern::PATTERN_SIZE) - 1);
+        double best = 0.0;
+        for (int delta = -kRadius; delta <= kRadius; ++delta) {
+            const int bin = centerBin + delta;
+            if (bin < 0 || bin >= static_cast<int>(BinaryPattern::PATTERN_SIZE)) {
+                continue;
+            }
+            const uint16_t count = latencyMemory_[static_cast<size_t>(bin)];
+            if (count == 0) {
+                continue;
+            }
+            const double occupancy = count > 0 ? 1.0 : 0.0;
+            const double temporalKernel =
+                std::exp(-(static_cast<double>(delta * delta)) / (2.0 * kSigma * kSigma));
+            best = std::max(best, occupancy * temporalKernel);
+        }
+        similaritySum += best;
+        ++validSpikes;
+    }
+
+    return validSpikes > 0 ? std::clamp(similaritySum / static_cast<double>(validSpikes), 0.0, 1.0)
+                           : 0.0;
+}
+
+const std::vector<BinaryPattern>& Neuron::getLearnedPatterns() const {
+    combinedPatternsCache_.clear();
+    combinedPatternsCache_.reserve(prototypePatterns_.size() + exemplarPatterns_.size());
+    combinedPatternsCache_.insert(
+        combinedPatternsCache_.end(), prototypePatterns_.begin(), prototypePatterns_.end());
+    combinedPatternsCache_.insert(
+        combinedPatternsCache_.end(), exemplarPatterns_.begin(), exemplarPatterns_.end());
+    return combinedPatternsCache_;
+}
+
+bool Neuron::shouldFire() const {
+    // Copy spikes under lock to avoid data races with concurrent delivery.
+    std::vector<double> spikesCopy;
+    {
+        std::lock_guard<std::mutex> lock(spikesMutex_);
+        if (spikes.empty()) {
+            return false;
+        }
+        spikesCopy = spikes;
+    }
+
+    // Convert current spikes to BinaryPattern for comparison
+    BinaryPattern currentPattern(spikesCopy, windowSize, !preserveSpikeLatency_);
+
+    if (preserveSpikeLatency_) {
+        return getLatencyMemorySimilarity(spikesCopy) >= std::clamp(threshold, 0.0, 1.0);
+    }
+
+    const double effectiveThreshold = std::clamp(threshold, 0.0, 1.0);
+    return std::max(findBestSimilarity(currentPattern, prototypePatterns_),
+                    findBestSimilarity(currentPattern, exemplarPatterns_)) >= effectiveThreshold;
 }
 
 double Neuron::getBestSimilarity() const {
@@ -264,44 +539,34 @@ double Neuron::getBestSimilarity() const {
     std::vector<double> spikesCopy;
     {
         std::lock_guard<std::mutex> lock(spikesMutex_);
-        if (spikes.empty() || referencePatterns.empty()) {
+        if (spikes.empty() || getLearnedPatternCount() == 0) {
             return 0.0;
         }
         spikesCopy = spikes;
     }
 
-    // Convert current spikes to BinaryPattern
-    BinaryPattern currentPattern(spikesCopy, windowSize);
-
-    double bestSim = -1.0;
-
-    // Compare with all reference patterns using selected similarity metric
-    for (const auto& refPattern : referencePatterns) {
-        // Skip empty reference patterns
-        if (refPattern.isEmpty()) continue;
-
-        // Compute similarity using selected metric
-        double similarity = computeSimilarity(currentPattern, refPattern);
-
-        if (similarity > bestSim) {
-            bestSim = similarity;
-        }
+    if (preserveSpikeLatency_) {
+        return getLatencyMemorySimilarity(spikesCopy);
     }
+
+    // Convert current spikes to BinaryPattern
+    BinaryPattern currentPattern(spikesCopy, windowSize, !preserveSpikeLatency_);
+
+    double bestSim = std::max(findBestSimilarity(currentPattern, prototypePatterns_),
+                              findBestSimilarity(currentPattern, exemplarPatterns_));
     return (bestSim < 0.0) ? 0.0 : bestSim;
 }
 
 int Neuron::findMostSimilarPattern(const std::vector<double>& newPattern) const {
     // Convert newPattern to BinaryPattern for comparison
-    BinaryPattern newBinaryPattern(newPattern, windowSize);
+    BinaryPattern newBinaryPattern(newPattern, windowSize, !preserveSpikeLatency_);
 
     int bestIndex = -1;
     double bestSim = -1.0;
 
-    for (size_t i = 0; i < referencePatterns.size(); ++i) {
-        const auto& ref = referencePatterns[i];
-
-        // Use selected similarity metric
-        double sim = computeSimilarity(ref, newBinaryPattern);
+    const auto& patterns = getLearnedPatterns();
+    for (size_t i = 0; i < patterns.size(); ++i) {
+        double sim = computeSimilarity(patterns[i], newBinaryPattern);
         if (sim > bestSim) {
             bestSim = sim;
             bestIndex = static_cast<int>(i);
@@ -428,14 +693,26 @@ std::string Neuron::toJson() const {
 
     // Serialize BinaryPatterns as arrays of spike counts
     json patternsJson = json::array();
-    for (const auto& pattern : referencePatterns) {
+    for (const auto& pattern : prototypePatterns_) {
         json patternJson = json::array();
         for (size_t i = 0; i < BinaryPattern::PATTERN_SIZE; ++i) {
             patternJson.push_back(pattern[i]);
         }
         patternsJson.push_back(patternJson);
     }
-    j["referencePatterns"] = patternsJson;
+    j["prototypePatterns"] = patternsJson;
+    j["prototypeSupports"] = prototypeSupports_;
+
+    json exemplarJson = json::array();
+    for (const auto& pattern : exemplarPatterns_) {
+        json patternJson = json::array();
+        for (size_t i = 0; i < BinaryPattern::PATTERN_SIZE; ++i) {
+            patternJson.push_back(pattern[i]);
+        }
+        exemplarJson.push_back(patternJson);
+    }
+    j["referencePatterns"] = exemplarJson;
+    j["exemplarSupports"] = exemplarSupports_;
 
     return j.dump();
 }
@@ -472,16 +749,36 @@ bool Neuron::fromJson(const std::string& jsonStr) {
         spikes = j["spikes"].get<std::vector<double>>();
 
         // Deserialize BinaryPatterns from arrays of spike counts
-        referencePatterns.clear();
+        prototypePatterns_.clear();
+        prototypeSupports_.clear();
+        exemplarPatterns_.clear();
+        exemplarSupports_.clear();
+        if (j.contains("prototypePatterns")) {
+            for (const auto& patternJson : j["prototypePatterns"]) {
+                BinaryPattern pattern;
+                for (size_t i = 0; i < BinaryPattern::PATTERN_SIZE && i < patternJson.size(); ++i) {
+                    pattern[i] = patternJson[i].get<uint8_t>();
+                }
+                prototypePatterns_.push_back(pattern);
+            }
+        }
+        if (j.contains("prototypeSupports")) {
+            prototypeSupports_ = j["prototypeSupports"].get<std::vector<uint16_t>>();
+        }
+        clampSupportVector(prototypeSupports_, prototypePatterns_.size(), kPrototypeInitialSupport);
         if (j.contains("referencePatterns")) {
             for (const auto& patternJson : j["referencePatterns"]) {
                 BinaryPattern pattern;
                 for (size_t i = 0; i < BinaryPattern::PATTERN_SIZE && i < patternJson.size(); ++i) {
                     pattern[i] = patternJson[i].get<uint8_t>();
                 }
-                referencePatterns.push_back(pattern);
+                exemplarPatterns_.push_back(pattern);
             }
         }
+        if (j.contains("exemplarSupports")) {
+            exemplarSupports_ = j["exemplarSupports"].get<std::vector<uint16_t>>();
+        }
+        clampSupportVector(exemplarSupports_, exemplarPatterns_.size(), 1);
 
         return true;
     } catch (const std::exception& e) {
@@ -495,12 +792,28 @@ void Neuron::recordIncomingSpike(uint64_t synapseId, double spikeTime, double di
 
     // Add the incoming spike to our tracking deque
     incomingSpikes_.emplace_back(synapseId, spikeTime, dispatchTime);
+    incomingSpikeCount_++;
 
-    // Clean up old spikes outside the temporal window
-    clearOldIncomingSpikes(spikeTime);
+    // Clean up old spikes outside the temporal window.
+    // Do not assume arrival ordering under async delivery.
+    double referenceTime = spikeTime;
+    for (const auto& s : incomingSpikes_) {
+        referenceTime = std::max(referenceTime, s.arrivalTime);
+    }
+    clearOldIncomingSpikes(referenceTime);
 
     SNNFW_TRACE("Neuron {}: Recorded incoming spike from synapse {} at time {:.3f}ms (dispatch: {:.3f}ms, total tracked: {})",
                 getId(), synapseId, spikeTime, dispatchTime, incomingSpikes_.size());
+}
+
+size_t Neuron::getIncomingSpikeCount() const {
+    std::lock_guard<std::mutex> lock(incomingSpikesMutex_);
+    return incomingSpikeCount_;
+}
+
+void Neuron::resetIncomingSpikeCount() {
+    std::lock_guard<std::mutex> lock(incomingSpikesMutex_);
+    incomingSpikeCount_ = 0;
 }
 
 int Neuron::fireAndAcknowledge(double firingTime) {
@@ -550,10 +863,12 @@ int Neuron::fireAndAcknowledge(double firingTime) {
 void Neuron::clearOldIncomingSpikes(double currentTime) {
     // Note: Caller must hold incomingSpikesMutex_ lock
     // Remove spikes that are older than the temporal window
-    while (!incomingSpikes_.empty() &&
-           (currentTime - incomingSpikes_.front().arrivalTime > windowSize)) {
-        incomingSpikes_.pop_front();
-    }
+    incomingSpikes_.erase(
+        std::remove_if(incomingSpikes_.begin(), incomingSpikes_.end(),
+                       [this, currentTime](const IncomingSpike& s) {
+                           return (currentTime - s.arrivalTime) > windowSize;
+                       }),
+        incomingSpikes_.end());
 }
 
 void Neuron::periodicMemoryCleanup(double currentTime) {
@@ -576,12 +891,15 @@ void Neuron::periodicMemoryCleanup(double currentTime) {
     }
 
     // Shrink pattern storage to fit (BinaryPattern is fixed size, so just shrink the vector)
-    referencePatterns.shrink_to_fit();
+    prototypePatterns_.shrink_to_fit();
+    prototypeSupports_.shrink_to_fit();
+    exemplarPatterns_.shrink_to_fit();
+    exemplarSupports_.shrink_to_fit();
     // Note: Each BinaryPattern is already fixed at 200 bytes, no need to shrink individual patterns
 
     SNNFW_TRACE("Neuron {}: Memory cleanup - {} spikes, {} incoming spikes, {} patterns ({}KB pattern memory)",
-                getId(), spikesCount, incomingSpikesCount, referencePatterns.size(),
-                (referencePatterns.size() * 200) / 1024);
+                getId(), spikesCount, incomingSpikesCount, getLearnedPatternCount(),
+                (getLearnedPatternCount() * 200) / 1024);
 }
 
 void Neuron::generateTemporalSignature() {
@@ -626,13 +944,18 @@ void Neuron::applyInhibition(double amount) {
                 getId(), amount, inhibition_);
 }
 
-double Neuron::getActivation() const {
+double Neuron::getSimilarityActivation() const {
     double similarity = getBestSimilarity();
     if (similarity < 0.0) {
         return 0.0;  // No patterns learned yet
     }
-    // Activation = (similarity * intrinsic excitability) - inhibition (clamped to [0, 1])
-    double activation = (similarity * intrinsicExcitability_) - inhibition_;
+    double activation = similarity * intrinsicExcitability_;
+    return std::max(0.0, std::min(1.0, activation));
+}
+
+double Neuron::getActivation() const {
+    // Activation = similarity-driven activation minus inhibition (clamped to [0, 1])
+    double activation = getSimilarityActivation() - inhibition_;
     return std::max(0.0, std::min(1.0, activation));
 }
 

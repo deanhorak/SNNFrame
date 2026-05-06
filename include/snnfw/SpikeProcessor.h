@@ -91,6 +91,9 @@ public:
      * @brief Schedule an action potential for delivery
      * @param actionPotential The action potential to schedule
      * @return true if scheduled successfully, false if time is out of range
+     *
+     * Events scheduled in the past or current delivery slice are clamped to the
+     * next time step to avoid losing spikes in the asynchronous delivery loop.
      */
     bool scheduleSpike(const std::shared_ptr<ActionPotential>& actionPotential);
 
@@ -98,6 +101,9 @@ public:
      * @brief Schedule a retrograde action potential for delivery
      * @param retrogradeAP The retrograde action potential to schedule
      * @return true if scheduled successfully, false if time is out of range
+     *
+     * Events scheduled in the past or current delivery slice are clamped to the
+     * next time step to avoid losing spikes in the asynchronous delivery loop.
      */
     bool scheduleRetrogradeSpike(const std::shared_ptr<RetrogradeActionPotential>& retrogradeAP);
 
@@ -290,9 +296,13 @@ private:
     // Thread pool for parallel spike delivery
     std::unique_ptr<ThreadPool> threadPool;
 
-    // Async delivery threads management
-    std::deque<std::thread> activeDeliveryThreads;  ///< Active timeslice delivery threads
-    mutable std::mutex deliveryThreadsMutex;        ///< Protects activeDeliveryThreads
+    // Async delivery threads management (DEPRECATED - now using futures)
+    std::deque<std::thread> activeDeliveryThreads;  ///< Active timeslice delivery threads (legacy)
+    mutable std::mutex deliveryThreadsMutex;        ///< Protects activeDeliveryThreads (legacy)
+
+    // Async delivery futures management (NEW - optimized)
+    std::vector<std::vector<std::shared_ptr<std::future<void>>>> activeDeliveryFutures_;
+    mutable std::mutex deliveryFuturesMutex_;
 
     // Background processing thread
     std::thread processingThread;

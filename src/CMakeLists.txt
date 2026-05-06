@@ -14,10 +14,13 @@ set(LIB_SOURCES
     Datastore.cpp
     MNISTLoader.cpp
     EMNISTLoader.cpp
+    domain/VisualDomainAdapter.cpp
     STDPLearning.cpp
     HyperparameterOptimizer.cpp
     ConfigOptimizer.cpp
     adapters/RetinaAdapter.cpp
+    adapters/EMNISTAdapter.cpp
+    adapters/InterneuronAdapters.cpp
     adapters/DisplayAdapter.cpp
     adapters/AudioAdapter.cpp
     encoding/RateEncoder.cpp
@@ -26,9 +29,12 @@ set(LIB_SOURCES
     encoding/EncodingStrategyFactory.cpp
     features/SobelOperator.cpp
     features/GaborOperator.cpp
+    features/QuadratureGaborOperator.cpp
+    features/OrientationEnergyOperator.cpp
     features/DoGOperator.cpp
     features/EdgeOperatorFactory.cpp
     classification/MajorityVoting.cpp
+    classification/HierarchicalKNN.cpp
     classification/WeightedDistance.cpp
     classification/WeightedSimilarity.cpp
     classification/ClassificationStrategyFactory.cpp
@@ -39,6 +45,7 @@ set(LIB_SOURCES
     learning/PatternUpdateStrategyFactory.cpp
     NetworkInspector.cpp
     ActivityMonitor.cpp
+    MemoryManager.cpp
     PerformanceProfiler.cpp
     NetworkValidator.cpp
     NetworkBuilder.cpp
@@ -61,6 +68,19 @@ set(LIB_SOURCES
     PatternDetector.cpp
     ActivityHistogram.cpp
     NetworkStructureExporter.cpp
+    declarative/NetworkIR.cpp
+    declarative/NativeJSONParser.cpp
+    declarative/SONATAParser.cpp
+    declarative/NeuroMLParser.cpp
+    declarative/HOCParser.cpp
+    declarative/NetworkConstructor.cpp
+    declarative/DeclarativeLoader.cpp
+    experiment/SpikeEncoder.cpp
+    experiment/CompetitionManager.cpp
+    experiment/KNNClassifier.cpp
+    experiment/SupervisedTeacher.cpp
+    experiment/TrainingPipeline.cpp
+    experiment/ExperimentRunner.cpp
 )
 
 # Create library
@@ -72,12 +92,25 @@ target_link_libraries(snnfw PUBLIC
     OpenMP::OpenMP_CXX
     spdlog::spdlog
     nlohmann_json::nlohmann_json
-    libsonata
+    sonata::sonata_shared
+    HighFive
+    curl
 )
 
 if(ROCKSDB_FOUND)
-    target_link_libraries(snnfw PUBLIC ${ROCKSDB_LIBRARIES})
-    target_include_directories(snnfw PUBLIC ${ROCKSDB_INCLUDE_DIRS})
+    message(STATUS "Linking RocksDB to snnfw")
+    if(TARGET RocksDB::rocksdb)
+        message(STATUS "Using RocksDB::rocksdb target")
+        target_link_libraries(snnfw PUBLIC RocksDB::rocksdb)
+    elseif(ROCKSDB_LIBRARIES)
+        message(STATUS "Using ROCKSDB_LIBRARIES: ${ROCKSDB_LIBRARIES}")
+        target_link_libraries(snnfw PUBLIC ${ROCKSDB_LIBRARIES})
+        target_include_directories(snnfw PUBLIC ${ROCKSDB_INCLUDE_DIRS})
+    else()
+        message(WARNING "ROCKSDB_FOUND is TRUE but no target or libraries found!")
+    endif()
+else()
+    message(WARNING "ROCKSDB_FOUND is FALSE")
 endif()
 
 # Visualization libraries

@@ -3,9 +3,33 @@
 #include <algorithm>
 #include <limits>
 #include <cmath>
+#include <cstdint>
 
 namespace snnfw {
 namespace learning {
+
+namespace {
+size_t deterministicReplacementIndex(const std::vector<double>& pattern, size_t patternCount) {
+    if (patternCount == 0) return 0;
+    uint64_t hash = 1469598103934665603ULL;
+    for (double value : pattern) {
+        const uint32_t q = static_cast<uint32_t>(value * 1000.0);
+        hash ^= static_cast<uint64_t>(q);
+        hash *= 1099511628211ULL;
+    }
+    return static_cast<size_t>(hash % static_cast<uint64_t>(patternCount));
+}
+
+size_t deterministicReplacementIndex(const BinaryPattern& pattern, size_t patternCount) {
+    if (patternCount == 0) return 0;
+    uint64_t hash = 1469598103934665603ULL;
+    for (uint8_t bin : pattern.getData()) {
+        hash ^= static_cast<uint64_t>(bin);
+        hash *= 1099511628211ULL;
+    }
+    return static_cast<size_t>(hash % static_cast<uint64_t>(patternCount));
+}
+} // namespace
 
 HybridStrategy::HybridStrategy(const Config& config)
     : PatternUpdateStrategy(config)
@@ -109,11 +133,11 @@ bool HybridStrategy::updatePatterns(
         return true;
     }
     
-    // Fallback: replace random pattern (shouldn't happen)
-    size_t randIdx = rand() % patterns.size();
-    patterns[randIdx] = newPattern;
-    usageCounts_[randIdx] = 0;
-    mergeCounts_[randIdx] = 0;
+    // Fallback: deterministic replacement keeps runs reproducible.
+    size_t replaceIdx = deterministicReplacementIndex(newPattern, patterns.size());
+    patterns[replaceIdx] = newPattern;
+    usageCounts_[replaceIdx] = 0;
+    mergeCounts_[replaceIdx] = 0;
     totalPrunes_++;
     return true;
 }
@@ -291,11 +315,11 @@ bool HybridStrategy::updatePatterns(
         return true;
     }
 
-    // Fallback: replace random pattern (shouldn't happen)
-    size_t randIdx = rand() % patterns.size();
-    patterns[randIdx] = newPattern;
-    usageCounts_[randIdx] = 0;
-    mergeCounts_[randIdx] = 0;
+    // Fallback: deterministic replacement keeps runs reproducible.
+    size_t replaceIdx = deterministicReplacementIndex(newPattern, patterns.size());
+    patterns[replaceIdx] = newPattern;
+    usageCounts_[replaceIdx] = 0;
+    mergeCounts_[replaceIdx] = 0;
     totalPrunes_++;
     return true;
 }
@@ -344,4 +368,3 @@ void HybridStrategy::blendPattern(
 
 } // namespace learning
 } // namespace snnfw
-

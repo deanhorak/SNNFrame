@@ -10,15 +10,23 @@ Complete guide to all SNNFrame documentation and resources.
 3. **[README.md](../README.md)** - Project overview and features
 
 ### For Developers
-1. **[DEVELOPER_MANUAL.md](DEVELOPER_MANUAL.md)** - Complete developer guide
-2. **[DEVELOPER_GUIDE_PATTERNS.md](DEVELOPER_GUIDE_PATTERNS.md)** - Common patterns and recipes
-3. **[DEVELOPER_GUIDE_ADVANCED.md](DEVELOPER_GUIDE_ADVANCED.md)** - Advanced techniques
+1. **[DEVELOPER_MANUAL.md](DEVELOPER_MANUAL.md)** - Complete developer guide (includes declarative network loading)
+2. **[DEVELOPER_GUIDE_PATTERNS.md](DEVELOPER_GUIDE_PATTERNS.md)** - Common patterns and recipes (includes declarative loading patterns)
+3. **[DEVELOPER_GUIDE_ADVANCED.md](DEVELOPER_GUIDE_ADVANCED.md)** - Advanced techniques (includes custom parser development)
+
+### For Declarative Network Loading
+1. **[FORMAT_REFERENCE.md](FORMAT_REFERENCE.md)** - Complete format specifications for all four supported formats
+2. **[DEVELOPER_MANUAL.md § Declarative Network Loading](DEVELOPER_MANUAL.md#declarative-network-loading)** - Usage guide
+3. **[DEVELOPER_GUIDE_ADVANCED.md § Custom Format Parsers](DEVELOPER_GUIDE_ADVANCED.md#custom-format-parsers)** - Writing new parsers
+4. **[API_REFERENCE.md § Declarative Loader](API_REFERENCE.md#declarativeloader)** - API class reference
 
 ### For Reference
-1. **[API_REFERENCE.md](API_REFERENCE.md)** - Complete API documentation
+1. **[API_REFERENCE.md](API_REFERENCE.md)** - Complete API documentation (core + declarative)
 2. **[ARCHITECTURE.md](ARCHITECTURE.md)** - Architecture and design
 3. **[STDP_GUIDE.md](STDP_GUIDE.md)** - STDP learning guide
 4. **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common issues and solutions
+5. **[RabbitHoles.md](RabbitHoles.md)** - Abandoned or unproductive experiment paths and why they failed
+6. **[PROJECT_STATE.md](PROJECT_STATE.md)** - Detailed current-state handoff for resuming active work
 
 ---
 
@@ -33,6 +41,7 @@ Complete guide to all SNNFrame documentation and resources.
 - Core concepts (neurons, synapses, spike timing)
 - Architecture overview (7-level hierarchy, 6-layer cortical microcircuit)
 - Building networks with NetworkBuilder
+- **Declarative network loading** (all four formats, pipeline overview, API usage)
 - Spike processing and delivery
 - Learning mechanisms (STDP, pattern learning)
 - Data management with Datastore
@@ -43,14 +52,6 @@ Complete guide to all SNNFrame documentation and resources.
 
 **Best For**: Developers new to SNNFrame who want a complete overview
 
-**Key Sections**:
-- Building Networks (p. 8-10)
-- Spike Processing (p. 11-12)
-- Learning Mechanisms (p. 13-14)
-- Data Management (p. 15-16)
-- Visualization (p. 17-18)
-- Configuration (p. 19-20)
-
 ---
 
 ### DEVELOPER_GUIDE_PATTERNS.md
@@ -59,6 +60,7 @@ Complete guide to all SNNFrame documentation and resources.
 
 **Contents**:
 - Creating networks (simple and multi-layer)
+- **Declarative loading patterns** (load/run, validate, column templates, path-based connectivity, format conversion)
 - Spike injection and stimulus encoding
 - Pattern learning and matching
 - Classification techniques (k-NN, voting, confidence)
@@ -69,14 +71,6 @@ Complete guide to all SNNFrame documentation and resources.
 - Performance optimization tips
 
 **Best For**: Developers looking for code examples and recipes
-
-**Key Sections**:
-- Creating Networks (p. 3-5)
-- Spike Injection (p. 6-8)
-- Pattern Learning (p. 9-11)
-- Classification (p. 12-14)
-- Data Encoding (p. 18-21)
-- Multi-Column Architectures (p. 22-25)
 
 ---
 
@@ -95,16 +89,11 @@ Complete guide to all SNNFrame documentation and resources.
 - Performance profiling
 - Custom adapters and classifiers
 - Distributed networks
+- **Custom format parsers** (implementing FormatParser, registering parsers, building NetworkIR)
+- **Extending NetworkIR** (custom properties, custom construction logic)
 - Advanced debugging techniques
 
 **Best For**: Experienced developers implementing advanced features
-
-**Key Sections**:
-- Custom Similarity Metrics (p. 3-6)
-- Connectivity Patterns (p. 7-12)
-- Attention Mechanisms (p. 18-21)
-- Saccade-Based Processing (p. 22-25)
-- Performance Profiling (p. 28-31)
 
 ---
 
@@ -121,6 +110,10 @@ Complete reference for all SNNFrame classes and methods.
 - Datastore - Persistent storage with LRU caching
 - ActivityMonitor - Network activity tracking
 - ConfigLoader - Configuration management
+- DeclarativeLoader - Load networks from configuration files
+- NetworkIR - Intermediate representation for all formats
+- NetworkConstructor - Build networks from IR
+- FormatParser - Interface for custom format parsers
 
 ### ARCHITECTURE.md
 Detailed architecture documentation.
@@ -300,7 +293,14 @@ SNNFrame is released under the MIT License. See LICENSE for details.
 
 ## Quick Reference
 
-### Create a Network
+### Load a Network from Config (Declarative)
+```cpp
+DeclarativeLoader loader(factory, datastore);
+auto network = loader.loadNetwork("my_network.snnf.json");
+// network.brain, network.spikeProcessor, network.propagator are ready
+```
+
+### Create a Network (Programmatic)
 ```cpp
 NetworkBuilder builder(datastore);
 auto brain = builder.createBrain();
@@ -330,14 +330,6 @@ monitor.buildHierarchicalCache(brain->getId());
 auto snapshot = monitor.getActivitySnapshot();
 ```
 
-### Load Configuration
-```cpp
-ConfigLoader config;
-config.load("config.json");
-double threshold = config.get<double>("/neuron/similarity_threshold");
-```
-
 ---
 
-**For detailed information, start with DEVELOPER_MANUAL.md**
-
+**For detailed information, start with [DEVELOPER_MANUAL.md](DEVELOPER_MANUAL.md)**

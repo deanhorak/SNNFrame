@@ -14,6 +14,8 @@ Advanced techniques and patterns for expert SNNFrame developers.
 8. [Performance Profiling](#performance-profiling)
 9. [Custom Adapters](#custom-adapters)
 10. [Distributed Networks](#distributed-networks)
+11. [Custom Format Parsers](#custom-format-parsers)
+12. [Extending NetworkIR](#extending-networkir)
 
 ---
 
@@ -614,6 +616,141 @@ std::cout << "Patterns: " << learned << "/" << max << "\n";
 
 ---
 
-**Last Updated**: 2026-01-10
-**Version**: 1.0.0
+## Custom Format Parsers
+
+You can add support for new network description formats by implementing the `FormatParser` interface.
+
+### FormatParser Interface
+
+```cpp
+#include "snnfw/declarative/FormatParser.h"
+
+class MyCustomParser : public FormatParser {
+public:
+    // Parse a file and return the intermediate representation
+    NetworkIR parse(const std::string& filepath) override {
+        NetworkIR ir;
+        // Read your format and populate the IR fields:
+        // ir.brain, ir.projections, ir.neuron_params, etc.
+        return ir;
+    }
+
+    // Return true if this parser can handle the given file
+    bool canParse(const std::string& filepath) const override {
+        return filepath.ends_with(".myformat");
+    }
+
+    // Return a human-readable name for the format
+    std::string formatName() const override {
+        return "MyCustomFormat";
+    }
+};
+```
+
+### Registering a Custom Parser
+
+```cpp
+DeclarativeLoader loader(factory, datastore);
+
+// Register your custom parser
+loader.registerParser(std::make_unique<MyCustomParser>());
+
+// Now loadNetwork() will try your parser for matching files
+auto network = loader.loadNetwork("model.myformat");
+```
+
+### Building a NetworkIR
+
+The key structures you need to populate:
+
+```cpp
+NetworkIR ir;
+
+// 1. Neuron parameter sets (referenced by name)
+ir.neuron_params["excitatory"] = {500.0, 0.93, 500, "cosine"};
+
+// 2. Brain hierarchy
+ir.brain.name = "MyBrain";
+HemisphereIR hem; hem.name = "Left";
+LobeIR lobe; lobe.name = "Visual";
+RegionIR region; region.name = "V1";
+NucleusIR nucleus; nucleus.name = "Columns";
+ColumnIR col; col.name = "Col1";
+LayerIR layer; layer.name = "L4";
+PopulationIR pop; pop.name = "cells"; pop.count = 49;
+pop.neuron_params_ref = "excitatory";
+layer.populations.push_back(pop);
+col.layers.push_back(layer);
+nucleus.columns.push_back(col);
+region.nuclei.push_back(nucleus);
+lobe.regions.push_back(region);
+hem.lobes.push_back(lobe);
+ir.brain.hemispheres.push_back(hem);
+
+// 3. Projections
+ProjectionIR proj;
+proj.name = "L4_to_L5";
+proj.source = "V1/*/L4";
+proj.target = "V1/*/L5";
+proj.pattern = "random_sparse";
+proj.probability = 0.25;
+proj.weight = 0.1;
+ir.projections.push_back(proj);
+
+// 4. Validate before use
+auto errors = ir.validate();
+```
+
+### NetworkIR Validation
+
+The `validate()` method checks for:
+- Complete hierarchy: brain → hemisphere → lobe → region → nucleus → column → layer
+- Valid neuron parameter references (every `neuron_params_ref` exists in `neuron_params`)
+- Valid input/output layer definitions
+- Non-empty population counts
+
+---
+
+## Extending NetworkIR
+
+### Adding Custom Properties
+
+If your format has properties not covered by the standard IR, use the `properties` map in each IR struct:
+
+```cpp
+// Add custom properties during parsing
+PopulationIR pop;
+pop.name = "L4_cells";
+pop.count = 49;
+pop.properties["compartment_model"] = "HH";
+pop.properties["ion_channels"] = "Na,K,Ca";
+```
+
+### Custom Construction Logic
+
+Override `NetworkConstructor` behavior by subclassing:
+
+```cpp
+class MyConstructor : public NetworkConstructor {
+public:
+    using NetworkConstructor::NetworkConstructor;
+
+    ConstructedNetwork construct(const NetworkIR& ir) override {
+        auto network = NetworkConstructor::construct(ir);
+        // Add custom post-construction logic
+        configureIonChannels(network, ir);
+        return network;
+    }
+
+private:
+    void configureIonChannels(ConstructedNetwork& net, const NetworkIR& ir) {
+        // Custom logic for your format extensions
+    }
+};
+```
+
+---
+
+**Last Updated**: 2026-02-06
+**Version**: 1.1.0
 

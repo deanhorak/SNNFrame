@@ -42,9 +42,101 @@ cd build
 - 6-layer canonical cortical microcircuit
 - Saccade-based attention mechanism
 
-## Your First Program
+## Your First Network (Declarative)
 
-Create `my_first_network.cpp`:
+The fastest way to create a network is with a configuration file:
+
+**1. Create a network config** (`my_network.snnf.json`):
+
+```json
+{
+  "snnframe_version": "1.0",
+  "neuron_params": {
+    "default": {
+      "window_size_ms": 200.0,
+      "similarity_threshold": 0.93,
+      "max_reference_patterns": 500,
+      "similarity_metric": "cosine"
+    }
+  },
+  "input_layer": { "name": "Input", "rows": 14, "cols": 14, "latency_ms": 15.0 },
+  "output_layer": { "name": "Output", "num_classes": 10, "neurons_per_class": 3 },
+  "brain": {
+    "name": "MyBrain",
+    "hemispheres": [{
+      "name": "Left",
+      "lobes": [{ "name": "Visual", "regions": [{ "name": "V1",
+        "nuclei": [{ "name": "Columns",
+          "columns": [{ "name": "Col1",
+            "layers": [{ "name": "L4", "populations": [
+              { "name": "L4_cells", "count": 49, "neuron_params": "default" }
+            ]}]
+          }]
+        }]
+      }]}]
+    }]
+  },
+  "projections": [
+    { "name": "Input_to_L4", "source": "Input", "target": "V1/*/L4",
+      "pattern": "random_sparse", "probability": 0.3, "weight": 0.1 }
+  ]
+}
+```
+
+**2. Load and run** (`my_first_network.cpp`):
+
+```cpp
+#include <iostream>
+#include "snnfw/declarative/DeclarativeLoader.h"
+
+using namespace snnfw;
+using namespace snnfw::declarative;
+
+int main() {
+    NeuralObjectFactory factory;
+    Datastore datastore("./my_network_db");
+    DeclarativeLoader loader(factory, datastore);
+
+    auto network = loader.loadNetwork("my_network.snnf.json");
+    // network.brain, network.spikeProcessor, network.propagator are ready
+    std::cout << "Network loaded successfully!" << std::endl;
+    return 0;
+}
+```
+
+**3. Compile and run:**
+
+```bash
+cd build
+g++ -std=c++17 -I../include ../my_first_network.cpp -o my_first_network \
+    -L. -lsnnfw -lrocksdb -lpthread
+./my_first_network
+```
+
+### Supported Formats
+
+You can also define networks in other standard formats:
+
+| Format | Extension | Example |
+|--------|-----------|---------|
+| Native JSON | `.snnf.json` | `configs/emnist_v1_network.snnf.json` |
+| SONATA | `circuit_config.json` | `configs/example_sonata/circuit_config.json` |
+| NeuroML | `.nml` | `configs/example_network.nml` |
+| HOC | `.hoc` | `configs/example_network.hoc` |
+
+All formats are auto-detected from the file extension:
+
+```cpp
+// Any of these work — format auto-detected
+auto net1 = loader.loadNetwork("model.snnf.json");
+auto net2 = loader.loadNetwork("circuit_config.json");
+auto net3 = loader.loadNetwork("model.nml");
+auto net4 = loader.loadNetwork("model.hoc");
+```
+
+## Your First Network (Programmatic)
+
+For full control, build the network in C++ code:
 
 ```cpp
 #include <iostream>
@@ -55,13 +147,9 @@ Create `my_first_network.cpp`:
 using namespace snnfw;
 
 int main() {
-    // Initialize datastore
     Datastore datastore("./my_network_db");
-    
-    // Create network builder
     NetworkBuilder builder(datastore);
-    
-    // Build hierarchical structure
+
     auto brain = builder.createBrain();
     auto hemisphere = builder.createHemisphere(brain);
     auto lobe = builder.createLobe(hemisphere);
@@ -70,38 +158,22 @@ int main() {
     auto column = builder.createColumn(nucleus);
     auto layer = builder.createLayer(column);
     auto cluster = builder.createCluster(layer);
-    
-    // Create 100 neurons
+
     std::vector<std::shared_ptr<Neuron>> neurons;
     for (int i = 0; i < 100; ++i) {
         neurons.push_back(builder.createNeuron(cluster));
     }
-    
-    // Create spike processor
-    SpikeProcessor processor(1000, 4);  // 1000 time slices, 4 threads
+
+    SpikeProcessor processor(1000, 4);
     processor.start();
-    
-    // Inject a spike
-    neurons[0]->injectSpike(50.0);  // Spike at 50ms
-    
-    // Process for 100ms
+    neurons[0]->injectSpike(50.0);
     for (int t = 0; t < 100; ++t) {
-        processor.update(1.0);  // 1ms per step
+        processor.update(1.0);
     }
-    
+
     std::cout << "Network created with " << neurons.size() << " neurons" << std::endl;
-    
     return 0;
 }
-```
-
-Compile and run:
-
-```bash
-cd build
-g++ -std=c++17 -I../include ../my_first_network.cpp -o my_first_network \
-    -L. -lsnnfw -lrocksdb -lpthread
-./my_first_network
 ```
 
 ## Key Concepts
@@ -214,10 +286,12 @@ Check that you're using the correct configuration:
 
 ## Next Steps
 
-1. **Read the API docs**: `docs/QUICK_REFERENCE.md`
-2. **Explore examples**: `examples/` directory
-3. **Study the best experiment**: `experiments/emnist_letters_training.cpp`
-4. **Customize for your task**: Modify network architecture and parameters
+1. **Try the declarative loader**: Define a network in JSON/NeuroML/HOC and load it
+2. **Read the developer manual**: `docs/DEVELOPER_MANUAL.md`
+3. **Explore format options**: `docs/FORMAT_REFERENCE.md`
+4. **Study the best experiment**: `experiments/emnist_letters_training.cpp`
+5. **Read the API reference**: `docs/API_REFERENCE.md`
+6. **Customize for your task**: Modify network architecture and parameters
 
 ## Common Tasks
 

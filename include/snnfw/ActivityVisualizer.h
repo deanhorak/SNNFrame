@@ -242,6 +242,11 @@ public:
      */
     void clear();
 
+    /**
+     * @brief Rebuild activity cache from current NetworkDataAdapter state
+     */
+    void rebuildFromAdapter();
+
 private:
     /**
      * @brief Handle spike event from ActivityMonitor
@@ -323,4 +328,3 @@ private:
 } // namespace snnfw
 
 #endif // SNNFW_ACTIVITY_VISUALIZER_H
-

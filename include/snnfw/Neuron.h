@@ -8,6 +8,7 @@
 #include <memory>
 #include <deque>
 #include <mutex>
+#include <array>
 
 namespace snnfw {
 
@@ -69,8 +70,14 @@ public:
      * @param similarityThreshold Threshold for pattern similarity (0.0 to 1.0)
      * @param maxReferencePatterns Maximum number of reference patterns to store
      * @param neuronId Unique identifier for this neuron (default: 0)
+     * @param preserveSpikeLatency If true, learned patterns preserve absolute spike
+     * latency inside the window instead of normalizing each pattern to its first spike
      */
-    Neuron(double windowSizeMs, double similarityThreshold, size_t maxReferencePatterns = 20, uint64_t neuronId = 0);
+    Neuron(double windowSizeMs,
+           double similarityThreshold,
+           size_t maxReferencePatterns = 20,
+           uint64_t neuronId = 0,
+           bool preserveSpikeLatency = false);
 
     /**
      * @brief Insert a spike with a given timestamp
@@ -120,6 +127,11 @@ public:
     size_t getMaxReferencePatterns() const { return maxPatterns; }
 
     /**
+     * @brief Whether pattern binning preserves absolute spike latency from t=0
+     */
+    bool preservesSpikeLatency() const { return preserveSpikeLatency_; }
+
+    /**
      * @brief Print current rolling window of spikes
      */
     void printSpikes() const;
@@ -145,13 +157,25 @@ public:
      * @brief Get the number of learned patterns
      * @return Number of reference patterns stored
      */
-    size_t getLearnedPatternCount() const { return referencePatterns.size(); }
+    size_t getLearnedPatternCount() const {
+        return prototypePatterns_.size() + exemplarPatterns_.size() + latencyMemoryPatternCount_;
+    }
+
+    /**
+     * @brief Get the number of prototype memories
+     */
+    size_t getPrototypePatternCount() const { return prototypePatterns_.size(); }
+
+    /**
+     * @brief Get the number of exemplar memories
+     */
+    size_t getExemplarPatternCount() const { return exemplarPatterns_.size(); }
 
     /**
      * @brief Get all learned patterns (as BinaryPattern)
      * @return Const reference to vector of learned BinaryPatterns
      */
-    const std::vector<BinaryPattern>& getLearnedPatterns() const { return referencePatterns; }
+    const std::vector<BinaryPattern>& getLearnedPatterns() const;
 
     /**
      * @brief Get all spikes from the rolling window (thread-safe copy)
@@ -168,6 +192,19 @@ public:
     void clearSpikes() {
         std::lock_guard<std::mutex> lock(spikesMutex_);
         spikes.clear();
+        maxSpikeTime_ = -std::numeric_limits<double>::infinity();
+    }
+
+    /**
+     * @brief Remove spikes older than a cutoff time (thread-safe)
+     * @param cutoffTime Spikes with time < cutoffTime are removed
+     */
+    void removeSpikesBefore(double cutoffTime) {
+        std::lock_guard<std::mutex> lock(spikesMutex_);
+        spikes.erase(
+            std::remove_if(spikes.begin(), spikes.end(),
+                           [cutoffTime](double t) { return t < cutoffTime; }),
+            spikes.end());
     }
 
     /**
@@ -199,7 +236,7 @@ public:
      * @brief Get all reference patterns learned by this neuron (as BinaryPattern)
      * @return Const reference to vector of reference BinaryPatterns
      */
-    const std::vector<BinaryPattern>& getReferencePatterns() const { return referencePatterns; }
+    const std::vector<BinaryPattern>& getReferencePatterns() const { return getLearnedPatterns(); }
 
     /**
      * @brief Get all dendrite IDs for this neuron
@@ -221,6 +258,11 @@ public:
     void fireSignature(double baseTime);
 
     /**
+     * @brief Disable the neuron's temporal signature (no intrinsic spike pattern)
+     */
+    void disableTemporalSignature() { temporalSignature_.clear(); }
+
+    /**
      * @brief Get the number of dendrites
      * @return Number of dendrites
      */
@@ -233,6 +275,17 @@ public:
      * @param dispatchTime Time when the spike was originally dispatched
      */
     void recordIncomingSpike(uint64_t synapseId, double spikeTime, double dispatchTime = 0.0);
+
+    /**
+     * @brief Get count of incoming spikes recorded (thread-safe)
+     * @return Number of incoming spikes recorded since last reset
+     */
+    size_t getIncomingSpikeCount() const;
+
+    /**
+     * @brief Reset incoming spike counter (thread-safe)
+     */
+    void resetIncomingSpikeCount();
 
     /**
      * @brief Apply inhibition to this neuron
@@ -250,6 +303,12 @@ public:
      * @brief Reset inhibition to zero
      */
     void resetInhibition() { inhibition_ = 0.0; }
+
+    /**
+     * @brief Get similarity-driven activation before inhibition is applied
+     * @return Similarity activation in [0, 1]
+     */
+    double getSimilarityActivation() const;
 
     /**
      * @brief Get activation level (best similarity minus inhibition)
@@ -329,10 +388,18 @@ private:
 
     std::vector<double> spikes;                          ///< Rolling spike window (temporary, converted to BinaryPattern)
     mutable std::mutex spikesMutex_;                     ///< Mutex to protect spikes vector from concurrent access
-    std::vector<BinaryPattern> referencePatterns;        ///< Learned reference patterns (200 bytes each, FIXED SIZE)
+    double maxSpikeTime_;                                ///< Maximum spike time in the buffer (for efficient cleanup)
+    std::vector<BinaryPattern> prototypePatterns_;       ///< Consolidated memories for strong repeated motifs
+    std::vector<uint16_t> prototypeSupports_;            ///< Reinforcement counts for prototype memories
+    std::vector<BinaryPattern> exemplarPatterns_;        ///< Specific memories for variant exemplars
+    std::vector<uint16_t> exemplarSupports_;             ///< Reinforcement counts for exemplar memories
+    mutable std::vector<BinaryPattern> combinedPatternsCache_; ///< Scratch cache for read-only accessors
     double windowSize;                                   ///< Size of rolling window in ms
     double threshold;                                    ///< Similarity threshold for firing
     size_t maxPatterns;                                  ///< Maximum number of reference patterns
+    bool preserveSpikeLatency_;                          ///< Preserve absolute spike latency in BinaryPattern bins
+    std::array<uint16_t, BinaryPattern::PATTERN_SIZE> latencyMemory_; ///< Compact absolute-latency memory
+    size_t latencyMemoryPatternCount_;                   ///< Number of latency patterns absorbed
 
     uint64_t axonId;                                     ///< ID of the axon for this neuron (0 if not set)
     std::vector<uint64_t> dendriteIds;                   ///< IDs of dendrites connected to this neuron
@@ -343,6 +410,7 @@ private:
     // STDP-related members
     std::deque<IncomingSpike> incomingSpikes_;           ///< Recent incoming spikes for STDP (within window)
     mutable std::mutex incomingSpikesMutex_;             ///< Mutex to protect incomingSpikes_ from concurrent access
+    size_t incomingSpikeCount_;                          ///< Count of incoming spikes recorded since last reset
     std::weak_ptr<NetworkPropagator> networkPropagator_; ///< Reference to NetworkPropagator for sending acknowledgments
 
     // Temporal signature - unique spike pattern for this neuron
@@ -384,6 +452,13 @@ private:
      * @return Similarity score (0.0 to 1.0)
      */
     double computeSimilarity(const BinaryPattern& a, const BinaryPattern& b) const;
+    void learnLatencyMemory(const std::vector<double>& spikes);
+    double getLatencyMemorySimilarity(const std::vector<double>& spikes) const;
+
+    double findBestSimilarity(
+        const BinaryPattern& currentPattern,
+        const std::vector<BinaryPattern>& patterns,
+        int* bestIndex = nullptr) const;
 
     /**
      * @brief Check if current pattern is similar to any reference pattern

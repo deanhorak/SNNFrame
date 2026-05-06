@@ -40,6 +40,12 @@ Makefile
 *.pkl
 data/EMNIST/
 data/MNIST/
+data/CIFAR_10/
+emnist_training_db*/
+
+# Training artifacts
+Testing/
+imgui.ini
 
 # Logs
 *.log
@@ -55,7 +61,11 @@ __pycache__/
 *$py.class
 *.egg-info/
 dist/
-build/
+.venv/
+
+# Workspace files
+*.code-workspace
+.codex
 
 # OS
 .DS_Store

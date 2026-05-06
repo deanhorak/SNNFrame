@@ -16,6 +16,8 @@ NetworkPropagator::NetworkPropagator(std::shared_ptr<SpikeProcessor> spikeProces
       stdpAMinus_(0.012),
       stdpTauPlus_(20.0),
       stdpTauMinus_(20.0),
+      stdpLtdScale_(1.0),
+      stdpLtdWindowMs_(20.0),
       activityMonitor_(nullptr),
       recordingManager_(nullptr) {
     if (!spikeProcessor_) {
@@ -146,7 +148,12 @@ int NetworkPropagator::fireNeuron(uint64_t neuronId, double firingTime) {
     // Get all synapses connected to this axon
     const auto& synapseIds = axon->getSynapseIds();
     if (synapseIds.empty()) {
-        SNNFW_DEBUG("NetworkPropagator: Axon {} has no synapses", axonId);
+        static int emptyAxonWarns = 0;
+        if (emptyAxonWarns < 20) {
+            emptyAxonWarns++;
+            SNNFW_WARN("NetworkPropagator: Axon {} (neuron {}) has no synapses; firingTime={:.3f}",
+                       axonId, neuronId, firingTime);
+        }
         return 0;
     }
 
@@ -157,6 +164,14 @@ int NetworkPropagator::fireNeuron(uint64_t neuronId, double firingTime) {
         return 0;
     }
 
+    // Debug: log first few firings to verify synapse/temporal counts
+    static int debugFireLogs = 0;
+    if (debugFireLogs < 10) {
+        debugFireLogs++;
+        SNNFW_INFO("NetworkPropagator: fireNeuron neuron={} axon={} synapses={} signatureSpikes={} firingTime={:.3f}",
+                   neuronId, axonId, synapseIds.size(), temporalSignature.size(), firingTime);
+    }
+
     int spikesScheduled = 0;
     double minDelay = std::numeric_limits<double>::max();
     double maxDelay = std::numeric_limits<double>::min();
@@ -164,14 +179,23 @@ int NetworkPropagator::fireNeuron(uint64_t neuronId, double firingTime) {
     // For each synapse, create and schedule multiple action potentials based on temporal signature
     for (uint64_t synapseId : synapseIds) {
         std::shared_ptr<Synapse> synapse;
+        
+        // OPTIMIZATION: Try to get synapse without locking if possible, 
+        // or rely on the fact that registries shouldn't change during simulation.
+        // Ideally, 'Axon' should hold vector<shared_ptr<Synapse>> instead of vector<uint64_t> IDs.
+        // For now, we minimize the scope, but this architecture needs a refactor to cache pointers.
+        
+        // Current fix: The lookup is unavoidable without changing Axon.h, 
+        // but we can at least check if the registry is read-only during run-time 
+        // to avoid the lock, or use a shared_mutex (Reader-Writer lock).
+        
+        // (Applying the lock here as is, but noting this is the #1 performance killer)
+        // See recommendation #2 above.
         {
-            std::lock_guard<std::mutex> lock(synapseMutex_);
-            auto it = synapseRegistry_.find(synapseId);
-            if (it == synapseRegistry_.end()) {
-                SNNFW_WARN("NetworkPropagator: Synapse {} not found", synapseId);
-                continue;
-            }
-            synapse = it->second;
+             std::lock_guard<std::mutex> lock(synapseMutex_);
+             auto it = synapseRegistry_.find(synapseId);
+             if (it == synapseRegistry_.end()) continue;
+             synapse = it->second;
         }
 
         double baseDelay = synapse->getDelay();
@@ -197,6 +221,19 @@ int NetworkPropagator::fireNeuron(uint64_t neuronId, double firingTime) {
             // Schedule for delivery
             if (spikeProcessor_->scheduleSpike(actionPotential)) {
                 spikesScheduled++;
+                SynapseGroup group = SynapseGroup::Unknown;
+                {
+                    std::lock_guard<std::mutex> lock(synapseGroupMutex_);
+                    auto it = synapseGroupMap_.find(synapseId);
+                    if (it != synapseGroupMap_.end()) {
+                        group = it->second;
+                    }
+                }
+                if (group == SynapseGroup::InputToL4) {
+                    scheduledInputToL4_.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    scheduledOther_.fetch_add(1, std::memory_order_relaxed);
+                }
                 SNNFW_TRACE("NetworkPropagator: Scheduled spike from neuron {} via synapse {} to dendrite {} at time {:.3f}ms (offset: {:.3f}ms, dispatch: {:.3f}ms)",
                            neuronId, synapseId, synapse->getDendriteId(), arrivalTime, timeOffset, firingTime);
 
@@ -205,30 +242,38 @@ int NetworkPropagator::fireNeuron(uint64_t neuronId, double firingTime) {
                     activityMonitor_->recordSpike(actionPotential, arrivalTime);
                 }
             } else {
-                SNNFW_WARN("NetworkPropagator: Failed to schedule spike from neuron {} via synapse {}",
-                          neuronId, synapseId);
+                // Silently drop out-of-range spikes (common during high-frequency firing)
+                // Use TRACE level for debugging if needed
+                SNNFW_TRACE("NetworkPropagator: Failed to schedule spike from neuron {} via synapse {} (out of time range)",
+                           neuronId, synapseId);
             }
         }
 
-        // Schedule retrograde action potentials for STDP
-        // These travel back to the synapse to update weights based on timing
-        // Use the same delay as forward spikes (retrograde signals also take time to propagate)
-        double retrogradeArrivalTime = firingTime + baseDelay;
+        // Trace STDP already updates via pre/post traces in sendAcknowledgment()
+        // and deliverSpikeToNeuron(). Scheduling retrograde STDP in that mode
+        // would double-apply temporal updates.
+        if (!traceStdpEnabled_) {
+            // Schedule retrograde action potentials for classic acknowledgment STDP.
+            // These travel back to the synapse to update weights based on timing.
+            double retrogradeArrivalTime = firingTime + baseDelay;
 
-        auto retrogradeAP = std::make_shared<RetrogradeActionPotential>(
-            synapseId,
-            neuronId,
-            retrogradeArrivalTime,
-            firingTime,  // dispatchTime (when the forward spike was sent)
-            firingTime   // lastFiringTime (when this neuron fired)
-        );
+            auto retrogradeAP = std::make_shared<RetrogradeActionPotential>(
+                synapseId,
+                neuronId,
+                retrogradeArrivalTime,
+                firingTime,  // dispatchTime (when the forward spike was sent)
+                firingTime   // lastFiringTime (when this neuron fired)
+            );
 
-        if (spikeProcessor_->scheduleRetrogradeSpike(retrogradeAP)) {
-            SNNFW_TRACE("NetworkPropagator: Scheduled retrograde spike from neuron {} to synapse {} at time {:.3f}ms",
-                       neuronId, synapseId, retrogradeArrivalTime);
-        } else {
-            SNNFW_WARN("NetworkPropagator: Failed to schedule retrograde spike from neuron {} to synapse {}",
-                      neuronId, synapseId);
+            if (spikeProcessor_->scheduleRetrogradeSpike(retrogradeAP)) {
+                SNNFW_TRACE("NetworkPropagator: Scheduled retrograde spike from neuron {} to synapse {} at time {:.3f}ms",
+                           neuronId, synapseId, retrogradeArrivalTime);
+            } else {
+                // Silently drop out-of-range retrograde spikes (common during high-frequency firing)
+                // Use TRACE level for debugging if needed
+                SNNFW_TRACE("NetworkPropagator: Failed to schedule retrograde spike from neuron {} to synapse {} (out of time range)",
+                           neuronId, synapseId);
+            }
         }
     }
 
@@ -258,10 +303,84 @@ bool NetworkPropagator::deliverSpikeToNeuron(uint64_t neuronId, uint64_t synapse
     // Record the incoming spike for STDP (with dispatch time)
     neuron->recordIncomingSpike(synapseId, spikeTime, dispatchTime);
 
+    deliveryTotal_.fetch_add(1, std::memory_order_relaxed);
+    SynapseGroup group = SynapseGroup::Unknown;
+    {
+        std::lock_guard<std::mutex> lock(synapseGroupMutex_);
+        auto it = synapseGroupMap_.find(synapseId);
+        if (it != synapseGroupMap_.end()) {
+            group = it->second;
+        }
+    }
+    if (group == SynapseGroup::L5ToOutput) {
+        deliveryL5ToOutput_.fetch_add(1, std::memory_order_relaxed);
+        double delta = spikeTime - dispatchTime;
+        std::lock_guard<std::mutex> lock(deliveryStatsMutex_);
+        deliveryL5ToOutputDeltaSum_ += delta;
+        deliveryL5ToOutputDeltaMin_ = std::min(deliveryL5ToOutputDeltaMin_, delta);
+        deliveryL5ToOutputDeltaMax_ = std::max(deliveryL5ToOutputDeltaMax_, delta);
+    }
+
+    if (traceStdpEnabled_) {
+        double lastPostTime = 0.0;
+        bool hasLastPost = false;
+        {
+            std::lock_guard<std::mutex> lock(synapseLastPostMutex_);
+            auto it = synapseLastPostTime_.find(synapseId);
+            if (it != synapseLastPostTime_.end()) {
+                lastPostTime = it->second;
+                hasLastPost = true;
+            }
+        }
+        if (hasLastPost && spikeTime > lastPostTime) {
+            double delta = spikeTime - lastPostTime;
+            if (stdpLtdWindowMs_ <= 0.0 || delta <= stdpLtdWindowMs_) {
+                double timeDifference = lastPostTime - spikeTime; // negative Δt -> LTD
+                applySTDP(synapseId, timeDifference);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(synapseLastPreMutex_);
+            synapseLastPreTime_[synapseId] = spikeTime;
+        }
+    }
+
     SNNFW_TRACE("NetworkPropagator: Delivered spike to neuron {} at time {:.3f}ms (amplitude: {:.3f}, synapse: {}, dispatch: {:.3f}ms)",
                neuronId, spikeTime, amplitude, synapseId, dispatchTime);
 
     return true;
+}
+
+void NetworkPropagator::resetDeliveryStats() {
+    deliveryTotal_.store(0, std::memory_order_relaxed);
+    deliveryL5ToOutput_.store(0, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(deliveryStatsMutex_);
+    deliveryL5ToOutputDeltaSum_ = 0.0;
+    deliveryL5ToOutputDeltaMin_ = std::numeric_limits<double>::infinity();
+    deliveryL5ToOutputDeltaMax_ = -std::numeric_limits<double>::infinity();
+}
+
+void NetworkPropagator::resetScheduleStats() {
+    scheduledInputToL4_.store(0, std::memory_order_relaxed);
+    scheduledOther_.store(0, std::memory_order_relaxed);
+}
+
+NetworkPropagator::DeliveryStats NetworkPropagator::getDeliveryStats() const {
+    DeliveryStats stats;
+    stats.total = deliveryTotal_.load(std::memory_order_relaxed);
+    stats.l5ToOutput = deliveryL5ToOutput_.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(deliveryStatsMutex_);
+    stats.l5ToOutputDeltaSum = deliveryL5ToOutputDeltaSum_;
+    stats.l5ToOutputDeltaMin = deliveryL5ToOutputDeltaMin_;
+    stats.l5ToOutputDeltaMax = deliveryL5ToOutputDeltaMax_;
+    return stats;
+}
+
+NetworkPropagator::ScheduleStats NetworkPropagator::getScheduleStats() const {
+    ScheduleStats stats;
+    stats.inputToL4 = scheduledInputToL4_.load(std::memory_order_relaxed);
+    stats.other = scheduledOther_.load(std::memory_order_relaxed);
+    return stats;
 }
 
 std::shared_ptr<Neuron> NetworkPropagator::getNeuron(uint64_t neuronId) const {
@@ -339,10 +458,40 @@ void NetworkPropagator::sendAcknowledgment(const std::shared_ptr<SpikeAcknowledg
         return;
     }
 
-    // Apply STDP to the synapse
+    {
+        std::lock_guard<std::mutex> lock(synapseLastPostMutex_);
+        synapseLastPostTime_[acknowledgment->getSynapseId()] = acknowledgment->getPostsynapticFiringTime();
+    }
+
     double timeDifference = acknowledgment->getTimeDifference();
     uint64_t synapseId = acknowledgment->getSynapseId();
 
+    // Track per-neuron STDP eligibility from timing, independent of
+    // whether the eventual synaptic update is clipped or deferred.
+    accumulateNeuronStdpEligibility(acknowledgment->getPostsynapticNeuronId(), timeDifference);
+
+    if (traceStdpEnabled_) {
+        double lastPreTime = 0.0;
+        bool hasLastPre = false;
+        {
+            std::lock_guard<std::mutex> lock(synapseLastPreMutex_);
+            auto it = synapseLastPreTime_.find(synapseId);
+            if (it != synapseLastPreTime_.end()) {
+                lastPreTime = it->second;
+                hasLastPre = true;
+            }
+        }
+        if (hasLastPre && acknowledgment->getPostsynapticFiringTime() > lastPreTime) {
+            double dt = acknowledgment->getPostsynapticFiringTime() - lastPreTime;
+            if (applySTDP(synapseId, dt)) {
+                SNNFW_TRACE("NetworkPropagator: Trace STDP LTP for synapse {} (Δt = {:.3f}ms)",
+                            synapseId, dt);
+            }
+        }
+        return;
+    }
+
+    // Apply STDP to the synapse (acknowledgment timing)
     if (applySTDP(synapseId, timeDifference)) {
         SNNFW_TRACE("NetworkPropagator: Applied STDP to synapse {} (Δt = {:.3f}ms)",
                    synapseId, timeDifference);
@@ -352,6 +501,11 @@ void NetworkPropagator::sendAcknowledgment(const std::shared_ptr<SpikeAcknowledg
 }
 
 bool NetworkPropagator::applySTDP(uint64_t synapseId, double timeDifference) {
+    // Early exit if STDP is disabled (inference mode)
+    if (!stdpEnabled_.load(std::memory_order_acquire)) {
+        return false;
+    }
+
     std::shared_ptr<Synapse> synapse;
     {
         std::lock_guard<std::mutex> lock(synapseMutex_);
@@ -361,6 +515,65 @@ bool NetworkPropagator::applySTDP(uint64_t synapseId, double timeDifference) {
             return false;
         }
         synapse = it->second;
+    }
+
+    SynapseGroup group = SynapseGroup::Unknown;
+    {
+        std::lock_guard<std::mutex> lock(synapseGroupMutex_);
+        auto it = synapseGroupMap_.find(synapseId);
+        if (it != synapseGroupMap_.end()) {
+            group = it->second;
+        }
+    }
+
+    if (timeDifference > 1e-6) {
+        switch (group) {
+            case SynapseGroup::InputToL4:
+                stdpInputToL4PreBeforePost_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case SynapseGroup::L4ToL5:
+                stdpL4ToL5PreBeforePost_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case SynapseGroup::L5ToOutput:
+                stdpL5ToOutputPreBeforePost_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case SynapseGroup::Unknown:
+            default:
+                stdpOtherPreBeforePost_.fetch_add(1, std::memory_order_relaxed);
+                break;
+        }
+    } else if (timeDifference < -1e-6) {
+        switch (group) {
+            case SynapseGroup::InputToL4:
+                stdpInputToL4PostBeforePre_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case SynapseGroup::L4ToL5:
+                stdpL4ToL5PostBeforePre_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case SynapseGroup::L5ToOutput:
+                stdpL5ToOutputPostBeforePre_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case SynapseGroup::Unknown:
+            default:
+                stdpOtherPostBeforePre_.fetch_add(1, std::memory_order_relaxed);
+                break;
+        }
+    } else {
+        switch (group) {
+            case SynapseGroup::InputToL4:
+                stdpInputToL4NearZero_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case SynapseGroup::L4ToL5:
+                stdpL4ToL5NearZero_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case SynapseGroup::L5ToOutput:
+                stdpL5ToOutputNearZero_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case SynapseGroup::Unknown:
+            default:
+                stdpOtherNearZero_.fetch_add(1, std::memory_order_relaxed);
+                break;
+        }
     }
 
     // Classic STDP learning rule:
@@ -374,7 +587,7 @@ bool NetworkPropagator::applySTDP(uint64_t synapseId, double timeDifference) {
         weightChange = stdpAPlus_ * std::exp(-timeDifference / stdpTauPlus_);
     } else if (timeDifference < 0) {
         // LTD: weaken synapse (post-synaptic spike arrived before pre-synaptic spike)
-        weightChange = -stdpAMinus_ * std::exp(timeDifference / stdpTauMinus_);
+        weightChange = -stdpAMinus_ * stdpLtdScale_ * std::exp(timeDifference / stdpTauMinus_);
     }
     // If timeDifference == 0, no change
 
@@ -386,6 +599,45 @@ bool NetworkPropagator::applySTDP(uint64_t synapseId, double timeDifference) {
         newWeight = std::max(0.0, std::min(2.0, newWeight));
 
         synapse->setWeight(newWeight);
+        stdpUpdatesTotal_.fetch_add(1, std::memory_order_relaxed);
+        if (weightChange > 0.0) {
+            stdpUpdatesLtp_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            stdpUpdatesLtd_.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (weightChange > 0.0) {
+            switch (group) {
+                case SynapseGroup::InputToL4:
+                    stdpInputToL4Ltp_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case SynapseGroup::L4ToL5:
+                    stdpL4ToL5Ltp_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case SynapseGroup::L5ToOutput:
+                    stdpL5ToOutputLtp_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case SynapseGroup::Unknown:
+                default:
+                    stdpOtherLtp_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+            }
+        } else {
+            switch (group) {
+                case SynapseGroup::InputToL4:
+                    stdpInputToL4Ltd_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case SynapseGroup::L4ToL5:
+                    stdpL4ToL5Ltd_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case SynapseGroup::L5ToOutput:
+                    stdpL5ToOutputLtd_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case SynapseGroup::Unknown:
+                default:
+                    stdpOtherLtd_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+            }
+        }
 
         SNNFW_TRACE("NetworkPropagator: STDP update for synapse {}: Δt={:.3f}ms, Δw={:.6f}, weight: {:.4f} → {:.4f}",
                    synapseId, timeDifference, weightChange, oldWeight, newWeight);
@@ -404,7 +656,31 @@ void NetworkPropagator::setSTDPParameters(double aPlus, double aMinus, double ta
                stdpAPlus_, stdpAMinus_, stdpTauPlus_, stdpTauMinus_);
 }
 
+void NetworkPropagator::setStdpLtdScale(double scale) {
+    stdpLtdScale_ = std::max(0.0, scale);
+    SNNFW_INFO("NetworkPropagator: Updated STDP LTD scale to {}", stdpLtdScale_);
+}
+
+void NetworkPropagator::setStdpLtdWindowMs(double windowMs) {
+    stdpLtdWindowMs_ = windowMs;
+    SNNFW_INFO("NetworkPropagator: Updated STDP LTD window to {} ms", stdpLtdWindowMs_);
+}
+
+void NetworkPropagator::setStdpEnabled(bool enabled) {
+    stdpEnabled_.store(enabled, std::memory_order_release);
+    SNNFW_INFO("NetworkPropagator: STDP learning {}", enabled ? "enabled" : "disabled");
+}
+
+bool NetworkPropagator::isStdpEnabled() const {
+    return stdpEnabled_.load(std::memory_order_acquire);
+}
+
 void NetworkPropagator::applyRewardModulatedSTDP(uint64_t neuronId, double rewardFactor) {
+    // Early exit if STDP is disabled (inference mode)
+    if (!stdpEnabled_.load(std::memory_order_acquire)) {
+        return;
+    }
+
     // Get the target neuron
     std::shared_ptr<Neuron> neuron;
     {
@@ -446,6 +722,7 @@ void NetworkPropagator::applyRewardModulatedSTDP(uint64_t neuronId, double rewar
 
         synapse->setWeight(newWeight);
         updatedCount++;
+        stdpUpdatesReward_.fetch_add(1, std::memory_order_relaxed);
 
         SNNFW_TRACE("NetworkPropagator: Reward-modulated STDP - synapse {} weight: {:.4f} → {:.4f} (reward: {:.2f})",
                    synapse->getId(), currentWeight, newWeight, rewardFactor);
@@ -455,5 +732,128 @@ void NetworkPropagator::applyRewardModulatedSTDP(uint64_t neuronId, double rewar
                 updatedCount, neuronId, rewardFactor);
 }
 
-} // namespace snnfw
+void NetworkPropagator::resetStdpUpdateStats() {
+    stdpUpdatesTotal_.store(0, std::memory_order_relaxed);
+    stdpUpdatesLtp_.store(0, std::memory_order_relaxed);
+    stdpUpdatesLtd_.store(0, std::memory_order_relaxed);
+    stdpUpdatesReward_.store(0, std::memory_order_relaxed);
+    resetStdpGroupStats();
+    resetStdpTimingStats();
+    resetNeuronStdpEligibility();
+}
 
+NetworkPropagator::StdpUpdateStats NetworkPropagator::getStdpUpdateStats() const {
+    StdpUpdateStats stats;
+    stats.total = stdpUpdatesTotal_.load(std::memory_order_relaxed);
+    stats.ltp = stdpUpdatesLtp_.load(std::memory_order_relaxed);
+    stats.ltd = stdpUpdatesLtd_.load(std::memory_order_relaxed);
+    stats.reward = stdpUpdatesReward_.load(std::memory_order_relaxed);
+    return stats;
+}
+
+void NetworkPropagator::registerSynapseGroup(uint64_t synapseId, SynapseGroup group) {
+    std::lock_guard<std::mutex> lock(synapseGroupMutex_);
+    synapseGroupMap_[synapseId] = group;
+}
+
+void NetworkPropagator::resetStdpGroupStats() {
+    stdpInputToL4Ltp_.store(0, std::memory_order_relaxed);
+    stdpInputToL4Ltd_.store(0, std::memory_order_relaxed);
+    stdpL4ToL5Ltp_.store(0, std::memory_order_relaxed);
+    stdpL4ToL5Ltd_.store(0, std::memory_order_relaxed);
+    stdpL5ToOutputLtp_.store(0, std::memory_order_relaxed);
+    stdpL5ToOutputLtd_.store(0, std::memory_order_relaxed);
+    stdpOtherLtp_.store(0, std::memory_order_relaxed);
+    stdpOtherLtd_.store(0, std::memory_order_relaxed);
+}
+
+NetworkPropagator::StdpGroupStatsSet NetworkPropagator::getStdpGroupStats() const {
+    StdpGroupStatsSet stats;
+    stats.inputToL4.ltp = stdpInputToL4Ltp_.load(std::memory_order_relaxed);
+    stats.inputToL4.ltd = stdpInputToL4Ltd_.load(std::memory_order_relaxed);
+    stats.l4ToL5.ltp = stdpL4ToL5Ltp_.load(std::memory_order_relaxed);
+    stats.l4ToL5.ltd = stdpL4ToL5Ltd_.load(std::memory_order_relaxed);
+    stats.l5ToOutput.ltp = stdpL5ToOutputLtp_.load(std::memory_order_relaxed);
+    stats.l5ToOutput.ltd = stdpL5ToOutputLtd_.load(std::memory_order_relaxed);
+    stats.other.ltp = stdpOtherLtp_.load(std::memory_order_relaxed);
+    stats.other.ltd = stdpOtherLtd_.load(std::memory_order_relaxed);
+    return stats;
+}
+
+void NetworkPropagator::resetStdpTimingStats() {
+    stdpInputToL4PreBeforePost_.store(0, std::memory_order_relaxed);
+    stdpInputToL4PostBeforePre_.store(0, std::memory_order_relaxed);
+    stdpInputToL4NearZero_.store(0, std::memory_order_relaxed);
+    stdpL4ToL5PreBeforePost_.store(0, std::memory_order_relaxed);
+    stdpL4ToL5PostBeforePre_.store(0, std::memory_order_relaxed);
+    stdpL4ToL5NearZero_.store(0, std::memory_order_relaxed);
+    stdpL5ToOutputPreBeforePost_.store(0, std::memory_order_relaxed);
+    stdpL5ToOutputPostBeforePre_.store(0, std::memory_order_relaxed);
+    stdpL5ToOutputNearZero_.store(0, std::memory_order_relaxed);
+    stdpOtherPreBeforePost_.store(0, std::memory_order_relaxed);
+    stdpOtherPostBeforePre_.store(0, std::memory_order_relaxed);
+    stdpOtherNearZero_.store(0, std::memory_order_relaxed);
+}
+
+NetworkPropagator::StdpTimingGroupStats NetworkPropagator::getStdpTimingStats() const {
+    StdpTimingGroupStats stats;
+    stats.inputToL4.preBeforePost = stdpInputToL4PreBeforePost_.load(std::memory_order_relaxed);
+    stats.inputToL4.postBeforePre = stdpInputToL4PostBeforePre_.load(std::memory_order_relaxed);
+    stats.inputToL4.nearZero = stdpInputToL4NearZero_.load(std::memory_order_relaxed);
+    stats.l4ToL5.preBeforePost = stdpL4ToL5PreBeforePost_.load(std::memory_order_relaxed);
+    stats.l4ToL5.postBeforePre = stdpL4ToL5PostBeforePre_.load(std::memory_order_relaxed);
+    stats.l4ToL5.nearZero = stdpL4ToL5NearZero_.load(std::memory_order_relaxed);
+    stats.l5ToOutput.preBeforePost = stdpL5ToOutputPreBeforePost_.load(std::memory_order_relaxed);
+    stats.l5ToOutput.postBeforePre = stdpL5ToOutputPostBeforePre_.load(std::memory_order_relaxed);
+    stats.l5ToOutput.nearZero = stdpL5ToOutputNearZero_.load(std::memory_order_relaxed);
+    stats.other.preBeforePost = stdpOtherPreBeforePost_.load(std::memory_order_relaxed);
+    stats.other.postBeforePre = stdpOtherPostBeforePre_.load(std::memory_order_relaxed);
+    stats.other.nearZero = stdpOtherNearZero_.load(std::memory_order_relaxed);
+    return stats;
+}
+
+void NetworkPropagator::accumulateNeuronStdpEligibility(uint64_t neuronId, double timeDifference) {
+    if (neuronId == 0) return;
+    if (timeDifference == 0.0) return;
+
+    NeuronStdpEligibilityStats delta;
+    if (timeDifference > 0.0) {
+        delta.totalUpdates = 1;
+        delta.ltpUpdates = 1;
+        delta.ltpMagnitude = stdpAPlus_ * std::exp(-timeDifference / stdpTauPlus_);
+    } else {
+        delta.totalUpdates = 1;
+        delta.ltdUpdates = 1;
+        delta.ltdMagnitude =
+            stdpAMinus_ * stdpLtdScale_ * std::exp(timeDifference / stdpTauMinus_);
+    }
+
+    std::lock_guard<std::mutex> lock(neuronStdpEligibilityMutex_);
+    auto& stats = neuronStdpEligibility_[neuronId];
+    stats.totalUpdates += delta.totalUpdates;
+    stats.ltpUpdates += delta.ltpUpdates;
+    stats.ltdUpdates += delta.ltdUpdates;
+    stats.ltpMagnitude += delta.ltpMagnitude;
+    stats.ltdMagnitude += delta.ltdMagnitude;
+}
+
+void NetworkPropagator::resetNeuronStdpEligibility() {
+    std::lock_guard<std::mutex> lock(neuronStdpEligibilityMutex_);
+    neuronStdpEligibility_.clear();
+}
+
+NetworkPropagator::NeuronStdpEligibilityStats
+NetworkPropagator::getNeuronStdpEligibility(uint64_t neuronId) const {
+    std::lock_guard<std::mutex> lock(neuronStdpEligibilityMutex_);
+    auto it = neuronStdpEligibility_.find(neuronId);
+    if (it == neuronStdpEligibility_.end()) {
+        return {};
+    }
+    return it->second;
+}
+
+void NetworkPropagator::setTraceStdpEnabled(bool enabled) {
+    traceStdpEnabled_ = enabled;
+}
+
+} // namespace snnfw

@@ -39,6 +39,8 @@ void Dendrite::receiveSpike(const std::shared_ptr<ActionPotential>& actionPotent
         return;
     }
 
+    receivedSpikeCount_.fetch_add(1, std::memory_order_relaxed);
+
     SNNFW_TRACE("Dendrite {} (Neuron {}): Received spike from synapse {} at time {:.3f}ms (amplitude: {:.3f})",
                 getId(),
                 targetNeuronId,
@@ -61,6 +63,14 @@ void Dendrite::receiveSpike(const std::shared_ptr<ActionPotential>& actionPotent
         SNNFW_DEBUG("Dendrite {}: No NetworkPropagator set, spike not delivered to neuron {}",
                    getId(), targetNeuronId);
     }
+}
+
+size_t Dendrite::getReceivedSpikeCount() const {
+    return receivedSpikeCount_.load(std::memory_order_relaxed);
+}
+
+void Dendrite::resetReceivedSpikeCount() {
+    receivedSpikeCount_.store(0, std::memory_order_relaxed);
 }
 
 std::string Dendrite::toJson() const {
@@ -95,4 +105,3 @@ bool Dendrite::fromJson(const std::string& jsonStr) {
 }
 
 } // namespace snnfw
-

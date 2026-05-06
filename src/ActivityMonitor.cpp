@@ -548,5 +548,47 @@ bool ActivityMonitor::saveRecording(const std::string& filename) {
     return success;
 }
 
+size_t ActivityMonitor::getMemoryUsage() const {
+    std::lock_guard<std::mutex> lock(eventsMutex_);
+
+    // Approximate memory: each SpikeEvent is roughly 100 bytes
+    // Plus overhead for the deque structure
+    size_t eventMemory = spikeEvents_.size() * sizeof(SpikeEvent);
+    size_t dequeOverhead = 1024;  // Rough estimate
+
+    return eventMemory + dequeOverhead;
+}
+
+size_t ActivityMonitor::aggressiveCleanup(double targetDurationMs) {
+    std::lock_guard<std::mutex> lock(eventsMutex_);
+
+    if (spikeEvents_.empty()) {
+        return 0;
+    }
+
+    double latestTime = spikeEvents_.back().timestamp;
+    double cutoffTime = latestTime - targetDurationMs;
+
+    size_t removedCount = 0;
+    while (!spikeEvents_.empty() && spikeEvents_.front().timestamp < cutoffTime) {
+        spikeEvents_.pop_front();
+        removedCount++;
+    }
+
+    if (removedCount > 0) {
+        SNNFW_INFO("ActivityMonitor: Aggressive cleanup removed {} events, {} remaining",
+                   removedCount, spikeEvents_.size());
+    }
+
+    return removedCount;
+}
+
+bool ActivityMonitor::isMemoryExcessive(size_t maxMemoryMB) const {
+    size_t memoryUsage = getMemoryUsage();
+    size_t maxMemoryBytes = maxMemoryMB * 1024ULL * 1024ULL;
+
+    return memoryUsage > maxMemoryBytes;
+}
+
 } // namespace snnfw
 

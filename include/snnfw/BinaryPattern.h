@@ -47,12 +47,25 @@ public:
      * @param spikeTimes Vector of spike times in milliseconds
      * @param windowSize Size of the temporal window in milliseconds (default: 200ms)
      * 
-     * Converts continuous spike times to binned representation:
-     * - Each spike time is rounded to nearest millisecond
+     * Converts continuous spike times to a binned representation:
+     * - By default, each spike time is shifted by the earliest spike time
+     * - 200ms windows round each relative spike time to the nearest millisecond
+     * - Wider/narrower windows are scaled into the fixed 200-bin representation
      * - Spike count in each bin is incremented (capped at 255)
      * - Spikes outside [0, windowSize) are ignored
      */
     explicit BinaryPattern(const std::vector<double>& spikeTimes, double windowSize = 200.0);
+
+    /**
+     * @brief Construct from spike times with explicit anchoring mode
+     * @param spikeTimes Vector of spike times in milliseconds
+     * @param windowSize Size of the temporal window in milliseconds
+     * @param anchorToFirstSpike If true, normalize to earliest spike; if false, preserve
+     * absolute latency from t=0 within the configured window
+     */
+    BinaryPattern(const std::vector<double>& spikeTimes,
+                  double windowSize,
+                  bool anchorToFirstSpike);
     
     /**
      * @brief Get the underlying data array
@@ -230,4 +243,3 @@ private:
 };
 
 } // namespace snnfw
-

@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<neuroml xmlns="http://www.neuroml.org/schema/neuroml2"
+         id="snnframe_example">
+
+    <!-- Cell type definitions with SNNFrame-specific properties -->
+    <cell id="cortical_cell">
+        <property tag="snnfw:window_size_ms" value="200.0"/>
+        <property tag="snnfw:similarity_threshold" value="0.93"/>
+        <property tag="snnfw:max_reference_patterns" value="500"/>
+        <property tag="snnfw:similarity_metric" value="cosine"/>
+    </cell>
+
+    <cell id="output_cell">
+        <property tag="snnfw:window_size_ms" value="500.0"/>
+        <property tag="snnfw:similarity_threshold" value="0.8"/>
+        <property tag="snnfw:max_reference_patterns" value="100"/>
+    </cell>
+
+    <!-- Synapse type definitions -->
+    <expOneSynapse id="excitatory_syn" tauDecay="5ms" gbase="0.8nS" erev="0mV">
+        <property tag="snnfw:weight" value="0.5"/>
+        <property tag="snnfw:delay" value="1.5"/>
+    </expOneSynapse>
+
+    <expOneSynapse id="strong_syn" tauDecay="3ms" gbase="1.2nS" erev="0mV">
+        <property tag="snnfw:weight" value="0.8"/>
+        <property tag="snnfw:delay" value="1.0"/>
+    </expOneSynapse>
+
+    <!-- Network definition -->
+    <network id="ExampleNeuroMLNetwork">
+
+        <!-- Layer 4 neurons (feature detectors) -->
+        <population id="L4_neurons" component="cortical_cell" size="49">
+            <property tag="snnfw:layer" value="L4"/>
+        </population>
+
+        <!-- Layer 5 neurons (integration) -->
+        <population id="L5_neurons" component="cortical_cell" size="49">
+            <property tag="snnfw:layer" value="L5"/>
+        </population>
+
+        <!-- Output neurons (classification) -->
+        <population id="output_neurons" component="output_cell" size="26">
+            <property tag="snnfw:layer" value="output"/>
+        </population>
+
+        <!-- L4 to L5 projection -->
+        <projection id="L4_to_L5"
+                    presynapticPopulation="L4_neurons"
+                    postsynapticPopulation="L5_neurons"
+                    synapse="excitatory_syn">
+            <connection id="0" preCellId="../L4_neurons[0]" postCellId="../L5_neurons[0]"/>
+            <connection id="1" preCellId="../L4_neurons[1]" postCellId="../L5_neurons[1]"/>
+        </projection>
+
+        <!-- L5 to output projection -->
+        <projection id="L5_to_output"
+                    presynapticPopulation="L5_neurons"
+                    postsynapticPopulation="output_neurons"
+                    synapse="strong_syn">
+            <connection id="0" preCellId="../L5_neurons[0]" postCellId="../output_neurons[0]"/>
+        </projection>
+
+    </network>
+
+</neuroml>
+

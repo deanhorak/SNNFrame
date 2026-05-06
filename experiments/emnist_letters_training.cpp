@@ -444,6 +444,7 @@ int main(int argc, char* argv[]) {
     bool disableOutputTeach = false;     // Diagnostic: skip supervised output teaching
     bool disableOutputSignature = false; // Diagnostic: skip output neuron signatures
     bool enableOutputVote = true;        // Prefer output spike vote during testing
+    int maxPasses = 20;                  // Cap on training passes
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -469,6 +470,8 @@ int main(int argc, char* argv[]) {
             disableOutputSignature = true;
         } else if (arg == "--no-output-vote") {
             enableOutputVote = false;
+        } else if (arg == "--max-passes" && i + 1 < argc) {
+            maxPasses = std::max(1, std::stoi(argv[++i]));
         } else if (arg == "--db-path" && i + 1 < argc) {
             config.datastorePath = argv[++i];
         } else if (arg == "--pixel-threshold" && i + 1 < argc) {
@@ -556,6 +559,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  --no-output-teach      Skip supervised output teaching (diagnostic)" << std::endl;
             std::cout << "  --no-output-signature  Disable output neuron temporal signatures (diagnostic)" << std::endl;
             std::cout << "  --no-output-vote       Skip output spike voting during testing" << std::endl;
+            std::cout << "  --max-passes <n>       Max training passes (default: 20)" << std::endl;
             std::cout << "  --db-path <dir>        Datastore directory (default: ./emnist_training_db)" << std::endl;
             std::cout << "  --pixel-threshold <v>  Input pixel threshold (default: 0.4)" << std::endl;
             std::cout << "  --mask-min-active <n>  Min active masked pixels per column (default: 6)" << std::endl;
@@ -601,6 +605,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  Full propagation: " << (enableFullPropagation ? "enabled (biological)" : "bypassed (legacy fast mode)") << std::endl;
     std::cout << "  Keep L5 history across passes: " << (keepL5History ? "yes" : "no") << std::endl;
     std::cout << "  Output teaching: " << (disableOutputTeach ? "disabled (diagnostic)" : "enabled") << std::endl;
+    std::cout << "  Max passes: " << maxPasses << std::endl;
     std::cout << "  Output competition: " << (config.enableOutputCompetition ? "enabled" : "disabled")
               << " (keep=" << config.outputCompetitionKeep
               << ", min-spikes=" << config.outputCompetitionMinSpikes << ")" << std::endl;
@@ -1509,7 +1514,6 @@ int main(int argc, char* argv[]) {
     std::cout << "\n=== Starting Multi-Pass Training ===" << std::endl;
 
     // Training configuration
-    const int MAX_PASSES = 20;  // Keep bounded until pattern-matching is optimized
     const double ACCURACY_EPSILON = 0.001;  // Accuracy change threshold to consider "stable"
     const int STABLE_PASSES_REQUIRED = 3;  // Number of stable passes before stopping
     const double CLASSIFICATION_TIMEOUT_MS = 1000.0;  // 1 second timeout per letter
@@ -1779,7 +1783,7 @@ int main(int argc, char* argv[]) {
 
     // Multi-pass training loop
     double lastTrainingEndTime = spikeProcessor->getCurrentTime();
-    while (currentPass < MAX_PASSES) {
+    while (currentPass < maxPasses) {
         currentPass++;
         std::cout << "\n--- Training Pass " << currentPass << " ---" << std::endl;
         std::cout.flush();

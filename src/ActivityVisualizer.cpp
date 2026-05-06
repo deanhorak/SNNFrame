@@ -228,6 +228,28 @@ void ActivityVisualizer::clear() {
     totalSpikes_ = 0;
 }
 
+void ActivityVisualizer::rebuildFromAdapter() {
+    particles_.clear();
+    neuronActivity_.clear();
+    neuronActivityIndex_.clear();
+    totalSpikes_ = 0;
+
+    const auto& neurons = adapter_.getNeurons();
+    neuronActivity_.reserve(neurons.size());
+
+    for (size_t i = 0; i < neurons.size(); ++i) {
+        NeuronActivity activity;
+        activity.neuronId = neurons[i].id;
+        activity.activityLevel = 0.0f;
+        activity.lastSpikeTime = 0;
+        activity.spikeCount = 0;
+        activity.decayRate = config_.decayRate;
+
+        neuronActivity_.push_back(activity);
+        neuronActivityIndex_[activity.neuronId] = i;
+    }
+}
+
 void ActivityVisualizer::onSpikeEvent(uint64_t sourceNeuronId, uint64_t targetNeuronId,
                                      uint64_t synapseId, uint64_t timestamp) {
     // Update activity
@@ -375,4 +397,3 @@ void ActivityVisualizer::processPlayback(uint64_t currentTime) {
 }
 
 } // namespace snnfw
-

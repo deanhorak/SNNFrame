@@ -157,8 +157,7 @@ uint64_t ConnectivityBuilder::ensureAxon(std::shared_ptr<Neuron> neuron) {
     createdAxons_.push_back(axon);
     persistObject(axon);
     persistObject(neuron);  // Update neuron with axon ID
-    
-    createdAxons_.push_back(axon);
+
     return axon->getId();
 }
 

@@ -11,6 +11,24 @@ A modern, production-ready C++ framework for building and simulating spiking neu
 - **Temporal Pattern Matching**: Neurons learn and recognize spike patterns within configurable temporal windows
 - **Persistent Storage**: RocksDB-backed datastore with LRU caching for efficient memory management
 
+### Declarative Network Loading
+- **Multi-Format Support**: Define networks in configuration files instead of C++ code
+- **Native JSON** (`.snnf.json`): Full-featured SNNFrame format with column templates, path-based connectivity
+- **SONATA** (`circuit_config.json`): Blue Brain Project / Allen Institute HDF5 format for large-scale models
+- **NeuroML** (`.nml`, `.neuroml`): XML-based community standard with SNNFrame property extensions
+- **HOC** (`.hoc`): NEURON simulator scripting language — extracts structural information from HOC scripts
+- **Auto-Detection**: Format is automatically detected from file extension
+- **NetworkIR**: Common intermediate representation enables cross-format interoperability
+- **Custom Parsers**: Extensible parser interface for adding new formats
+
+### Experiment Framework
+- **ExperimentRunner**: High-level API for loading models and running training/testing
+- **SpikeEncoder**: Converts input data to spike times with schedule horizon management
+- **CompetitionManager**: Winner-take-all competition with configurable thresholds
+- **KNNClassifier**: k-NN and centroid-based classification from activation patterns
+- **SupervisedTeacher**: Supervised learning signal for output layer training
+- **TrainingPipeline**: Multi-pass training with convergence detection
+
 ### Advanced Features
 - **Multi-Column Networks**: Support for orientation-selective and feature-selective columns
 - **Saccade-Based Attention**: Sequential spatial attention mechanism for improved feature learning
@@ -22,6 +40,8 @@ A modern, production-ready C++ framework for building and simulating spiking neu
 
 ### Performance
 - **Multi-Threaded Spike Processing**: Configurable thread pool for parallel spike delivery
+- **Optimized Spike Delivery**: ~15% performance improvement through thread pool optimization and smart batching
+- **Efficient Neuron Operations**: O(1) spike insertion with cached max spike time tracking
 - **Real-Time Synchronization**: Optional 1:1 real-time mapping (1ms simulation = 1ms wall-clock)
 - **Efficient Datastore**: LRU cache with automatic dirty-tracking and flush-on-eviction
 - **Optimized Compilation**: Release builds with -O3 optimization
@@ -64,8 +84,9 @@ make -j$(nproc)
 
 ### Running Example Experiments
 
-The framework includes a high-performance EMNIST letters classification experiment achieving ~90% accuracy:
+The framework includes high-performance Retina classification experiments for both EMNIST letters and MNIST digits:
 
+#### Hardcoded C++ Experiment
 ```bash
 # Training (headless, ~60 minutes)
 ./emnist_letters_training
@@ -80,12 +101,262 @@ The framework includes a high-performance EMNIST letters classification experime
 ./emnist_letters_visualized --playback emnist_session.snnr
 ```
 
-**Performance**: The framework achieves approximately **90% accuracy** on EMNIST letters classification (26 classes) using:
+#### Declarative SONATA Experiment
+```bash
+# Run experiment from SONATA configuration
+./experiments/emnist_sonata_training \
+  --config ../configs/emnist_v1_sonata/circuit_config.json \
+  --train-images ../data/EMNIST/emnist-letters-train-images-idx3-ubyte \
+  --train-labels ../data/EMNIST/emnist-letters-train-labels-idx1-ubyte \
+  --test-images ../data/EMNIST/emnist-letters-test-images-idx3-ubyte \
+  --test-labels ../data/EMNIST/emnist-letters-test-labels-idx1-ubyte \
+  --datastore ./sonata_experiment_db \
+  --max-passes 5 \
+  --test-limit 1000
+```
+
+#### Declarative Retina Experiments
+```bash
+# Unilateral Retina static reference
+./scripts/run_emnist_retina_unilateral.sh
+
+# Bilateral Retina static reference (corpus-callosum fusion)
+./scripts/run_emnist_retina_bilateral.sh
+
+# Bilateral Retina continuous-learning reference
+./scripts/run_emnist_retina_bilateral_continuous.sh
+
+# Bilateral Retina on MNIST digits
+./scripts/run_mnist_retina_bilateral.sh
+```
+
+Static reference configs:
+- `configs/emnist_retina_experimental.sonata.json`
+- `configs/emnist_retina_bilateral_experimental.sonata.json`
+
+Continuous-learning reference config:
+- `configs/emnist_retina_bilateral_continuous.sonata.json`
+
+Additional domain config:
+- `configs/mnist_retina_bilateral_experimental.sonata.json`
+
+The bilateral configs use two transformed hemisphere views and corpus-callosum-style weighted fusion over the hemisphere classifications. The continuous config adds reward-driven online adaptation with delayed replay and context-gated plasticity.
+
+The Retina experiment now consumes a domain adapter instead of being hardwired to EMNIST letters. Current built-in domain adapters are:
+- `emnist` with variants `letters|digits|balanced|byclass|bymerge`
+- `mnist` with digits
+- `cifar10` as experimental support through RGB CIFAR-10 binary batches with color-opponent Retina channels
+
+Retina declarative configs can now also declare a real `brain` hierarchy. In that mode, each Retina adapter binds to a declared layer path with `string_params.attach_path`, and the bilateral fusion layer is declared with `classification.string_params.fusion_path` instead of relying only on free-form hemisphere tags.
+
+Current bilateral Retina structure:
+
+```mermaid
+flowchart TD
+    IMG[Visual stimulus<br/>EMNIST, MNIST, or CIFAR-10]
+
+    subgraph LH[Left Hemisphere]
+        LVIEW[Transformed left view]
+        L9[Sobel g9]
+        L10[Sobel g10]
+        LDOG[DoG g9]
+        LSTAGE[Left stage-1 classifier]
+        LASSOC[Association nucleus]
+        LVIEW --> L9
+        LVIEW --> L10
+        LVIEW --> LDOG
+        L9 --> LSTAGE
+        L10 --> LSTAGE
+        LDOG --> LSTAGE
+        LSTAGE --> LASSOC
+    end
+
+    subgraph RH[Right Hemisphere]
+        RVIEW[Transformed right view]
+        R9[Sobel g9]
+        R10[Sobel g10]
+        RDOG[DoG g9]
+        RSTAGE[Right stage-1 classifier]
+        RASSOC[Association nucleus]
+        RVIEW --> R9
+        RVIEW --> R10
+        RVIEW --> RDOG
+        R9 --> RSTAGE
+        R10 --> RSTAGE
+        RDOG --> RSTAGE
+        RSTAGE --> RASSOC
+    end
+
+    subgraph CC[Interhemispheric Bridge]
+        FUSION[Corpus-callosum fusion]
+        CL[Continuous learning]
+        REPLAY[Delayed replay queue]
+        FUSION --> CL
+        CL --> REPLAY
+        REPLAY --> FUSION
+    end
+
+    IMG --> LVIEW
+    IMG --> RVIEW
+    LASSOC --> FUSION
+    RASSOC --> FUSION
+    FUSION --> OUT[Final classification]
+```
+
+Rendered PNG version with temporal spike-pattern flow:
+
+![Bilateral Retina spike-driven network](docs/bilateral_retina_spike_network.png)
+
+Reference full-run benchmarks on EMNIST letters (`3200/class`, `5200` test, `seed 42`):
+
+Static inference benchmarks:
+- Unilateral Retina: `86.17%`
+- Bilateral Retina: `87.29%`
+
+Continuous-learning benchmark:
+- Bilateral Retina continuous: initial `87.50%`, post-correction `88.85%`
+- Full benchmark runtime with parallel hemisphere processing: `2448.60s`
+- Prior serial runtime for the same promoted config: `4769.88s`
+- Runtime reduction: `48.67%` (`1.95x` speedup)
+
+Static and continuous results are separate benchmark categories. The continuous result includes online reward-driven adaptation during evaluation and is not directly comparable to the static held-out metric.
+
+Benchmark summary:
+
+| Mode | Config | Metric | Result |
+| --- | --- | --- | --- |
+| Unilateral Retina | `configs/emnist_retina_experimental.sonata.json` | Static accuracy | `86.17%` |
+| Bilateral Retina | `configs/emnist_retina_bilateral_experimental.sonata.json` | Static accuracy | `87.29%` |
+| Bilateral Retina Continuous | `configs/emnist_retina_bilateral_continuous.sonata.json` | Initial / post-correction accuracy | `87.50% -> 88.85%` |
+
+Full-dataset static runs:
+
+| Dataset | Config | Train / Test | Result | Log |
+| --- | --- | --- | --- | --- |
+| EMNIST Letters | `configs/emnist_retina_bilateral_experimental.sonata.json` | `124800 / 20800` | `88.51%` (`18410/20800`) | `build/emnist_retina_bilateral_full_all.log` |
+| MNIST Digits | `configs/mnist_retina_bilateral_experimental.sonata.json` | `60000 / 10000` | `96.88%` (`9688/10000`) | `build/mnist_retina_bilateral_full_all.log` |
+
+These full-dataset readings use the same bilateral Retina architecture without additional framework changes; only the config and dataset source differ.
+
+Verified Retina examples:
+
+- EMNIST letters
+  - runner: `./scripts/run_emnist_retina_bilateral.sh`
+  - config: `configs/emnist_retina_bilateral_experimental.sonata.json`
+  - full dataset result: `88.51%` (`18410/20800`)
+- MNIST digits
+  - runner: `./scripts/run_mnist_retina_bilateral.sh`
+  - config: `configs/mnist_retina_bilateral_experimental.sonata.json`
+  - full dataset result: `96.88%` (`9688/10000`)
+
+Experimental Retina examples:
+
+- CIFAR-10
+  - runner: `./scripts/run_cifar10_retina_bilateral.sh`
+  - config: `configs/cifar10_retina_bilateral_experimental.sonata.json`
+  - sampled result: `15.20%` (`152/1000`) on the color-aware Retina path
+  - log: `build/cifar10_retina_color_200_1000.log`
+- CIFAR-10 natural-image Retina
+  - runner: `CONFIG_PATH=configs/cifar10_retina_bilateral_natural_experimental.sonata.json ./scripts/run_cifar10_retina_bilateral_natural.sh`
+  - config: `configs/cifar10_retina_bilateral_natural_experimental.sonata.json`
+  - sampled result: `19.30%` (`193/1000`) on `200/class`, `1000` test
+  - log: `build/cifar10_retina_natural_200_1000.log`
+- CIFAR-10 natural-image Retina, feature representation
+  - runner: `./scripts/run_cifar10_retina_bilateral_natural.sh`
+  - config: `configs/cifar10_retina_bilateral_natural_features_experimental.sonata.json`
+  - front end: color-opponent plus appearance-bank auxiliary channels, with a supplemental coarse normalized edge path on the `g10` branches
+  - sampled result: `30.00%` (`300/1000`) on `200/class`, `1000` test
+  - larger sampled result: `36.60%` (`1830/5000`) on `1000/class`, `5000` test
+  - logs: `build/cifar10_retina_natural_features_promoted_200_1000.log`, `build/cifar10_retina_natural_features_hybrid_g10_edge5_1000_5000.log`
+  - note: this is the current best CIFAR-10 Retina reading on the bilateral path
+
+Minimal hierarchy-driven Retina pattern:
+```json
+{
+  "snnframe": {
+    "classification": {
+      "string_params": {
+        "fusion_mode": "bilateral",
+        "fusion_path": "Left Hemisphere/Occipital Lobe/Retina Region/Association Nucleus/Corpus Callosum/Fusion"
+      }
+    },
+    "brain": {
+      "name": "Retina Bilateral Brain",
+      "hemispheres": [
+        {
+          "name": "Left Hemisphere",
+          "lobes": [{
+            "name": "Occipital Lobe",
+            "regions": [{
+              "name": "Retina Region",
+              "nuclei": [{
+                "name": "Stage1 Nucleus",
+                "columns": [{
+                  "name": "Multiscale Branches",
+                  "layers": [
+                    { "name": "SobelG9", "populations": [{ "name": "Branch", "count": 1 }] }
+                  ]
+                }]
+              }]
+            }]
+          }]
+        }
+      ]
+    },
+    "adapters": [
+      {
+        "name": "left_retina_g9",
+        "type": "retina",
+        "string_params": {
+          "attach_path": "Left Hemisphere/Occipital Lobe/Retina Region/Stage1 Nucleus/Multiscale Branches/SobelG9"
+        }
+      }
+    ]
+  }
+}
+```
+
+Reference commands:
+```bash
+./scripts/run_emnist_retina_unilateral.sh
+./scripts/run_emnist_retina_bilateral.sh
+./scripts/run_emnist_retina_bilateral_continuous.sh
+```
+
+Continuous benchmark command:
+```bash
+./scripts/run_emnist_retina_bilateral_continuous.sh
+```
+
+Expected continuous benchmark output summary:
+```text
+Accuracy: 88.85%
+Correct: 4620/5200
+Initial accuracy: 87.50%
+Post-correction accuracy: 88.85%
+Correction events: 650, corrected: 70 (10.77%), replays: 1849
+Replay timing: avg_delay_steps=4.00, avg_eligibility=0.40
+Elapsed: 2448.60s
+```
+
+Expected logs:
+- `build/emnist_retina_unilateral_experimental.log`
+- `build/emnist_retina_bilateral_experimental.log`
+- `build/emnist_retina_bilateral_continuous.log`
+
+**Performance**: The current Retina path is verified on two handwritten-vision tasks:
+- EMNIST letters: `88.51%` static bilateral, `88.85%` continuous bilateral
+- MNIST digits: `96.88%` static bilateral
+
+These readings come from the same bilateral Retina architecture, with the input domain selected through the config file.
+
+The system uses:
 - Cosine similarity-based pattern matching
 - STDP frozen during testing to prevent weight drift
 - Multi-column architecture with 8 orientations and 2 frequencies
 - 6-layer canonical cortical microcircuit
 - Saccade-based attention mechanism
+- Tile-based receptive fields for spatial locality
 
 ## Architecture Overview
 
@@ -115,6 +386,120 @@ Brain (1)
 - **Lateral**: Within-layer connections for competition and cooperation
 - **Recurrent**: L5 → L2/3 for temporal integration
 
+## Declarative Network Loading
+
+Instead of building networks in C++, define them in configuration files and load them at runtime. Four formats are supported:
+
+### Loading a Network
+
+```cpp
+#include "snnfw/declarative/DeclarativeLoader.h"
+
+using namespace snnfw;
+using namespace snnfw::declarative;
+
+NeuralObjectFactory factory;
+Datastore datastore("./my_network_db");
+DeclarativeLoader loader(factory, datastore);
+
+// Load from any supported format — auto-detected from extension
+auto network = loader.loadNetwork("configs/emnist_v1_network.snnf.json");
+
+// network.brain           — constructed Brain hierarchy
+// network.spikeProcessor  — ready SpikeProcessor
+// network.propagator      — ready NetworkPropagator
+// network.inputNeurons    — input layer neurons
+// network.outputPopulations — output neurons grouped by class
+// network.columns         — per-column neuron groups
+```
+
+### Supported Formats
+
+| Format | Extension | Description |
+|--------|-----------|-------------|
+| **Native JSON** | `.snnf.json` | Full-featured SNNFrame format with column templates, path-based connectivity, Gabor/saccade config |
+| **SONATA** | `circuit_config.json`, `.sonata.json` | HDF5-based format from Blue Brain Project / Allen Institute |
+| **NeuroML** | `.nml`, `.neuroml` | XML-based community standard with `snnfw:` property extensions |
+| **HOC** | `.hoc` | NEURON simulator scripting language — structural extraction |
+
+### Native JSON Example (`.snnf.json`)
+
+```json
+{
+  "snnframe_version": "1.0",
+  "neuron_params": {
+    "cortical_default": {
+      "window_size_ms": 500.0,
+      "similarity_threshold": 0.93,
+      "max_reference_patterns": 500
+    }
+  },
+  "brain": {
+    "name": "MyBrain",
+    "hemispheres": [{
+      "name": "Left",
+      "lobes": [{
+        "name": "Occipital",
+        "regions": [{
+          "name": "V1",
+          "nuclei": [{
+            "name": "FeatureColumns",
+            "column_template": {
+              "orientations": [0, 45, 90, 135],
+              "frequencies": [3.0, 8.0],
+              "layers": [
+                { "name": "L4", "populations": [
+                  { "name": "L4_stellate", "count": 49, "neuron_params": "cortical_default" }
+                ]}
+              ]
+            }
+          }]
+        }]
+      }]
+    }]
+  },
+  "projections": [
+    { "name": "Input_to_L4", "source": "InputGrid", "target": "V1/*/L4",
+      "pattern": "random_sparse", "probability": 0.3, "weight": 0.1 }
+  ]
+}
+```
+
+### NeuroML Example (`.nml`)
+
+```xml
+<neuroml xmlns="http://www.neuroml.org/schema/neuroml2" id="example">
+  <cell id="cortical_cell">
+    <property tag="snnfw:window_size_ms" value="200.0"/>
+    <property tag="snnfw:similarity_threshold" value="0.93"/>
+  </cell>
+  <network id="MyNetwork">
+    <population id="L4" component="cortical_cell" size="49"/>
+    <projection id="L4_to_L5" presynapticPopulation="L4" postsynapticPopulation="L5" synapse="exc"/>
+  </network>
+</neuroml>
+```
+
+### HOC Example (`.hoc`)
+
+```hoc
+begintemplate CorticalL4
+    proc init() {
+        window_size_ms = 200
+        similarity_threshold = 0.93
+    }
+    create soma, axon, dendrite
+endtemplate CorticalL4
+
+for i = 0, 48 {
+    l4_cells.append(new CorticalL4())
+}
+
+for i = 0, 48 {
+    nc = new NetCon(l4_cells.o(i).soma(0.5), l5_cells.o(i).syn, 0, 1.5, 0.5)
+}
+```
+
 ## Configuration
 
 The framework uses JSON configuration files. See `configs/emnist_letters_saccades_best_v2.json` for the best-performing configuration:
@@ -135,13 +520,6 @@ The framework uses JSON configuration files. See `configs/emnist_letters_saccade
     "columns": {
       "num_orientations": 8,
       "num_frequencies": 2
-    },
-    "layers": {
-      "layer1_neurons": 32,
-      "layer23_neurons": 448,
-      "layer4_size": 7,
-      "layer5_neurons": 80,
-      "layer6_neurons": 32
     }
   }
 }
@@ -149,7 +527,7 @@ The framework uses JSON configuration files. See `configs/emnist_letters_saccade
 
 ## API Documentation
 
-### Creating a Network
+### Creating a Network (Programmatic)
 
 ```cpp
 #include "snnfw/NetworkBuilder.h"
@@ -157,13 +535,9 @@ The framework uses JSON configuration files. See `configs/emnist_letters_saccade
 
 using namespace snnfw;
 
-// Initialize datastore
 Datastore datastore("./my_network_db");
-
-// Create network builder
 NetworkBuilder builder(datastore);
 
-// Build hierarchical structure
 auto brain = builder.createBrain();
 auto hemisphere = builder.createHemisphere(brain);
 auto lobe = builder.createLobe(hemisphere);
@@ -173,88 +547,44 @@ auto column = builder.createColumn(nucleus);
 auto layer = builder.createLayer(column);
 auto cluster = builder.createCluster(layer);
 
-// Create neurons
 for (int i = 0; i < 100; ++i) {
     auto neuron = builder.createNeuron(cluster);
 }
 ```
 
-### Training with Spike Patterns
+### Creating a Network (Declarative)
 
 ```cpp
-// Create spike processor and network propagator
-auto spikeProcessor = std::make_shared<SpikeProcessor>(10000, 20);  // 10000 time slices, 20 threads
-auto networkPropagator = std::make_shared<NetworkPropagator>(spikeProcessor);
+#include "snnfw/declarative/DeclarativeLoader.h"
 
-// Configure STDP parameters
-networkPropagator->setSTDPParameters(0.05, 0.05, 20.0, 20.0);  // A+, A-, τ+, τ-
-spikeProcessor->setSTDPParameters(0.05, 0.05, 20.0, 20.0);
+using namespace snnfw;
+using namespace snnfw::declarative;
 
-spikeProcessor->start();
+NeuralObjectFactory factory;
+Datastore datastore("./my_network_db");
+DeclarativeLoader loader(factory, datastore);
 
-// Training mode: STDP enabled (default)
-networkPropagator->setStdpEnabled(true);
-spikeProcessor->setStdpEnabled(true);
-
-// Inject spikes
-for (auto& neuron : neurons) {
-    neuron->injectSpike(100.0);  // Spike at 100ms
-}
-
-// Inference mode: Disable STDP to prevent weight drift
-networkPropagator->setStdpEnabled(false);
-spikeProcessor->setStdpEnabled(false);
-
-// Check neuron state
-if (neuron->hasFired()) {
-    std::cout << "Neuron fired!" << std::endl;
-}
-```
-
-### Monitoring Activity
-
-```cpp
-#include "snnfw/ActivityMonitor.h"
-
-ActivityMonitor monitor(1000);  // 1000ms history
-
-// Build hierarchical cache for cluster-level monitoring
-monitor.buildHierarchicalCache(brain->getId());
-
-// Get activity snapshot
-auto snapshot = monitor.getActivitySnapshot();
-for (const auto& [clusterId, spikeCount] : snapshot.clusterActivity) {
-    std::cout << "Cluster " << clusterId << ": " << spikeCount << " spikes" << std::endl;
-}
-```
-
-### Visualization
-
-```cpp
-#include "snnfw/VisualizationManager.h"
-
-VisualizationManager vizManager(1920, 1080);
-vizManager.initialize();
-
-// Render loop
-while (!vizManager.shouldClose()) {
-    vizManager.update(deltaTime);
-    vizManager.render();
-}
+// Load from any supported format
+auto network = loader.loadNetwork("configs/my_network.snnf.json");
+// Or: loader.loadNetwork("configs/model.nml");
+// Or: loader.loadNetwork("configs/circuit_config.json");
+// Or: loader.loadNetwork("configs/model.hoc");
 ```
 
 ## Performance Characteristics
 
-### EMNIST Letters Classification
-- **Accuracy**: ~90% on 26-letter classification task
-- **Network Size**: Multi-column architecture with 8 orientations × 2 frequencies
-- **Training**: ~60 minutes on full training set (5,200 images, 200 per letter)
-- **Testing**: ~22 minutes on full test set (20,800 images)
-- **Key Features**:
-  - Cosine similarity-based pattern matching
-  - STDP frozen during testing to prevent weight drift
-  - Saccade-based attention mechanism for sequential processing
-  - 6-layer canonical cortical microcircuit
+### Verified Retina Tasks
+- **EMNIST Letters**
+  - Static bilateral: `88.51%` (`18410/20800`)
+  - Continuous bilateral: `87.50% -> 88.85%`
+  - Full static run log: `build/emnist_retina_bilateral_full_all.log`
+- **MNIST Digits**
+  - Static bilateral: `96.88%` (`9688/10000`)
+  - Full static run log: `build/mnist_retina_bilateral_full_all.log`
+- **Shared architecture**
+  - Same bilateral Retina pipeline
+  - Same hemisphere split and corpus-callosum fusion structure
+  - Domain selected by config through the visual domain adapter layer
 
 ### Scaling
 - Tested up to 24 cortical columns
@@ -280,11 +610,14 @@ Key test categories:
 
 ## Documentation
 
+- `docs/DEVELOPER_MANUAL.md` - Comprehensive developer manual
+- `docs/DEVELOPER_GUIDE_PATTERNS.md` - Common patterns and recipes
+- `docs/DEVELOPER_GUIDE_ADVANCED.md` - Advanced topics and custom parsers
+- `docs/API_REFERENCE.md` - API class reference
+- `docs/DOCUMENTATION_INDEX.md` - Full documentation index
 - `docs/QUICK_REFERENCE.md` - Quick API reference
 - `docs/CONFIGURATION_GUIDE.md` - Configuration system guide
-- `docs/VISUALIZATION_QUICK_START.md` - Visualization setup
-- `docs/RECORDING_PLAYBACK_USAGE.md` - Recording and playback
-- `docs/HIERARCHICAL_ACTIVITY_USAGE.md` - Activity monitoring
+- `docs/FORMAT_REFERENCE.md` - Declarative format specifications
 
 ## Contributing
 
@@ -321,5 +654,5 @@ For issues, questions, or suggestions:
 ---
 
 **Status**: Production-ready
-**Latest Version**: 1.0.0
-**Last Updated**: 2026-01-10
+**Latest Version**: 1.1.0
+**Last Updated**: 2026-02-06

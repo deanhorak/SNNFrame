@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 #include <memory>
+#include <atomic>
 
 namespace snnfw {
 
@@ -87,6 +88,17 @@ public:
     void receiveSpike(const std::shared_ptr<ActionPotential>& actionPotential);
 
     /**
+     * @brief Get count of spikes received (thread-safe)
+     * @return Number of spikes received since last reset
+     */
+    size_t getReceivedSpikeCount() const;
+
+    /**
+     * @brief Reset received spike counter (thread-safe)
+     */
+    void resetReceivedSpikeCount();
+
+    /**
      * @brief Set the network propagator for spike delivery
      * @param propagator Weak pointer to the network propagator
      */
@@ -103,9 +115,9 @@ private:
     uint64_t targetNeuronId;              ///< ID of the neuron this dendrite belongs to
     std::vector<uint64_t> synapseIds;     ///< IDs of synapses connected to this dendrite
     std::weak_ptr<NetworkPropagator> networkPropagator_; ///< Weak pointer to network propagator for spike delivery
+    std::atomic<size_t> receivedSpikeCount_{0}; ///< Count of spikes received since last reset
 };
 
 } // namespace snnfw
 
 #endif // SNNFW_DENDRITE_H
-
