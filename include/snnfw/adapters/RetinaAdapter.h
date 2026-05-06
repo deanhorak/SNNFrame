@@ -294,6 +294,7 @@ private:
     double neuronWindowSize_;   ///< Neuron temporal window (ms)
     double neuronThreshold_;    ///< Neuron similarity threshold
     int neuronMaxPatterns_;     ///< Max patterns per neuron
+    bool preserveSpikeLatency_; ///< Preserve absolute spike latency for retinal feature memories
     int minimumRegionSize_;     ///< Minimum patch size needed by the edge operator
     int edgeAnalysisRegionSize_; ///< Optional larger sampled patch size used for edge extraction
     int maxFrequencyBandsPerFeature_; ///< Max active frequency bands per region/orientation
@@ -308,6 +309,11 @@ private:
     double lgnCenterSigma_;               ///< LGN center blur sigma
     double lgnSurroundSigma_;             ///< LGN surround blur sigma
     double lgnCenterSurroundStrength_;    ///< Gain on center-surround sharpening
+    bool lgnBurstTonicEnabled_;           ///< Enable local salience-gated burst/tonic relay mode
+    double lgnBurstThreshold_;            ///< Center-surround contrast threshold for burst mode
+    double lgnBurstExtraStrength_;        ///< Extra center-surround gain applied in burst mode
+    double lgnBurstSlope_;                ///< Slope of the tonic-to-burst transition
+    double lgnBurstNeuromodulator_;       ///< Scalar gate for burst-mode strength
     bool lgnParallelRelayEnabled_;        ///< Enable a dual magno/parvo-like relay for band images
     double lgnMagnoCenterSigma_;          ///< Center blur for the coarse achromatic relay
     double lgnMagnoSurroundSigma_;        ///< Surround blur for the coarse achromatic relay
@@ -374,6 +380,16 @@ private:
     double homeostaticActivityDecay_;     ///< EMA decay for feature activity
     double homeostaticGainMin_;           ///< Lower bound on homeostatic gain
     double homeostaticGainMax_;           ///< Upper bound on homeostatic gain
+    bool sensoryTripletBcmEnabled_;       ///< Apply local triplet/BCM sensory gain plasticity
+    double sensoryTripletBcmLearningRate_; ///< Learning rate for sensory triplet/BCM gains
+    double sensoryTripletBcmLtp_;         ///< Potentiation scale for sensory triplet/BCM gains
+    double sensoryTripletBcmLtd_;         ///< Depression scale for sensory triplet/BCM gains
+    double sensoryTripletFastDecay_;      ///< Fast activity trace decay
+    double sensoryTripletSlowDecay_;      ///< Slow activity trace decay
+    double sensoryBcmThresholdDecay_;     ///< Sliding BCM threshold decay
+    double sensoryBcmTargetActivation_;   ///< Target activity for sensory homeostatic pull
+    double sensoryTripletBcmGainMin_;     ///< Lower bound on sensory triplet/BCM gain
+    double sensoryTripletBcmGainMax_;     ///< Upper bound on sensory triplet/BCM gain
 
     // Pluggable strategies
     std::unique_ptr<features::EdgeOperator> edgeOperator_;      ///< Edge detection strategy
@@ -434,6 +450,7 @@ private:
                                   double centerSigma,
                                   double surroundSigma,
                                   double centerSurroundStrength) const;
+    Image applyLgnBurstTonicRelay(const Image& image) const;
     Image applyLgnRelay(const Image& image) const;
     Image makeAchromaticImage(const Image& image, double achromaticMix) const;
     Image blendImages(const Image& base, const Image& overlay, double overlayWeight) const;
@@ -443,6 +460,7 @@ private:
     std::vector<uint8_t> normalizeEdgeRegion(const std::vector<uint8_t>& region) const;
     void applyOrientationCompetition(std::vector<double>& responses) const;
     void applyHomeostaticScaling(std::vector<double>& features);
+    void applySensoryTripletBcmPlasticity(std::vector<double>& features);
     std::vector<double> computeColorOpponentFeatures(const Image& image,
                                                      int regionRow,
                                                      int regionCol,
@@ -472,6 +490,10 @@ private:
     PatchInputDiagnostics patchInputDiagnostics_;
     std::vector<double> featureHomeostaticGains_;
     std::vector<double> featureActivityAverages_;
+    std::vector<double> sensoryTripletBcmGains_;
+    std::vector<double> sensoryTripletFastTrace_;
+    std::vector<double> sensoryTripletSlowTrace_;
+    std::vector<double> sensoryBcmThresholds_;
 };
 
 } // namespace adapters

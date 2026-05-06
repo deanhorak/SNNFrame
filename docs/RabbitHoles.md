@@ -17,7 +17,7 @@ These live in:
 - `configs/emnist_retina_bilateral_experimental.sonata.json`
 - `configs/emnist_retina_bilateral_continuous.sonata.json`
 - `configs/cifar10_retina_bilateral_natural_features_experimental.sonata.json`
-- `experiments/emnist_retina_letters.cpp`
+- `experiments/retina_classification.cpp`
 
 Any new experimental vision path should be compared against these, not treated as a replacement by default.
 
@@ -27,7 +27,7 @@ Any new experimental vision path should be compared against these, not treated a
 
 What we tried:
 
-- adding graph execution directly into `experiments/emnist_retina_letters.cpp`
+- adding graph execution directly into `experiments/retina_classification.cpp`
 - mixing mature Retina benchmarking with experimental instantiated-network execution
 
 Why it was not productive:
@@ -668,7 +668,7 @@ Status:
 What we tried:
 
 - kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
-- added an opt-in, per-retina contextual grouping stage in `experiments/emnist_retina_letters.cpp`
+- added an opt-in, per-retina contextual grouping stage in `experiments/retina_classification.cpp`
 - applied it only to the two `g10` branches so the protected `g9` and `dog_g9` paths stayed unchanged
 - the grouping stage used bounded local contour support, internal border-ownership competition, surround suppression, divisive normalization, and a mild coarse-to-fine bias before the usual per-branch L2 normalization
 - screened two bounded smoke settings:
@@ -875,7 +875,7 @@ What we tried:
 - reran the protected `200/1000` gate with `flow_audit` enabled to establish a fresh control on the current binary:
   - `build/flow_audit_baseline_gate_200_1000_rerun.log`
   - `build/flow_audit_baseline_gate_200_1000_rerun_testing_summary.json`
-- added opt-in stage-1 fixation-memory aggregation in `experiments/emnist_retina_letters.cpp`
+- added opt-in stage-1 fixation-memory aggregation in `experiments/retina_classification.cpp`
 - enabled it only on `left_retina_g10` and `right_retina_g10` through `stage1_fixation_memory_mode = mean_max_summary`
 - left `g9`, `dog_g9`, replay, and corpus-callosum fusion unchanged
 - screened one bounded `200/1000` audited gate:
@@ -1126,6 +1126,704 @@ Status:
 - documented and closed for promotion on the current CIFAR surface
 - do not spend more CIFAR budget on more same-dimensional `contour_support_bank` retunes of the current `g10` surface
 - keep the opt-in code/config as reference only
+
+### 41. Guided Training-Time Saccades Scored By Existing `g10` Energy
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in guided fixation selector in `experiments/retina_classification.cpp`
+- left the protected baseline config unchanged and enabled the probe only through CLI/JSON flags
+- generated candidate fixation offsets around the original image, scored each candidate with the existing `g10` orientation/auxiliary energy, and selected `4` fixations from `8` candidates with a small inhibition-of-return penalty
+- evaluated it under the strict audited smoke gate against a same-build protected control:
+  - protected audit: `build/cifar10_guided_saccades_baseline_flow_audit_20_200.log`
+  - protected summary: `build/flow_audit_guided_saccades_baseline_testing_summary.json`
+  - guided probe: `build/cifar10_guided_saccades_flow_audit_20_200.log`
+  - guided summary: `build/flow_audit_guided_saccades_testing_summary.json`
+
+Why it was not productive enough:
+
+- the protected same-build audit finished at `32.00%` (`64/200`)
+- the guided-saccade probe finished at only `29.00%` (`58/200`)
+- so it failed the headline gate immediately and did not justify a `50/500` follow-up
+- this was not a total local-feature collapse:
+  - left hemisphere `mean_topk_purity` improved to `0.191111` from protected `0.184444`
+  - right hemisphere `mean_topk_purity` only tied at `0.185556`
+  - audited `g10` post-margins moved slightly toward zero:
+    - left: `-0.00580663` vs protected `-0.00592188`
+    - right: `-0.00589308` vs protected `-0.00593531`
+  - audited `g10` orientation energy was unchanged:
+    - left: `0.913151` vs protected `0.913151`
+    - right: `0.912764` vs protected `0.912764`
+- but the experiment failed where the strict criteria actually demanded a win:
+  - stage-1 view accuracy dropped to `25.50%` left and `23.50%` right, from protected `26.50%` left and `25.00%` right
+  - `interaction_centroid_accuracy` dropped to `27.0%` from protected `29.0%`
+  - `confidence_concat_centroid_accuracy` dropped to `27.0%` from protected `30.0%`
+  - final smoke stayed below the protected `32.00%` result
+
+Lesson:
+
+- replacing fixed training saccade offsets with a selector that simply chases current `g10` feature energy does not improve the current CIFAR surface
+- the likely failure mode is that the selector prefers high-energy clutter or already-dominant texture, not class-discriminative object evidence
+- if guided saccades are revisited, the policy needs a materially different objective, such as uncertainty reduction, object-boundary novelty, or prediction error, not just local `g10` energy
+- do not scale this specific policy to `8` or `48` fixations; the strict smoke gate already failed
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code path as reference only
+- continue path work with a materially different candidate, such as a thalamic relay dynamic, rather than another high-energy fixation-selector retune
+
+### 42. `g10` Burst/Tonic LGN Relay Mode Switch
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in local-salience burst/tonic mode switch on top of the existing `lgn_relay_enabled` center-surround path in `src/adapters/RetinaAdapter.cpp` and `include/snnfw/adapters/RetinaAdapter.h`
+- left `g9`, `dog_g9`, replay, and corpus-callosum fusion unchanged
+- left the protected baseline config unchanged and enabled the probe only through g10-only CLI overrides in `experiments/retina_classification.cpp`
+- evaluated it under the strict audited smoke gate against a same-build protected control:
+  - protected audit: `build/cifar10_burst_tonic_lgn_baseline_flow_audit_20_200.log`
+  - protected summary: `build/flow_audit_burst_tonic_lgn_baseline_testing_summary.json`
+  - burst/tonic probe: `build/cifar10_burst_tonic_lgn_flow_audit_20_200.log`
+  - burst/tonic summary: `build/flow_audit_burst_tonic_lgn_testing_summary.json`
+- probe flags: `--g10-lgn-burst-tonic-enabled --g10-lgn-burst-threshold 0.04 --g10-lgn-burst-extra-strength 0.12 --g10-lgn-burst-slope 8.0 --g10-lgn-burst-neuromodulator 1.0`
+
+Why it was not productive enough:
+
+- the protected same-build audit finished at `32.00%` (`64/200`)
+- the burst/tonic probe finished at `31.50%` (`63/200`)
+- so it failed the headline gate and did not justify a `50/500` follow-up
+- this was not a pure drive collapse:
+  - initial accuracy improved to `30.00%` from protected `28.50%`
+  - left hemisphere `mean_topk_purity` improved to `0.186111` from protected `0.184444`
+  - left audited `g10` post-margin moved toward zero: `-0.00579146` vs protected `-0.00592188`
+  - audited `g10` orientation energy stayed effectively unchanged: left `0.913284` vs `0.913151`, right `0.912758` vs `0.912764`
+- but the strict scale criteria moved the wrong way:
+  - final smoke fell to `31.50%`, below the protected `32.00%`
+  - stage-1 view accuracy dropped to `24.50%` left and `24.50%` right, from protected `26.50%` left and `25.00%` right
+  - `interaction_centroid_accuracy` dropped to `24.5%` from protected `29.0%`
+  - `confidence_concat_centroid_accuracy` dropped to `26.0%` from protected `30.0%`
+  - right hemisphere `mean_topk_purity` fell to `0.181667` from protected `0.185556`
+  - replay successes fell to `3` from protected `7`
+
+Lesson:
+
+- a local contrast/salience-gated burst mode can perturb the current `g10` relay without killing raw orientation energy
+- the perturbation does not produce a better end-to-end object code on this surface; it improved the pre-correction decision but made the fusion and replay surface worse
+- do not spend CIFAR budget retuning this same local-salience relay gain policy
+- if thalamic gating is revisited, it needs a materially different gating signal, such as uncertainty, reward context, or prediction error, not only center-surround salience amplitude
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code path as reference only
+- continue path work with a different mechanism, not another local-salience center-surround relay retune
+
+### 43. `g10` Sensory Triplet/BCM Feature-Gain Plasticity
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in sensory-layer-only plasticity rule in `src/adapters/RetinaAdapter.cpp` and `include/snnfw/adapters/RetinaAdapter.h`
+- implemented local per-feature gain updates with fast/slow triplet traces, a BCM-style sliding activity threshold, and training-only learning that freezes for evaluation
+- left classifier-space triplet/voltage/BCM, replay, corpus-callosum fusion, `g9`, and `dog_g9` unchanged
+- left the protected baseline config unchanged and enabled the probe only through g10-only CLI overrides in `experiments/retina_classification.cpp`
+- evaluated it under the strict audited smoke gate against a same-build protected control:
+  - protected audit: `build/cifar10_sensory_triplet_bcm_baseline_flow_audit_20_200.log`
+  - protected summary: `build/flow_audit_sensory_triplet_bcm_baseline_testing_summary.json`
+  - sensory triplet/BCM probe: `build/cifar10_sensory_triplet_bcm_flow_audit_20_200.log`
+  - sensory triplet/BCM summary: `build/flow_audit_sensory_triplet_bcm_testing_summary.json`
+- probe flags: `--g10-sensory-triplet-bcm-enabled --g10-sensory-triplet-bcm-learning-rate 0.015 --g10-sensory-triplet-bcm-ltp 0.12 --g10-sensory-triplet-bcm-ltd 0.04 --g10-sensory-triplet-fast-decay 0.80 --g10-sensory-triplet-slow-decay 0.97 --g10-sensory-bcm-threshold-decay 0.985 --g10-sensory-bcm-target-activation 0.08`
+
+Why it was not productive enough:
+
+- the protected same-build audit finished at `32.00%` (`64/200`)
+- the sensory triplet/BCM probe finished at `32.50%` (`65/200`)
+- this is a real one-sample headline lift, but the audit does not support spending a `50/500` gate on this exact setting
+- the positive signs:
+  - initial accuracy improved to `29.50%` from protected `28.50%`
+  - final smoke improved to `32.50%` from protected `32.00%`
+  - left hemisphere `mean_topk_purity` improved to `0.186667` from protected `0.184444`
+  - right hemisphere `mean_topk_purity` improved to `0.187778` from protected `0.185556`
+  - audited `g10` orientation energy increased:
+    - left `mean_post_orientation_l2`: `0.920339` vs protected `0.913151`
+    - right `mean_post_orientation_l2`: `0.920196` vs protected `0.912764`
+- the failure signs:
+  - both audited `g10` post-margins worsened:
+    - left: `-0.00647548` vs protected `-0.00592188`
+    - right: `-0.00665063` vs protected `-0.00593531`
+  - `interaction_centroid_accuracy` dropped to `25.5%` from protected `29.0%`
+  - `confidence_concat_centroid_accuracy` dropped to `26.5%` from protected `30.0%`
+  - replay successes fell to `6` from protected `7`
+  - stage-1 accuracy only rearranged by view: left fell to `25.00%` from `26.50%`, while right rose to `26.00%` from `25.00%`
+
+Lesson:
+
+- a genuinely sensory-layer-local triplet/BCM-style gain rule can move the current `g10` representation without collapsing raw orientation energy
+- the movement is not yet aligned with the downstream object code: raw orientation energy and hemisphere purity improved while branch margins and fusion separability worsened
+- do not scale this exact sensory-gain rule; a one-sample smoke lift is not enough when the flow audit says the fusion surface got worse
+- if this family is revisited, the gain update needs a stricter gate, such as prediction-error, class-agnostic novelty that preserves fusion separability, or an explicit constraint on post-normalization margins
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code path as reference only
+- do not spend a `50/500` gate on this exact bounded setting unless a repeat also preserves the fusion audit metrics
+
+### 44. Prediction-Error-Gated Corpus-Callosum Feedback Proxy
+
+What we tried:
+
+- kept the promoted CIFAR `training-time saccades + g10-only LGN + immediate replay` surface fixed
+- added an opt-in corpus-callosum decision-path proxy for prediction-error-gated feedback in `experiments/retina_classification.cpp`
+- computed top-down expectation from the predicted class centroid for each hemisphere, then computed a local prediction error as `1 - cosine(actual_stage1_pattern, predicted_class_centroid)`
+- exposed the mechanism without mutating the protected config:
+  - `--prediction-error-feedback-enabled`
+  - `--prediction-error-feedback-gain`
+  - `--prediction-error-feedback-threshold`
+  - `--prediction-error-feedback-max-penalty`
+  - `--prediction-error-feedback-min-confidence`
+- tested two bounded forms:
+  - whole-hemisphere evidence scaling
+  - targeted predicted-label expectation suppression, where only the predicted hypothesis and vote are downweighted
+- evaluated under the strict audited smoke gate against a same-build protected control:
+  - protected audit: `build/cifar10_prediction_error_feedback_baseline_flow_audit_20_200.log`
+  - protected summary: `build/flow_audit_prediction_error_feedback_baseline_testing_summary.json`
+  - whole-hemisphere proxy: `build/cifar10_prediction_error_feedback_flow_audit_20_200.log`
+  - whole-hemisphere summary: `build/flow_audit_prediction_error_feedback_testing_summary.json`
+  - targeted predicted-label proxy: `build/cifar10_prediction_error_feedback_labelgate_flow_audit_20_200.log`
+  - targeted predicted-label summary: `build/flow_audit_prediction_error_feedback_labelgate_testing_summary.json`
+- probe flags for both forms: `--prediction-error-feedback-enabled --prediction-error-feedback-gain 1.0 --prediction-error-feedback-threshold 0.06 --prediction-error-feedback-max-penalty 0.18 --prediction-error-feedback-min-confidence 0.05`
+
+Why it was not productive enough:
+
+- the protected same-build audit finished at `32.00%` (`64/200`)
+- the whole-hemisphere feedback proxy also finished at `32.00%` (`64/200`)
+- the targeted predicted-label suppression proxy also finished at `32.00%` (`64/200`)
+- initial accuracy stayed fixed at `28.50%`
+- stage-1 view accuracy stayed fixed at `26.50%` left and `25.00%` right
+- replay corrections stayed fixed at `7` successes and `419` replay events
+- flow-audit fusion alternatives stayed unchanged:
+  - `interaction_centroid_accuracy`: `29.0%`
+  - `confidence_concat_centroid_accuracy`: `30.0%`
+  - `hemisphere_concat_centroid_accuracy`: `18.5%`
+- hemisphere audit aggregates stayed unchanged:
+  - left `mean_topk_purity`: `0.184444`
+  - right `mean_topk_purity`: `0.185556`
+  - left `mean_centroid_margin`: `-0.00337642`
+  - right `mean_centroid_margin`: `-0.00324997`
+- audited `g10` branch metrics also stayed unchanged:
+  - left `g10` post-margin: `-0.00592188`
+  - right `g10` post-margin: `-0.00593531`
+  - left `g10` post-orientation L2: `0.913151`
+  - right `g10` post-orientation L2: `0.912764`
+
+Lesson:
+
+- centroid-based prediction-error gating at the existing corpus-callosum decision path is not a useful lever on the current CIFAR surface
+- this proxy is not equivalent to graph-native L5/6-to-L4 predictive coding; it happens after the weak `g10` representation has already been formed and after class prototypes are already highly overlapping
+- the no-lift result argues against spending CIFAR budget on more scalar centroid-error suppression in the decision path
+- if predictive feedback is revisited, it needs to be implemented at a true intermediate representation boundary with explicit actual-minus-expectation features and a concrete fusion metric, not as another class-centroid confidence reweighting rule
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code path as reference only
+- do not spend a `50/500` gate on this decision-path proxy
+
+### 45. Neuromodulator-Gated Eligibility With Variable-Delay Replay Consolidation
+
+What we tried:
+
+- kept the protected CIFAR baseline and upstream representation fixed
+- added a default-off replay-path probe in `experiments/retina_classification.cpp` for:
+  - uncertainty- and reward-scaled eligibility traces
+  - variable replay delay derived from the scaled eligibility
+  - a small successful-sequence consolidation queue replayed between ordinary replay steps
+- exposed the mechanism without mutating the protected config:
+  - `--online-neuromodulator-eligibility-enabled`
+  - `--online-neuromodulator-uncertainty-gain`
+  - `--online-neuromodulator-positive-reward-gain`
+  - `--online-neuromodulator-eligibility-max`
+  - `--online-replay-variable-delay-enabled`
+  - `--online-replay-success-consolidation-enabled`
+  - `--online-replay-success-consolidation-capacity`
+  - `--online-replay-success-consolidation-batch-size`
+  - `--online-replay-success-consolidation-repeats`
+- first checked the same-build audited smoke gate:
+  - protected audit: `build/cifar10_neuromodulator_replay_baseline_flow_audit_20_200.log`
+  - protected summary: `build/flow_audit_neuromodulator_replay_baseline_testing_summary.json`
+  - probe audit: `build/cifar10_neuromodulator_replay_flow_audit_20_200.log`
+  - probe summary: `build/flow_audit_neuromodulator_replay_testing_summary.json`
+- then spent a direct same-build `50/500` gate:
+  - protected gate: `build/cifar10_neuromodulator_replay_baseline_gate_50_500.log`
+  - probe gate: `build/cifar10_neuromodulator_replay_gate_50_500.log`
+- bounded probe flags:
+  - `--online-neuromodulator-eligibility-enabled --online-neuromodulator-uncertainty-gain 1.0 --online-neuromodulator-positive-reward-gain 0.5 --online-neuromodulator-eligibility-max 1.75 --online-replay-variable-delay-enabled --online-replay-delay-steps 4 --online-replay-success-consolidation-enabled --online-replay-success-consolidation-capacity 64 --online-replay-success-consolidation-batch-size 1 --online-replay-success-consolidation-repeats 1`
+
+Why it was not productive enough:
+
+- the same-build audited smoke improved slightly from `32.00%` (`64/200`) to `33.50%` (`67/200`)
+- that smoke lift did not come from a better upstream code:
+  - both audited `g10` post-margins were unchanged
+  - both audited `g10` post-orientation L2 values were unchanged
+  - `confidence_concat_centroid_accuracy` stayed fixed at `30.0%`
+  - `hemisphere_concat_centroid_accuracy` stayed fixed at `18.5%`
+  - hemisphere purity only moved trivially:
+    - left `mean_topk_purity`: `0.184444` -> `0.185000`
+    - right `mean_topk_purity`: `0.185556` -> `0.186111`
+  - the only fusion proxy movement was a tiny `interaction_centroid_accuracy` lift from `29.0%` to `29.5%`
+- the larger same-build gate reversed the apparent gain:
+  - protected baseline finished at `30.80%` on `500` test samples
+  - the neuromodulator replay probe finished at `30.40%` on `500` test samples
+- the `50/500` result means the smoke bump was replay churn, not a stable classification improvement
+
+Lesson:
+
+- extending eligibility and replaying rewarded sequences can increase replay activity without improving the actual object code
+- when the audited `g10` and hemisphere margins stay flat, a small smoke lift is not enough evidence to scale a replay-policy variant
+- this family is now closed in its current scalar form: better replay scheduling cannot compensate for the current upstream representation ceiling
+- if continuous-learning work is revisited, it needs a materially different source of information at replay time, not another uncertainty/reward/delay reshuffle of the current prototypes and exemplars
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code path as reference only
+- do not spend more CIFAR budget on this neuromodulator-eligibility plus success-consolidation replay variant
+
+### 46. V2-Like Hemisphere Convergent Stage From Pooled Branch Conjunctions
+
+What we tried:
+
+- kept the protected CIFAR baseline fixed and added a new opt-in hemisphere-internal stage boundary in `experiments/retina_classification.cpp`
+- instead of feeding the classifier the raw concatenated branch pattern, built a convergent hemisphere code from:
+  - pooled summaries of each live branch
+  - pooled orientation/auxiliary/band projections where available
+  - pairwise branch conjunction and disagreement terms
+- exposed the mechanism without mutating the protected config:
+  - `--hemisphere-convergent-code-enabled`
+  - `--hemisphere-convergent-summary-bins`
+  - `--hemisphere-convergent-residual-gain`
+  - `--hemisphere-convergent-interaction-gain`
+- ran a same-build strict audited smoke gate:
+  - protected control: `build/cifar10_convergent_stage_baseline_flow_audit_20_200.log`
+  - protected summary: `build/flow_audit_convergent_stage_baseline_testing_summary.json`
+  - convergent-stage probe: `build/cifar10_convergent_stage_flow_audit_20_200.log`
+  - convergent-stage summary: `build/flow_audit_convergent_stage_testing_summary.json`
+- bounded probe flags:
+  - `--hemisphere-convergent-code-enabled --hemisphere-convergent-summary-bins 12 --hemisphere-convergent-residual-gain 0.35 --hemisphere-convergent-interaction-gain 1.0`
+
+Why it was not productive enough:
+
+- the same-build protected control finished at `32.00%` (`64/200`)
+- the convergent-stage probe collapsed to `24.50%` (`49/200`)
+- stage-1 view accuracy collapsed:
+  - protected: left `26.50%`, right `25.00%`
+  - probe: left `15.00%`, right `16.50%`
+- initial accuracy also collapsed:
+  - protected: `28.50%`
+  - probe: `19.00%`
+- fusion audit alternatives degraded sharply:
+  - `interaction_centroid_accuracy`: `29.0%` -> `21.5%`
+  - `confidence_concat_centroid_accuracy`: `30.0%` -> `20.0%`
+  - `hemisphere_concat_centroid_accuracy`: `18.5%` -> `11.0%`
+- hemisphere purity also degraded:
+  - left `mean_topk_purity`: `0.184444` -> `0.136667`
+  - right `mean_topk_purity`: `0.185556` -> `0.154444`
+- nearest-neighbor similarity jumped almost to identity:
+  - left `mean_best_neighbor_similarity`: `0.887603` -> `0.988428`
+  - right `mean_best_neighbor_similarity`: `0.887609` -> `0.988703`
+- importantly, the raw branch code did not improve:
+  - both audited `g10` post-margins were unchanged
+  - both audited `g10` post-orientation L2 values were unchanged
+  - the new stage boundary changed only the classifier input, and it made that input more collapsed, not more separable
+
+Lesson:
+
+- a materially different stage boundary is necessary, but this particular one is wrong: pooled branch conjunctions over the current branch outputs destroy useful hemisphere discrimination instead of building object-level structure
+- the collapse signature matters more than the new code’s novelty: when `topk_purity` falls and best-neighbor similarity rises toward `1.0`, the representation is becoming less useful even if centroid margins do not look catastrophic
+- do not spend more CIFAR budget on retuning pooled branch-summary conjunctions; this family is closed in its current form
+- if a higher-order intermediate stage is revisited, it must preserve more explicit spatial/topographic structure than this pooled summary code
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code path as reference only
+- do not spend a `50/500` gate on this convergent pooled-summary stage
+
+### 47. Topographic Hemisphere Stage With Local Continuity/Junction Features
+
+What we tried:
+
+- kept the protected CIFAR baseline fixed and added a new default-off hemisphere-internal stage boundary in `experiments/retina_classification.cpp`
+- unlike Rabbit Hole #46, this stage preserved region order and local neighborhood structure instead of pooling branch summaries
+- for each branch with valid retinotopic layout, built a topographic classifier-side map from:
+  - per-region orientation energy residuals
+  - local continuity terms along the preferred orientation
+  - local junction terms from adjacent orientations at the same region
+  - per-region auxiliary summaries
+- exposed the mechanism without mutating the protected config:
+  - `--hemisphere-topographic-stage-enabled`
+  - `--hemisphere-topographic-residual-gain`
+  - `--hemisphere-topographic-continuity-gain`
+  - `--hemisphere-topographic-junction-gain`
+  - `--hemisphere-topographic-auxiliary-gain`
+- evaluated under the same-build strict audited smoke gate:
+  - protected control: `build/cifar10_convergent_stage_baseline_flow_audit_20_200.log`
+  - protected summary: `build/flow_audit_convergent_stage_baseline_testing_summary.json`
+  - topographic-stage probe: `build/cifar10_topographic_stage_flow_audit_20_200.log`
+  - topographic-stage summary: `build/flow_audit_topographic_stage_testing_summary.json`
+- bounded probe flags:
+  - `--hemisphere-topographic-stage-enabled --hemisphere-topographic-residual-gain 0.35 --hemisphere-topographic-continuity-gain 0.60 --hemisphere-topographic-junction-gain 0.35 --hemisphere-topographic-auxiliary-gain 0.25`
+
+Why it was not productive enough:
+
+- the same-build protected control finished at `32.00%` (`64/200`)
+- the topographic-stage probe still regressed badly to `25.00%` (`50/200`)
+- stage-1 view accuracy stayed above the pooled-summary collapse, but still regressed materially:
+  - protected: left `26.50%`, right `25.00%`
+  - probe: left `22.50%`, right `17.00%`
+- initial accuracy also regressed:
+  - protected: `28.50%`
+  - probe: `22.00%`
+- fusion proxies remained far below the protected surface:
+  - `interaction_centroid_accuracy`: `29.0%` -> `23.0%`
+  - `confidence_concat_centroid_accuracy`: `30.0%` -> `23.0%`
+  - `hemisphere_concat_centroid_accuracy`: `18.5%` -> `17.5%`
+- hemisphere purity still regressed:
+  - left `mean_topk_purity`: `0.184444` -> `0.167778`
+  - right `mean_topk_purity`: `0.185556` -> `0.159444`
+- nearest-neighbor similarity was less collapsed than Rabbit Hole #46 but still too high:
+  - left `mean_best_neighbor_similarity`: `0.887603` -> `0.974387`
+  - right `mean_best_neighbor_similarity`: `0.887609` -> `0.974631`
+- as with Rabbit Hole #46, the raw branch code itself did not improve:
+  - both audited `g10` post-margins were unchanged
+  - both audited `g10` post-orientation L2 values were unchanged
+
+Lesson:
+
+- preserving topography is necessary, but this specific local continuity/junction transform still compresses the hemisphere code into an over-similar classifier surface
+- the fact that the raw branch audits stayed unchanged while the hemisphere/fusion metrics regressed means the failure is in the new stage construction itself, not in upstream branch activity
+- do not spend more CIFAR budget on retuning this exact local-continuity/junction stage family
+- if a higher-order stage is revisited again, it likely needs explicit multi-scale topographic structure or learned sparse selection rather than another fixed local transform over the current branch outputs
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code path as reference only
+- do not spend a `50/500` gate on this topographic local-continuity/junction stage
+
+### 48. Classifier-Side Figure-Ground Residual Append
+
+What we tried:
+
+- kept the protected CIFAR baseline fixed and used the new explicit figure-ground scaffold only as a default-off classifier-side residual append in `experiments/retina_classification.cpp`
+- left the raw hemisphere pattern intact and appended:
+  - the normalized explicit figure-ground state pattern
+  - a small normalized figure-ground summary vector
+- exposed the mechanism without mutating the protected config:
+  - `--figure-ground-stage-enabled`
+  - `--figure-ground-classifier-enabled`
+  - `--figure-ground-classifier-gain 0.35`
+- evaluated under the same-build strict audited smoke gate:
+  - control: `build/cifar10_figure_ground_classifier_control_flow_audit_20_200.log`
+  - control summary: `flow_audit_figure_ground_classifier_control_testing_summary.json`
+  - probe: `build/cifar10_figure_ground_classifier_probe_flow_audit_20_200.log`
+  - probe summary: `flow_audit_figure_ground_classifier_probe_testing_summary.json`
+
+Why it was not productive enough:
+
+- the same-build control stayed on the protected surface at `32.00%` (`64/200`)
+- the classifier-side figure-ground probe collapsed immediately to `10.00%` (`20/200`)
+- both hemispheres collapsed onto the same single class:
+  - hemisphere agreement: `62.50%` -> `100.00%`
+  - stage-1 view accuracy: left `26.50%` -> `10.00%`, right `25.00%` -> `10.00%`
+  - initial accuracy: `28.50%` -> `10.00%`
+  - post-correction accuracy: `32.00%` -> `10.00%`
+- the fusion audit alternatives also collapsed:
+  - `interaction_centroid_accuracy`: `29.0%` -> `10.0%`
+- hemisphere purity roughly halved:
+  - left `mean_topk_purity`: `0.184444` -> `0.0933333`
+  - right `mean_topk_purity`: `0.185556` -> `0.0933333`
+- replay could not rescue the collapse:
+  - corrected samples: `7` -> `0`
+  - the probe predicted `bird` for every test sample
+
+Lesson:
+
+- the explicit figure-ground state is stable across fixations, but naive classifier-side concatenation is not enough; it overwhelms the current distance space and destroys class structure
+- the failure is not upstream branch silence: the raw branch audits stayed on the same surface while the classifier space collapsed
+- do not spend more CIFAR budget on gain-retuning this exact raw-plus-figure-ground append
+- if figure-ground is promoted later, it likely needs gated integration, sparse selection, or a dedicated object-level memory boundary rather than direct concatenation into the current hemisphere classifier vector
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code path as reference only
+- do not spend a `50/500` gate on this direct figure-ground residual append
+
+### 49. Same-Dimensional Figure-Ground Mask On The Raw Hemisphere Code
+
+What we tried:
+
+- kept the protected CIFAR baseline fixed and used the explicit figure-ground scaffold only as a same-dimensional multiplicative mask on the existing hemisphere pattern
+- for each branch with valid retinotopic layout, derived a per-region weight from the explicit figure-ground state and reweighted the original branch values in place
+- exposed the mechanism without mutating the protected config:
+  - `--figure-ground-mask-enabled`
+  - `--figure-ground-mask-gain 0.35`
+- evaluated under the same-build strict audited smoke gate:
+  - control: `build/cifar10_figure_ground_mask_control_flow_audit_20_200.log`
+  - control summary: `flow_audit_figure_ground_mask_control_testing_summary.json`
+  - probe: `build/cifar10_figure_ground_mask_probe_flow_audit_20_200.log`
+  - probe summary: `flow_audit_figure_ground_mask_probe_testing_summary.json`
+
+Why it was not productive enough:
+
+- the same-build control stayed on the protected surface at `32.00%` (`64/200`)
+- the figure-ground mask probe stayed sane, but still regressed to `31.00%` (`62/200`)
+- the best metrics moved in opposite directions:
+  - initial accuracy improved slightly: `28.50%` -> `29.00%`
+  - left `mean_topk_purity` improved slightly: `0.184444` -> `0.190000`
+  - both `mean_best_neighbor_similarity` values improved slightly:
+    - left `0.887603` -> `0.881953`
+    - right `0.887609` -> `0.881736`
+- but the gate-critical metrics got worse:
+  - final accuracy: `32.00%` -> `31.00%`
+  - corrected samples: `7` -> `4`
+  - right stage-1 view accuracy: `25.00%` -> `19.50%`
+  - `interaction_centroid_accuracy`: `29.0%` -> `28.0%`
+  - `confidence_concat_centroid_accuracy`: `30.0%` -> `27.0%`
+- the result is therefore mixed but non-promotable: it preserves the class space far better than Rabbit Hole #48, but it still does not clear the protected smoke gate or improve the fusion surface
+
+Lesson:
+
+- same-dimensional figure-ground gating is much safer than direct concatenation, but this simple multiplicative mask is still too blunt
+- the slight gain in left hemisphere purity and the lower neighbor similarity suggest the figure-ground signal is not useless
+- however, hurting right-view accuracy and fusion confidence means this mask does not yet isolate object structure cleanly enough to justify a larger gate
+- do not spend a `50/500` gate on gain-retuning this exact raw-pattern mask
+- if figure-ground is revisited again, it should likely be through a more selective object-memory or gated-association boundary rather than direct per-region scaling of the whole hemisphere vector
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code path as reference only
+- do not spend a `50/500` gate on this direct same-dimensional figure-ground mask
+
+### 50. Separate Figure-Ground Object-Memory Vote
+
+What we tried:
+
+- kept the protected CIFAR baseline fixed and used the explicit figure-ground scaffold only to build a separate object-memory vote, leaving the main hemisphere classifier pattern untouched
+- for each hemisphere training pattern, built a sparse figure-dominant pattern by keeping only the top `30%` of figure-ground-signaled regions per retinotopic branch and stored that as a separate exemplar bank
+- at inference time, classified that sparse figure-ground object pattern against the separate bank and blended the resulting confidence back into the protected hemisphere confidence with a bounded gain
+- exposed the mechanism without mutating the protected config:
+  - `--figure-ground-object-memory-enabled`
+  - `--figure-ground-object-memory-gain 0.25`
+  - `--figure-ground-object-memory-keep-fraction 0.30`
+- evaluated under the same-build strict audited smoke gate:
+  - control: `build/cifar10_figure_ground_object_memory_control_flow_audit_20_200.log`
+  - control summary: `flow_audit_figure_ground_object_memory_control_testing_summary.json`
+  - probe: `build/cifar10_figure_ground_object_memory_probe_flow_audit_20_200.log`
+  - probe summary: `flow_audit_figure_ground_object_memory_probe_testing_summary.json`
+
+Why it was not productive enough:
+
+- the same-build control stayed on the protected surface at `32.00%` (`64/200`)
+- the figure-ground object-memory probe was live, but still regressed to `30.50%` (`61/200`)
+- the new bank was not a dead code path:
+  - each hemisphere stored `200` figure-ground object-memory patterns
+  - right stage-1 view accuracy improved slightly: `25.00%` -> `26.50%`
+  - left stage-1 view accuracy held flat at `26.50%`
+- but the gate-critical metrics still got worse:
+  - initial accuracy: `28.50%` -> `28.00%`
+  - corrected samples: `7` -> `5`
+  - final accuracy: `32.00%` -> `30.50%`
+  - `interaction_centroid_accuracy`: `29.0%` -> `28.5%`
+  - `confidence_concat_centroid_accuracy`: `30.0%` -> `28.0%`
+- the most important audit signal was that the separate vote did not actually change the hemisphere neighbor structure:
+  - left `mean_topk_purity`: unchanged at `0.184444`
+  - right `mean_topk_purity`: unchanged at `0.185556`
+  - left `mean_best_neighbor_similarity`: unchanged at `0.887603`
+  - right `mean_best_neighbor_similarity`: unchanged at `0.887609`
+- this means the object-memory bank was active but did not create new usable separability beyond the protected hemisphere code
+
+Lesson:
+
+- a separate figure-ground object-memory vote is much safer than direct concatenation and less blunt than whole-pattern masking, but this exact sparse-region exemplar bank is still too redundant or noisy to improve the protected classifier surface
+- the unchanged purity and neighbor metrics matter more than the slight right-view lift: the new bank did not actually reshape the local class geometry
+- do not spend a `50/500` gate on gain-retuning or keep-fraction retuning this exact object-memory vote
+- if figure-ground is revisited again, it likely needs a materially different object-level representation or confusion-targeted selective association step, not another parallel vote over sparsified raw regions
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- keep the opt-in code path as reference only
+- do not spend a `50/500` gate on this separate figure-ground object-memory vote
+
+## Rabbit Hole #51: Bounded Recurrent Sensory-State Settling
+
+What we tried:
+
+- implemented a default-off recurrent sensory-state path in `experiments/retina_classification.cpp`
+- when enabled, stage-1 storage no longer keeps the raw extracted feature vector; it stores a settled state built from:
+  - multi-fixation extraction even when the protected baseline uses `saccade_training_only=on`
+  - feedforward retinal drive
+  - recurrent self-state persistence across update cycles
+  - figure-ground-derived same-dimensional drive
+  - fixation-to-fixation continuity from the previous settled state
+  - early callosal support mixed before the settled state is stored/classified
+- routed inference through the same settled-state path, so replay and testing both operate on the new state representation instead of only patching readout-time behavior
+- exposed the bounded probe with:
+  - `--recurrent-sensory-state-enabled`
+  - `--recurrent-sensory-cycles 3`
+  - `--recurrent-sensory-feedforward-gain 0.55`
+  - `--recurrent-sensory-state-gain 0.35`
+  - `--recurrent-sensory-figure-ground-gain 0.25`
+  - `--recurrent-sensory-continuity-gain 0.20`
+  - `--recurrent-sensory-callosal-gain 0.15`
+- evaluated under the same-build strict audited smoke gate:
+  - control: `build/cifar10_recurrent_sensory_control_samebuild_flow_audit_20_200.log`
+  - control summary: `flow_audit_recurrent_sensory_control_samebuild_testing_summary.json`
+  - probe: `build/cifar10_recurrent_sensory_probe_samebuild_flow_audit_20_200.log`
+  - probe summary: `flow_audit_recurrent_sensory_probe_samebuild_testing_summary.json`
+
+Why it was not productive enough:
+
+- the protected same-build control stayed at `32.00%` (`64/200`)
+- the recurrent sensory-state probe finished at `31.00%` (`62/200`)
+- the new path was live and materially different:
+  - elapsed time rose from `81.56s` to `315.66s`
+  - recurrent settled-memory construction alone took about `81s` for the `200` stored patterns
+  - both training and inference ran through the settled-state path
+- but the gate-critical metrics still regressed:
+  - initial accuracy: `28.50%` -> `27.50%`
+  - final accuracy: `32.00%` -> `31.00%`
+  - left stage-1 view accuracy: `26.50%` -> `24.50%`
+  - right stage-1 view accuracy: `25.00%` -> `20.50%`
+  - `confidence_concat_centroid_accuracy`: `30.0%` -> `28.0%`
+- there were a few encouraging but insufficient signs:
+  - `interaction_centroid_accuracy`: `29.0%` -> `29.5%`
+  - left `mean_topk_purity`: `0.184444` -> `0.190556`
+  - right `mean_topk_purity`: `0.185556` -> `0.186667`
+- the more important failure signal is that nearest-neighbor collapse pressure increased:
+  - left `mean_best_neighbor_similarity`: `0.887603` -> `0.908979`
+  - right `mean_best_neighbor_similarity`: `0.887609` -> `0.908935`
+- that means the bounded recurrent path slightly tightened local class clusters while simultaneously making the overall hemisphere representation more self-similar and less useful for the existing readout surface
+
+Lesson:
+
+- this is not the same failure mode as the direct figure-ground append/mask/vote probes; it did not collapse the class space and it did improve a few local purity and interaction metrics
+- but it is still not promotable because the current readout remains exemplar/classifier matching over settled vectors, and this exact gain setting weakens both stage-1 view accuracy and final CIFAR accuracy while increasing neighbor similarity
+- the main alignment point remains valid: if this family is revisited, the next step should be a more explicit recurrent object-state readout or object-level settling boundary, not another same-surface gain retune over the current classifier space
+
+Status:
+
+- documented as the first bounded recurrent state-settling probe
+- not promotable on the current CIFAR surface
+- do not spend a `50/500` gate on this exact recurrent gain setting
+
+## Rabbit Hole #52: Recurrent State + Population-Centroid Readout
+
+What we tried:
+
+- kept the bounded recurrent sensory-state path from Rabbit Hole #51
+- replaced the recurrent path's hemisphere exemplar-matcher readout with a class-state centroid readout
+- for recurrent-path inference and corpus-callosum calibration, classification no longer called the stage-1 matcher against `trainingPatterns`; it read out cosine evidence against class centroids built from the settled recurrent states
+- exposed the change with:
+  - `--recurrent-population-readout-enabled`
+- evaluated under the same-build strict audited smoke gate:
+  - control: `build/cifar10_recurrent_population_readout_control_20_200.log`
+  - control summary: `flow_audit_recurrent_population_readout_control_testing_summary.json`
+  - probe: `build/cifar10_recurrent_population_readout_probe_20_200.log`
+  - probe summary: `flow_audit_recurrent_population_readout_probe_testing_summary.json`
+
+Why it was not productive enough:
+
+- the protected same-build control stayed at `32.00%` (`64/200`)
+- the recurrent + population-readout probe regressed harder, to `29.50%` (`59/200`)
+- the centroid-style readout changed the error shape substantially, but not in the right direction:
+  - stage-1 view accuracy shifted from `26.50%/25.00%` to `29.00%/28.00%`
+  - yet fusion degraded badly:
+    - `interaction_centroid_accuracy`: `29.0%` -> `23.0%`
+    - `confidence_concat_centroid_accuracy`: `30.0%` -> `23.0%`
+- hemisphere-local purity did not improve enough to matter:
+  - left `mean_topk_purity`: `0.184444` -> `0.188333`
+  - right `mean_topk_purity`: `0.185556` -> `0.183333`
+- nearest-neighbor collapse pressure stayed high, just like the previous recurrent probe:
+  - left `mean_best_neighbor_similarity`: `0.887603` -> `0.908711`
+  - right `mean_best_neighbor_similarity`: `0.887609` -> `0.908599`
+- centroid margins also stayed worse than control in both hemispheres
+
+Lesson:
+
+- simply swapping the recurrent path from exemplar matching to class-centroid population readout does not solve the current mismatch
+- it improves neither the class geometry enough nor the fusion surface enough; instead it amplifies a flatter, more self-similar hemisphere code and makes the final bilateral decision surface worse
+- this means the next biologically aligned step is not another matcher-vs-centroid toggle on the same settled state
+- if this family is revisited, it needs a genuinely different readout boundary, likely an explicit object-state or attractor-style readout rather than class centroids over the current settled vector
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- do not spend a `50/500` gate on this exact recurrent-population-readout formulation
+
+## Rabbit Hole #53: Recurrent State + Object-State Attractor Readout
+
+What we tried:
+
+- kept the bounded recurrent sensory-state path from Rabbit Hole #51
+- replaced the recurrent-path readout with an explicit object-state attractor layer instead of exemplar matching or class centroids
+- built a per-hemisphere object-state bank from the settled recurrent training states:
+  - `3` attractor units per class
+  - `30` attractor units per hemisphere on the strict `20/class` gate
+- each test state was read out by:
+  - cosine drive into the object-state units
+  - recurrent self-persistence
+  - same-class support amplification
+  - cross-class competition
+  - final class vote from the settled object-state units
+- exposed the path with:
+  - `--recurrent-object-state-readout-enabled`
+  - `--recurrent-object-state-units-per-class 3`
+  - `--recurrent-object-state-cycles 4`
+  - `--recurrent-object-state-input-gain 1.0`
+  - `--recurrent-object-state-self-gain 0.35`
+  - `--recurrent-object-state-class-support-gain 0.40`
+  - `--recurrent-object-state-competition-gain 0.55`
+- evaluated under the same-build strict audited smoke gate:
+  - control: `build/cifar10_recurrent_object_state_control_20_200.log`
+  - control summary: `flow_audit_recurrent_object_state_control_testing_summary.json`
+  - probe: `build/cifar10_recurrent_object_state_probe_20_200.log`
+  - probe summary: `flow_audit_recurrent_object_state_probe_testing_summary.json`
+
+Why it was not productive enough:
+
+- the protected same-build control stayed at `32.00%` (`64/200`)
+- the recurrent + object-state-attractor probe regressed badly to `27.50%` (`55/200`)
+- the readout was live:
+  - recurrent settled-state storage completed normally
+  - each hemisphere built `30` object-state attractors
+- the failure mode was broad, not just a mild regression:
+  - initial accuracy: `28.50%` -> `20.50%`
+  - final accuracy: `32.00%` -> `27.50%`
+  - left/right stage-1 accuracy: `26.50%/25.00%` -> `23.00%/19.50%`
+  - `interaction_centroid_accuracy`: `29.0%` -> `18.0%`
+  - `confidence_concat_centroid_accuracy`: `30.0%` -> `18.5%`
+- nearest-neighbor collapse pressure again stayed high:
+  - left `mean_best_neighbor_similarity`: `0.887603` -> `0.908604`
+  - right `mean_best_neighbor_similarity`: `0.887609` -> `0.908502`
+- the resulting confusion structure showed broad truck-dominant collapse on multiple classes, meaning the attractor competition did not discover a cleaner object-level decision surface
+
+Lesson:
+
+- adding an explicit attractor-style readout boundary is directionally closer to the biological goal, but this first formulation still operates on a class-labeled prototype bank over the same settled state, and it made both hemisphere and fusion behavior worse
+- the broad degradation means the current attractor dynamics are too coarse or too label-tied to serve as a useful object-state layer
+- if this area is revisited, the next step should not be a mild retune of gains or unit count; it needs a materially different object-state representation or a different upstream state geometry before attractor competition
+
+Status:
+
+- documented and closed for promotion on the current CIFAR surface
+- do not spend a `50/500` gate on this exact recurrent-object-state-attractor readout
 
 ## Reusable Work Worth Keeping
 

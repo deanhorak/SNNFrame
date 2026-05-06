@@ -5,7 +5,12 @@
 
 namespace snnfw {
 
-BinaryPattern::BinaryPattern(const std::vector<double>& spikeTimes, double windowSize) : data_() {
+BinaryPattern::BinaryPattern(const std::vector<double>& spikeTimes, double windowSize)
+    : BinaryPattern(spikeTimes, windowSize, true) {}
+
+BinaryPattern::BinaryPattern(const std::vector<double>& spikeTimes,
+                             double windowSize,
+                             bool anchorToFirstSpike) : data_() {
     if (spikeTimes.empty()) {
         return;  // Empty pattern
     }
@@ -14,16 +19,13 @@ BinaryPattern::BinaryPattern(const std::vector<double>& spikeTimes, double windo
         return;  // Invalid window, treat as empty
     }
 
-    // Anchor bins to the trailing temporal window rather than the first spike.
-    // This preserves latency/phase information inside the window, which is
-    // important for temporal pattern discrimination.
-    double maxTime = *std::max_element(spikeTimes.begin(), spikeTimes.end());
-    double windowStart = maxTime - windowSize;
+    const double windowStart = anchorToFirstSpike
+        ? *std::min_element(spikeTimes.begin(), spikeTimes.end())
+        : 0.0;
 
-    // Convert spike times to binned representation (relative to first spike)
+    // Convert spike times to a binned representation using the selected anchor.
     for (double spikeTime : spikeTimes) {
-        // Normalize to relative time within [windowStart, windowStart + windowSize)
-        double relativeTime = spikeTime - windowStart;
+        const double relativeTime = spikeTime - windowStart;
 
         // Only consider spikes within [0, windowSize)
         if (relativeTime < 0.0 || relativeTime >= windowSize) {

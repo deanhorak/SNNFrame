@@ -75,12 +75,19 @@ size_t pickWeakestPatternIndex(const BinaryPattern& pattern,
 }
 } // namespace
 
-Neuron::Neuron(double windowSizeMs, double similarityThreshold, size_t maxReferencePatterns, uint64_t neuronId)
+Neuron::Neuron(double windowSizeMs,
+               double similarityThreshold,
+               size_t maxReferencePatterns,
+               uint64_t neuronId,
+               bool preserveSpikeLatency)
     : NeuralObject(neuronId),
       windowSize(windowSizeMs),
       maxSpikeTime_(-std::numeric_limits<double>::infinity()),  // Initialize to -infinity
       threshold(similarityThreshold),
       maxPatterns(maxReferencePatterns),
+      preserveSpikeLatency_(preserveSpikeLatency),
+      latencyMemory_(),
+      latencyMemoryPatternCount_(0),
       axonId(0),
       similarityMetric_(SimilarityMetric::COSINE),  // Default to cosine similarity
       inhibition_(0.0),
@@ -129,8 +136,13 @@ void Neuron::learnCurrentPattern() {
         spikesCopy = spikes;
     }
 
+    if (preserveSpikeLatency_) {
+        learnLatencyMemory(spikesCopy);
+        return;
+    }
+
     // Convert current spike window to BinaryPattern (200 bytes, fixed size)
-    BinaryPattern newPattern(spikesCopy, windowSize);
+    BinaryPattern newPattern(spikesCopy, windowSize, true);
 
     SNNFW_DEBUG("Neuron {}: Converting {} spike times to BinaryPattern ({} total spikes)",
                 getId(), spikesCopy.size(), newPattern.getTotalSpikes());
@@ -417,6 +429,78 @@ double Neuron::findBestSimilarity(const BinaryPattern& currentPattern,
     return bestSim;
 }
 
+void Neuron::learnLatencyMemory(const std::vector<double>& spikes) {
+    if (spikes.empty() || windowSize <= 0.0) {
+        return;
+    }
+
+    bool storedAny = false;
+    for (double spikeTime : spikes) {
+        if (spikeTime < 0.0 || spikeTime >= windowSize) {
+            continue;
+        }
+        const double scaled =
+            (std::abs(windowSize - static_cast<double>(BinaryPattern::PATTERN_SIZE)) < 1e-9)
+                ? spikeTime
+                : ((spikeTime / windowSize) * static_cast<double>(BinaryPattern::PATTERN_SIZE));
+        int binIndex = static_cast<int>(std::round(scaled));
+        binIndex = std::clamp(binIndex, 0, static_cast<int>(BinaryPattern::PATTERN_SIZE) - 1);
+        auto& count = latencyMemory_[static_cast<size_t>(binIndex)];
+        if (count < std::numeric_limits<uint16_t>::max()) {
+            ++count;
+        }
+        storedAny = true;
+    }
+    if (storedAny) {
+        ++latencyMemoryPatternCount_;
+    }
+}
+
+double Neuron::getLatencyMemorySimilarity(const std::vector<double>& spikes) const {
+    if (spikes.empty() || latencyMemoryPatternCount_ == 0 || windowSize <= 0.0) {
+        return 0.0;
+    }
+
+    constexpr int kRadius = 6;
+    constexpr double kSigma = 3.0;
+    double similaritySum = 0.0;
+    size_t validSpikes = 0;
+
+    for (double spikeTime : spikes) {
+        if (spikeTime < 0.0 || spikeTime >= windowSize) {
+            continue;
+        }
+        const double scaled =
+            (std::abs(windowSize - static_cast<double>(BinaryPattern::PATTERN_SIZE)) < 1e-9)
+                ? spikeTime
+                : ((spikeTime / windowSize) * static_cast<double>(BinaryPattern::PATTERN_SIZE));
+        const int centerBin = std::clamp(
+            static_cast<int>(std::round(scaled)),
+            0,
+            static_cast<int>(BinaryPattern::PATTERN_SIZE) - 1);
+        double best = 0.0;
+        for (int delta = -kRadius; delta <= kRadius; ++delta) {
+            const int bin = centerBin + delta;
+            if (bin < 0 || bin >= static_cast<int>(BinaryPattern::PATTERN_SIZE)) {
+                continue;
+            }
+            const uint16_t count = latencyMemory_[static_cast<size_t>(bin)];
+            if (count == 0) {
+                continue;
+            }
+            const double occupancy = count > 0 ? 1.0 : 0.0;
+            const double temporalKernel =
+                std::exp(-(static_cast<double>(delta * delta)) / (2.0 * kSigma * kSigma));
+            best = std::max(best, occupancy * temporalKernel);
+        }
+        similaritySum += best;
+        ++validSpikes;
+    }
+
+    return validSpikes > 0 ? std::clamp(similaritySum / static_cast<double>(validSpikes), 0.0, 1.0)
+                           : 0.0;
+}
+
 const std::vector<BinaryPattern>& Neuron::getLearnedPatterns() const {
     combinedPatternsCache_.clear();
     combinedPatternsCache_.reserve(prototypePatterns_.size() + exemplarPatterns_.size());
@@ -439,7 +523,11 @@ bool Neuron::shouldFire() const {
     }
 
     // Convert current spikes to BinaryPattern for comparison
-    BinaryPattern currentPattern(spikesCopy, windowSize);
+    BinaryPattern currentPattern(spikesCopy, windowSize, !preserveSpikeLatency_);
+
+    if (preserveSpikeLatency_) {
+        return getLatencyMemorySimilarity(spikesCopy) >= std::clamp(threshold, 0.0, 1.0);
+    }
 
     const double effectiveThreshold = std::clamp(threshold, 0.0, 1.0);
     return std::max(findBestSimilarity(currentPattern, prototypePatterns_),
@@ -457,8 +545,12 @@ double Neuron::getBestSimilarity() const {
         spikesCopy = spikes;
     }
 
+    if (preserveSpikeLatency_) {
+        return getLatencyMemorySimilarity(spikesCopy);
+    }
+
     // Convert current spikes to BinaryPattern
-    BinaryPattern currentPattern(spikesCopy, windowSize);
+    BinaryPattern currentPattern(spikesCopy, windowSize, !preserveSpikeLatency_);
 
     double bestSim = std::max(findBestSimilarity(currentPattern, prototypePatterns_),
                               findBestSimilarity(currentPattern, exemplarPatterns_));
@@ -467,7 +559,7 @@ double Neuron::getBestSimilarity() const {
 
 int Neuron::findMostSimilarPattern(const std::vector<double>& newPattern) const {
     // Convert newPattern to BinaryPattern for comparison
-    BinaryPattern newBinaryPattern(newPattern, windowSize);
+    BinaryPattern newBinaryPattern(newPattern, windowSize, !preserveSpikeLatency_);
 
     int bestIndex = -1;
     double bestSim = -1.0;

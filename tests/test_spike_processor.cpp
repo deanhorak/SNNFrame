@@ -131,20 +131,21 @@ TEST_F(SpikeProcessorTest, ScheduleNullSpike) {
     EXPECT_FALSE(scheduled);
 }
 
-TEST_F(SpikeProcessorTest, ScheduleSpikeInPast) {
+TEST_F(SpikeProcessorTest, ScheduleSpikeInPastClampsForward) {
     SpikeProcessor processor(1000, 2);
     
     processor.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
-    // Try to schedule spike in the past
+    // Past spikes are clamped forward to the next time step so async delivery
+    // does not silently drop late-arriving events.
     auto ap = std::make_shared<ActionPotential>(100, 2001, 0.0);
     bool scheduled = processor.scheduleSpike(ap);
     
     processor.stop();
     
-    // Should fail because time is in the past
-    EXPECT_FALSE(scheduled);
+    EXPECT_TRUE(scheduled);
+    EXPECT_GT(ap->getScheduledTime(), 0.0);
 }
 
 TEST_F(SpikeProcessorTest, ScheduleSpikeTooFarInFuture) {
@@ -310,4 +311,3 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
-

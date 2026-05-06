@@ -91,6 +91,9 @@ public:
      * @brief Schedule an action potential for delivery
      * @param actionPotential The action potential to schedule
      * @return true if scheduled successfully, false if time is out of range
+     *
+     * Events scheduled in the past or current delivery slice are clamped to the
+     * next time step to avoid losing spikes in the asynchronous delivery loop.
      */
     bool scheduleSpike(const std::shared_ptr<ActionPotential>& actionPotential);
 
@@ -98,6 +101,9 @@ public:
      * @brief Schedule a retrograde action potential for delivery
      * @param retrogradeAP The retrograde action potential to schedule
      * @return true if scheduled successfully, false if time is out of range
+     *
+     * Events scheduled in the past or current delivery slice are clamped to the
+     * next time step to avoid losing spikes in the asynchronous delivery loop.
      */
     bool scheduleRetrogradeSpike(const std::shared_ptr<RetrogradeActionPotential>& retrogradeAP);
 

@@ -4,7 +4,7 @@
 Add reward-driven continuous learning for the bilateral Retina EMNIST benchmark
 
 ## What changed
-- Added reward-driven online adaptation to `experiments/emnist_retina_letters.cpp`
+- Added reward-driven online adaptation to `experiments/retina_classification.cpp`
 - Added delayed replay queue for misclassified or uncertain samples
 - Added context-gated plasticity based on uncertainty and hemisphere disagreement
 - Added bounded hybrid updates:
@@ -67,7 +67,7 @@ These are separate benchmark categories. The continuous benchmark includes onlin
   - context disagreement gain
 
 ## Main files
-- `experiments/emnist_retina_letters.cpp`
+- `experiments/retina_classification.cpp`
 - `configs/emnist_retina_bilateral_continuous.sonata.json`
 - `scripts/run_emnist_retina_bilateral_continuous.sh`
 - `README.md`

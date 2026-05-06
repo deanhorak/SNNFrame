@@ -8,6 +8,7 @@
 #include <memory>
 #include <deque>
 #include <mutex>
+#include <array>
 
 namespace snnfw {
 
@@ -69,8 +70,14 @@ public:
      * @param similarityThreshold Threshold for pattern similarity (0.0 to 1.0)
      * @param maxReferencePatterns Maximum number of reference patterns to store
      * @param neuronId Unique identifier for this neuron (default: 0)
+     * @param preserveSpikeLatency If true, learned patterns preserve absolute spike
+     * latency inside the window instead of normalizing each pattern to its first spike
      */
-    Neuron(double windowSizeMs, double similarityThreshold, size_t maxReferencePatterns = 20, uint64_t neuronId = 0);
+    Neuron(double windowSizeMs,
+           double similarityThreshold,
+           size_t maxReferencePatterns = 20,
+           uint64_t neuronId = 0,
+           bool preserveSpikeLatency = false);
 
     /**
      * @brief Insert a spike with a given timestamp
@@ -120,6 +127,11 @@ public:
     size_t getMaxReferencePatterns() const { return maxPatterns; }
 
     /**
+     * @brief Whether pattern binning preserves absolute spike latency from t=0
+     */
+    bool preservesSpikeLatency() const { return preserveSpikeLatency_; }
+
+    /**
      * @brief Print current rolling window of spikes
      */
     void printSpikes() const;
@@ -146,7 +158,7 @@ public:
      * @return Number of reference patterns stored
      */
     size_t getLearnedPatternCount() const {
-        return prototypePatterns_.size() + exemplarPatterns_.size();
+        return prototypePatterns_.size() + exemplarPatterns_.size() + latencyMemoryPatternCount_;
     }
 
     /**
@@ -385,6 +397,9 @@ private:
     double windowSize;                                   ///< Size of rolling window in ms
     double threshold;                                    ///< Similarity threshold for firing
     size_t maxPatterns;                                  ///< Maximum number of reference patterns
+    bool preserveSpikeLatency_;                          ///< Preserve absolute spike latency in BinaryPattern bins
+    std::array<uint16_t, BinaryPattern::PATTERN_SIZE> latencyMemory_; ///< Compact absolute-latency memory
+    size_t latencyMemoryPatternCount_;                   ///< Number of latency patterns absorbed
 
     uint64_t axonId;                                     ///< ID of the axon for this neuron (0 if not set)
     std::vector<uint64_t> dendriteIds;                   ///< IDs of dendrites connected to this neuron
@@ -437,6 +452,8 @@ private:
      * @return Similarity score (0.0 to 1.0)
      */
     double computeSimilarity(const BinaryPattern& a, const BinaryPattern& b) const;
+    void learnLatencyMemory(const std::vector<double>& spikes);
+    double getLatencyMemorySimilarity(const std::vector<double>& spikes) const;
 
     double findBestSimilarity(
         const BinaryPattern& currentPattern,

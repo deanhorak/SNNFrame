@@ -38,6 +38,24 @@ TEST(BinaryPatternTest, WindowSizeScalingKeepsSpikes) {
     EXPECT_GE(pattern[BinaryPattern::PATTERN_SIZE - 1], 1);
 }
 
+TEST(BinaryPatternTest, AbsoluteLatencyModePreservesSingleSpikeTiming) {
+    BinaryPattern early({10.0}, 200.0, false);
+    BinaryPattern late({80.0}, 200.0, false);
+
+    EXPECT_EQ(early[10], 1);
+    EXPECT_EQ(late[80], 1);
+    EXPECT_LT(BinaryPattern::cosineSimilarity(early, late), 1.0);
+}
+
+TEST(BinaryPatternTest, FirstSpikeRelativeModeCollapsesSingleSpikeLatency) {
+    BinaryPattern early({10.0}, 200.0, true);
+    BinaryPattern late({80.0}, 200.0, true);
+
+    EXPECT_EQ(early[0], 1);
+    EXPECT_EQ(late[0], 1);
+    EXPECT_DOUBLE_EQ(BinaryPattern::cosineSimilarity(early, late), 1.0);
+}
+
 TEST(BinaryPatternTest, EmptyPattern) {
     BinaryPattern pattern;
 

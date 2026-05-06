@@ -151,9 +151,10 @@ TEST_F(NeuronTest, LearnPattern) {
 
     clearCapturedOutput();
     neuron.learnCurrentPattern();
-    std::string output = getCapturedOutput();
 
-    EXPECT_NE(output.find("Learned new BinaryPattern"), std::string::npos);
+    EXPECT_EQ(neuron.getLearnedPatternCount(), 1);
+    EXPECT_EQ(neuron.getPrototypePatternCount(), 0);
+    EXPECT_EQ(neuron.getExemplarPatternCount(), 1);
 }
 
 // Test: Pattern recognition triggers firing
@@ -178,6 +179,22 @@ TEST_F(NeuronTest, PatternRecognitionTriggersFiring) {
     EXPECT_GE(neuron.getBestSimilarity(), 0.94);
 }
 
+TEST_F(NeuronTest, LatencyPreservingModeDistinguishesSingleSpikePatterns) {
+    snnfw::Neuron relativeNeuron(200.0, 0.95, 20, 0, false);
+    relativeNeuron.insertSpike(10.0);
+    relativeNeuron.learnCurrentPattern();
+    relativeNeuron.clearSpikes();
+    relativeNeuron.insertSpike(80.0);
+    EXPECT_DOUBLE_EQ(relativeNeuron.getBestSimilarity(), 1.0);
+
+    snnfw::Neuron latencyNeuron(200.0, 0.95, 20, 0, true);
+    latencyNeuron.insertSpike(10.0);
+    latencyNeuron.learnCurrentPattern();
+    latencyNeuron.clearSpikes();
+    latencyNeuron.insertSpike(80.0);
+    EXPECT_LT(latencyNeuron.getBestSimilarity(), 1.0);
+}
+
 // Test: Store multiple patterns
 TEST_F(NeuronTest, StoreMultiplePatterns) {
     snnfw::Neuron neuron(50.0, 0.95, 20);
@@ -187,11 +204,12 @@ TEST_F(NeuronTest, StoreMultiplePatterns) {
     neuron.insertSpike(20.0);
     neuron.insertSpike(30.0);
     neuron.learnCurrentPattern();
+    neuron.clearSpikes();
 
-    // Pattern 2 (different timing)
+    // Pattern 2 has a different relative spike shape, not just an absolute time shift.
     neuron.insertSpike(80.0);
-    neuron.insertSpike(90.0);
-    neuron.insertSpike(100.0);
+    neuron.insertSpike(95.0);
+    neuron.insertSpike(115.0);
     neuron.learnCurrentPattern();
 
     clearCapturedOutput();
@@ -210,24 +228,22 @@ TEST_F(NeuronTest, MaximumPatternCapacity) {
     for (int i = 0; i < 3; ++i) {
         double base = i * 100.0;
         neuron.insertSpike(base + 10.0);
-        neuron.insertSpike(base + 20.0);
+        neuron.insertSpike(base + 20.0 + i * 5.0);
         neuron.learnCurrentPattern();
+        neuron.clearSpikes();
     }
 
     clearCapturedOutput();
 
-    // Try to add 4th pattern - should blend or replace
+    // Try to add 4th distinct pattern - capacity is full, so it should replace.
     neuron.insertSpike(310.0);
-    neuron.insertSpike(320.0);
+    neuron.insertSpike(345.0);
     neuron.learnCurrentPattern();
 
     std::string output = getCapturedOutput();
 
-    // Should either blend or replace, not add new
-    bool blended = output.find("lended") != std::string::npos;  // "Blended" in log
-    bool replaced = output.find("eplaced") != std::string::npos; // "Replaced" in log
-
-    EXPECT_TRUE(blended || replaced);
+    EXPECT_EQ(neuron.getLearnedPatternCount(), 3);
+    EXPECT_NE(output.find("Replaced"), std::string::npos);
 }
 
 // Test: Different pattern sizes don't match

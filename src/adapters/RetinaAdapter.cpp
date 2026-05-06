@@ -779,6 +779,7 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , neuronWindowSize_(200.0)
     , neuronThreshold_(0.7)
     , neuronMaxPatterns_(100)
+    , preserveSpikeLatency_(true)
     , minimumRegionSize_(1)
     , edgeAnalysisRegionSize_(0)
     , maxFrequencyBandsPerFeature_(1)
@@ -793,6 +794,11 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , lgnCenterSigma_(0.6)
     , lgnSurroundSigma_(1.4)
     , lgnCenterSurroundStrength_(0.0)
+    , lgnBurstTonicEnabled_(false)
+    , lgnBurstThreshold_(0.12)
+    , lgnBurstExtraStrength_(0.18)
+    , lgnBurstSlope_(6.0)
+    , lgnBurstNeuromodulator_(1.0)
     , lgnParallelRelayEnabled_(false)
     , lgnMagnoCenterSigma_(0.45)
     , lgnMagnoSurroundSigma_(1.8)
@@ -859,6 +865,16 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     , homeostaticActivityDecay_(0.97)
     , homeostaticGainMin_(0.75)
     , homeostaticGainMax_(1.25)
+    , sensoryTripletBcmEnabled_(false)
+    , sensoryTripletBcmLearningRate_(0.01)
+    , sensoryTripletBcmLtp_(0.10)
+    , sensoryTripletBcmLtd_(0.04)
+    , sensoryTripletFastDecay_(0.80)
+    , sensoryTripletSlowDecay_(0.97)
+    , sensoryBcmThresholdDecay_(0.98)
+    , sensoryBcmTargetActivation_(0.08)
+    , sensoryTripletBcmGainMin_(0.85)
+    , sensoryTripletBcmGainMax_(1.15)
     , imageRows_(0)
     , imageCols_(0)
     , imageChannels_(1)
@@ -879,6 +895,7 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     neuronWindowSize_ = getDoubleParam("neuron_window_size", 200.0);
     neuronThreshold_ = getDoubleParam("neuron_threshold", 0.7);
     neuronMaxPatterns_ = getIntParam("neuron_max_patterns", 100);
+    preserveSpikeLatency_ = getIntParam("preserve_spike_latency", 1) != 0;
     minimumRegionSize_ = getIntParam(
         "minimum_region_size",
         edgeOperatorType_ == "sobel" ? 3 : 1);
@@ -898,6 +915,14 @@ RetinaAdapter::RetinaAdapter(const Config& config)
         std::max(lgnCenterSigma_ + 1e-3, getDoubleParam("lgn_surround_sigma", 1.4));
     lgnCenterSurroundStrength_ =
         std::max(0.0, getDoubleParam("lgn_center_surround_strength", 0.0));
+    lgnBurstTonicEnabled_ = getIntParam("lgn_burst_tonic_enabled", 0) != 0;
+    lgnBurstThreshold_ =
+        std::clamp(getDoubleParam("lgn_burst_threshold", 0.12), 0.0, 1.0);
+    lgnBurstExtraStrength_ =
+        std::max(0.0, getDoubleParam("lgn_burst_extra_strength", 0.18));
+    lgnBurstSlope_ = std::max(0.0, getDoubleParam("lgn_burst_slope", 6.0));
+    lgnBurstNeuromodulator_ =
+        std::clamp(getDoubleParam("lgn_burst_neuromodulator", 1.0), 0.0, 1.0);
     lgnParallelRelayEnabled_ = getIntParam("lgn_parallel_relay_enabled", 0) != 0;
     lgnMagnoCenterSigma_ =
         std::max(0.0, getDoubleParam("lgn_magno_center_sigma", 0.45));
@@ -999,6 +1024,23 @@ RetinaAdapter::RetinaAdapter(const Config& config)
     homeostaticGainMin_ = std::max(0.05, getDoubleParam("homeostatic_gain_min", 0.75));
     homeostaticGainMax_ =
         std::max(homeostaticGainMin_, getDoubleParam("homeostatic_gain_max", 1.25));
+    sensoryTripletBcmEnabled_ = getIntParam("sensory_triplet_bcm_enabled", 0) != 0;
+    sensoryTripletBcmLearningRate_ =
+        std::max(0.0, getDoubleParam("sensory_triplet_bcm_learning_rate", 0.01));
+    sensoryTripletBcmLtp_ = std::max(0.0, getDoubleParam("sensory_triplet_bcm_ltp", 0.10));
+    sensoryTripletBcmLtd_ = std::max(0.0, getDoubleParam("sensory_triplet_bcm_ltd", 0.04));
+    sensoryTripletFastDecay_ =
+        std::clamp(getDoubleParam("sensory_triplet_fast_decay", 0.80), 0.0, 0.9999);
+    sensoryTripletSlowDecay_ =
+        std::clamp(getDoubleParam("sensory_triplet_slow_decay", 0.97), 0.0, 0.9999);
+    sensoryBcmThresholdDecay_ =
+        std::clamp(getDoubleParam("sensory_bcm_threshold_decay", 0.98), 0.0, 0.9999);
+    sensoryBcmTargetActivation_ =
+        std::clamp(getDoubleParam("sensory_bcm_target_activation", 0.08), 0.0, 1.0);
+    sensoryTripletBcmGainMin_ =
+        std::max(0.05, getDoubleParam("sensory_triplet_bcm_gain_min", 0.85));
+    sensoryTripletBcmGainMax_ = std::max(
+        sensoryTripletBcmGainMin_, getDoubleParam("sensory_triplet_bcm_gain_max", 1.15));
     frequencyBands_ = parseFrequencyBands(getStringParam("frequency_values", ""));
     configureFrequencyBands();
 
@@ -1107,7 +1149,8 @@ void RetinaAdapter::createNeurons() {
                 neuronWindowSize_,      // Temporal window for pattern learning (ms)
                 neuronThreshold_,       // Similarity threshold for pattern matching
                 neuronMaxPatterns_,     // Maximum patterns to store per neuron
-                neuronId++              // Unique neuron ID
+                neuronId++,             // Unique neuron ID
+                preserveSpikeLatency_   // Preserve latency-coded feature intensity
             );
             neuronGrid_[region][channel] = neuron;
             neurons_.push_back(neuron);
@@ -1942,9 +1985,50 @@ RetinaAdapter::Image RetinaAdapter::applyLgnRelayWithParams(const Image& image,
     return relayed;
 }
 
+RetinaAdapter::Image RetinaAdapter::applyLgnBurstTonicRelay(const Image& image) const {
+    if (lgnCenterSurroundStrength_ <= 0.0) {
+        return image;
+    }
+
+    const auto centerImage = blurImage(image, lgnCenterSigma_);
+    const auto surroundImage = blurImage(image, lgnSurroundSigma_);
+    Image relayed = centerImage;
+    const int channels = std::max(1, image.channels);
+    const double transitionSlope = std::max(1e-6, lgnBurstSlope_);
+    const double burstExtra = lgnBurstExtraStrength_ * lgnBurstNeuromodulator_;
+
+    for (int row = 0; row < image.rows; ++row) {
+        for (int col = 0; col < image.cols; ++col) {
+            for (int channel = 0; channel < channels; ++channel) {
+                const double centerValue =
+                    static_cast<double>(centerImage.getPixel(row, col, channel));
+                const double surroundValue =
+                    static_cast<double>(surroundImage.getPixel(row, col, channel));
+                const double centerSurround = centerValue - surroundValue;
+                const double localSalience = std::abs(centerSurround) / 255.0;
+                const double burstGate =
+                    std::clamp((localSalience - lgnBurstThreshold_) * transitionSlope, 0.0, 1.0);
+                const double effectiveStrength =
+                    lgnCenterSurroundStrength_ + (burstGate * burstExtra);
+                const double relayedValue = centerValue + effectiveStrength * centerSurround;
+                relayed.pixels[(static_cast<size_t>(row * image.cols + col) *
+                                static_cast<size_t>(channels)) +
+                               static_cast<size_t>(channel)] =
+                    static_cast<uint8_t>(std::clamp(std::lround(relayedValue), 0L, 255L));
+            }
+        }
+    }
+
+    return relayed;
+}
+
 RetinaAdapter::Image RetinaAdapter::applyLgnRelay(const Image& image) const {
     if (!lgnRelayEnabled_ || lgnCenterSurroundStrength_ <= 0.0) {
         return image;
+    }
+
+    if (lgnBurstTonicEnabled_) {
+        return applyLgnBurstTonicRelay(image);
     }
 
     return applyLgnRelayWithParams(
@@ -2989,6 +3073,62 @@ void RetinaAdapter::applyHomeostaticScaling(std::vector<double>& features) {
     }
 }
 
+void RetinaAdapter::applySensoryTripletBcmPlasticity(std::vector<double>& features) {
+    if (!sensoryTripletBcmEnabled_ || features.empty()) {
+        return;
+    }
+
+    const double target = std::max(1e-6, sensoryBcmTargetActivation_);
+    if (sensoryTripletBcmGains_.size() != features.size()) {
+        sensoryTripletBcmGains_.assign(features.size(), 1.0);
+        sensoryTripletFastTrace_.assign(features.size(), target);
+        sensoryTripletSlowTrace_.assign(features.size(), target);
+        sensoryBcmThresholds_.assign(features.size(), target);
+    }
+
+    for (size_t i = 0; i < features.size(); ++i) {
+        features[i] = std::clamp(features[i] * sensoryTripletBcmGains_[i], 0.0, 1.0);
+    }
+
+    if (!homeostaticLearningEnabled_) {
+        return;
+    }
+
+    const double fastMix = 1.0 - sensoryTripletFastDecay_;
+    const double slowMix = 1.0 - sensoryTripletSlowDecay_;
+    const double thresholdMix = 1.0 - sensoryBcmThresholdDecay_;
+    for (size_t i = 0; i < features.size(); ++i) {
+        const double activity = features[i];
+        sensoryTripletFastTrace_[i] =
+            (sensoryTripletFastDecay_ * sensoryTripletFastTrace_[i]) + (fastMix * activity);
+        sensoryTripletSlowTrace_[i] =
+            (sensoryTripletSlowDecay_ * sensoryTripletSlowTrace_[i]) + (slowMix * activity);
+        const double bcmEstimate =
+            std::clamp((sensoryTripletSlowTrace_[i] * sensoryTripletSlowTrace_[i]) / target,
+                       0.0,
+                       1.0);
+        sensoryBcmThresholds_[i] =
+            (sensoryBcmThresholdDecay_ * sensoryBcmThresholds_[i]) +
+            (thresholdMix * bcmEstimate);
+
+        const double threshold = sensoryBcmThresholds_[i];
+        const double depolarization = std::max(0.0, activity - threshold);
+        const double traceSupport = std::max(0.0, sensoryTripletFastTrace_[i] - threshold);
+        const double ltp =
+            sensoryTripletBcmLtp_ * depolarization * traceSupport *
+            (0.5 + sensoryTripletSlowTrace_[i]);
+        const double ltd =
+            sensoryTripletBcmLtd_ * activity *
+            std::max(0.0, threshold - sensoryTripletFastTrace_[i]);
+        const double homeostaticPull = 0.5 * (target - sensoryTripletSlowTrace_[i]);
+        const double delta =
+            sensoryTripletBcmLearningRate_ * (ltp - ltd + homeostaticPull);
+        const double nextGain = sensoryTripletBcmGains_[i] * (1.0 + delta);
+        sensoryTripletBcmGains_[i] =
+            std::clamp(nextGain, sensoryTripletBcmGainMin_, sensoryTripletBcmGainMax_);
+    }
+}
+
 SensoryAdapter::SpikePattern RetinaAdapter::processData(const DataSample& data) {
     // Convert raw data to image
     Image image;
@@ -3315,6 +3455,7 @@ SensoryAdapter::FeatureVector RetinaAdapter::extractFeatures(const DataSample& d
     }
 
     applyHomeostaticScaling(result.features);
+    applySensoryTripletBcmPlasticity(result.features);
 
     return result;
 }
