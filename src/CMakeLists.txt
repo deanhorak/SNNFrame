@@ -2,6 +2,8 @@
 set(LIB_SOURCES
     Neuron.cpp
     BinaryPattern.cpp
+    DendriticSpikeImage.cpp
+    DendriticPatternMemory.cpp
     Cluster.cpp
     Logger.cpp
     ThreadPool.cpp

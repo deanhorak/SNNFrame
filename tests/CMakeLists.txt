@@ -100,6 +100,13 @@ if(GTest_FOUND)
         GTest::gtest_main
     )
 
+    add_executable(test_dendritic_pattern_memory test_dendritic_pattern_memory.cpp)
+    target_link_libraries(test_dendritic_pattern_memory
+        snnfw
+        GTest::gtest
+        GTest::gtest_main
+    )
+
     add_executable(test_network_inspector test_network_inspector.cpp)
     target_link_libraries(test_network_inspector
         snnfw
@@ -212,6 +219,7 @@ if(GTest_FOUND)
     add_test(NAME SpikePropagationTests COMMAND test_spike_propagation)
     add_test(NAME RetrogradeSTDPTests COMMAND test_retrograde_stdp)
     add_test(NAME BinaryPatternTests COMMAND test_binary_pattern)
+    add_test(NAME DendriticPatternMemoryTests COMMAND test_dendritic_pattern_memory)
     add_test(NAME NetworkInspectorTests COMMAND test_network_inspector)
     add_test(NAME ActivityMonitorTests COMMAND test_activity_monitor)
     add_test(NAME PerformanceProfilerTests COMMAND test_performance_profiler)
@@ -245,6 +253,7 @@ if(GTest_FOUND)
         SpikePropagationTests
         RetrogradeSTDPTests
         BinaryPatternTests
+        DendriticPatternMemoryTests
         NetworkInspectorTests
         ActivityMonitorTests
         PerformanceProfilerTests
