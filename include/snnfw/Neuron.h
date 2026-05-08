@@ -3,6 +3,7 @@
 
 #include "snnfw/NeuralObject.h"
 #include "snnfw/BinaryPattern.h"
+#include "snnfw/DendriticPatternMemory.h"
 #include <vector>
 #include <cstddef>
 #include <memory>
@@ -158,8 +159,30 @@ public:
      * @return Number of reference patterns stored
      */
     size_t getLearnedPatternCount() const {
-        return prototypePatterns_.size() + exemplarPatterns_.size() + latencyMemoryPatternCount_;
+        return prototypePatterns_.size() + exemplarPatterns_.size() + latencyMemoryPatternCount_ +
+               dendriticPatternMemory_.prototypeCount();
     }
+
+    /**
+     * @brief Enable incoming spike raster memory for dendritic row x time patterns
+     * @param rows Number of dendritic input rows to encode
+     * @param timeBins Number of temporal bins per row
+     * @param binMs Duration of each temporal bin in milliseconds
+     * @param toleranceBins Allowed temporal jitter when matching patterns
+     */
+    void enableDendriticSpikeImageMemory(uint16_t rows,
+                                         uint16_t timeBins,
+                                         double binMs = 1.0,
+                                         uint16_t toleranceBins = 1);
+
+    /**
+     * @brief Disable dendritic spike image memory and return to spike-train memory
+     */
+    void disableDendriticSpikeImageMemory();
+
+    bool isDendriticSpikeImageMemoryEnabled() const { return dendriticSpikeImageMemoryEnabled_; }
+    size_t getDendriticPatternCount() const { return dendriticPatternMemory_.prototypeCount(); }
+    double getBestDendriticSimilarity() const;
 
     /**
      * @brief Get the number of prototype memories
@@ -400,6 +423,11 @@ private:
     bool preserveSpikeLatency_;                          ///< Preserve absolute spike latency in BinaryPattern bins
     std::array<uint16_t, BinaryPattern::PATTERN_SIZE> latencyMemory_; ///< Compact absolute-latency memory
     size_t latencyMemoryPatternCount_;                   ///< Number of latency patterns absorbed
+    bool dendriticSpikeImageMemoryEnabled_;              ///< Learn incoming synapse x time spike images
+    uint16_t dendriticRows_;                             ///< Number of dendritic image rows
+    uint16_t dendriticTimeBins_;                         ///< Number of dendritic image time bins
+    double dendriticBinMs_;                              ///< Milliseconds per dendritic image bin
+    DendriticPatternMemory dendriticPatternMemory_;      ///< Co-activation/sequence memory over incoming events
 
     uint64_t axonId;                                     ///< ID of the axon for this neuron (0 if not set)
     std::vector<uint64_t> dendriteIds;                   ///< IDs of dendrites connected to this neuron
@@ -454,6 +482,7 @@ private:
     double computeSimilarity(const BinaryPattern& a, const BinaryPattern& b) const;
     void learnLatencyMemory(const std::vector<double>& spikes);
     double getLatencyMemorySimilarity(const std::vector<double>& spikes) const;
+    DendriticSpikeImage buildCurrentDendriticSpikeImage() const;
 
     double findBestSimilarity(
         const BinaryPattern& currentPattern,

@@ -195,6 +195,47 @@ TEST_F(NeuronTest, LatencyPreservingModeDistinguishesSingleSpikePatterns) {
     EXPECT_LT(latencyNeuron.getBestSimilarity(), 1.0);
 }
 
+TEST_F(NeuronTest, DendriticSpikeImageModeLearnsIncomingSpikeRaster) {
+    snnfw::Neuron neuron(50.0, 0.70, 20);
+    neuron.enableDendriticSpikeImageMemory(8, 50, 1.0, 1);
+
+    neuron.recordIncomingSpike(0, 10.0, 10.0);
+    neuron.recordIncomingSpike(2, 15.0, 15.0);
+    neuron.recordIncomingSpike(4, 22.0, 22.0);
+    neuron.learnCurrentPattern();
+
+    EXPECT_TRUE(neuron.isDendriticSpikeImageMemoryEnabled());
+    EXPECT_EQ(neuron.getDendriticPatternCount(), 1);
+    EXPECT_EQ(neuron.getLearnedPatternCount(), 1);
+
+    neuron.clearOldIncomingSpikes(1000.0);
+    neuron.recordIncomingSpike(0, 100.0, 100.0);
+    neuron.recordIncomingSpike(2, 106.0, 106.0);
+    neuron.recordIncomingSpike(4, 111.0, 111.0);
+
+    EXPECT_TRUE(neuron.checkShouldFire());
+    EXPECT_GE(neuron.getBestDendriticSimilarity(), 0.70);
+    EXPECT_GE(neuron.getBestSimilarity(), 0.70);
+}
+
+TEST_F(NeuronTest, DendriticSpikeImageModeRejectsDifferentRaster) {
+    snnfw::Neuron neuron(50.0, 0.70, 20);
+    neuron.enableDendriticSpikeImageMemory(8, 50, 1.0, 1);
+
+    neuron.recordIncomingSpike(0, 10.0, 10.0);
+    neuron.recordIncomingSpike(2, 15.0, 15.0);
+    neuron.recordIncomingSpike(4, 22.0, 22.0);
+    neuron.learnCurrentPattern();
+
+    neuron.clearOldIncomingSpikes(1000.0);
+    neuron.recordIncomingSpike(1, 100.0, 100.0);
+    neuron.recordIncomingSpike(3, 105.0, 105.0);
+    neuron.recordIncomingSpike(5, 112.0, 112.0);
+
+    EXPECT_FALSE(neuron.checkShouldFire());
+    EXPECT_LT(neuron.getBestDendriticSimilarity(), 0.70);
+}
+
 // Test: Store multiple patterns
 TEST_F(NeuronTest, StoreMultiplePatterns) {
     snnfw::Neuron neuron(50.0, 0.95, 20);

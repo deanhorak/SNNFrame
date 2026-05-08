@@ -88,6 +88,11 @@ Neuron::Neuron(double windowSizeMs,
       preserveSpikeLatency_(preserveSpikeLatency),
       latencyMemory_(),
       latencyMemoryPatternCount_(0),
+      dendriticSpikeImageMemoryEnabled_(false),
+      dendriticRows_(0),
+      dendriticTimeBins_(0),
+      dendriticBinMs_(1.0),
+      dendriticPatternMemory_(),
       axonId(0),
       similarityMetric_(SimilarityMetric::COSINE),  // Default to cosine similarity
       inhibition_(0.0),
@@ -125,6 +130,16 @@ void Neuron::insertSpike(double spikeTime) {
 }
 
 void Neuron::learnCurrentPattern() {
+    if (dendriticSpikeImageMemoryEnabled_) {
+        DendriticSpikeImage dendriticImage = buildCurrentDendriticSpikeImage();
+        if (!dendriticImage.empty()) {
+            const size_t patternIndex = dendriticPatternMemory_.learn(dendriticImage);
+            SNNFW_DEBUG("Neuron {}: Learned dendritic spike image #{} ({} spikes, {} total patterns)",
+                        getId(), patternIndex, dendriticImage.spikeCount(), getLearnedPatternCount());
+            return;
+        }
+    }
+
     // Copy spikes under lock to avoid holding lock during pattern learning
     std::vector<double> spikesCopy;
     {
@@ -270,6 +285,35 @@ void Neuron::learnCurrentPattern() {
 void Neuron::setPatternUpdateStrategy(std::shared_ptr<learning::PatternUpdateStrategy> strategy) {
     patternStrategy_ = strategy;
     SNNFW_INFO("Neuron {}: Set pattern update strategy to {}", getId(), strategy ? strategy->getName() : "default");
+}
+
+void Neuron::enableDendriticSpikeImageMemory(uint16_t rows,
+                                             uint16_t timeBins,
+                                             double binMs,
+                                             uint16_t toleranceBins) {
+    if (rows == 0 || timeBins == 0 || binMs <= 0.0) {
+        disableDendriticSpikeImageMemory();
+        return;
+    }
+
+    dendriticRows_ = rows;
+    dendriticTimeBins_ = timeBins;
+    dendriticBinMs_ = binMs;
+    dendriticSpikeImageMemoryEnabled_ = true;
+    dendriticPatternMemory_ = DendriticPatternMemory({
+        std::clamp(threshold, 0.0, 1.0),
+        toleranceBins,
+        maxPatterns,
+        true
+    });
+}
+
+void Neuron::disableDendriticSpikeImageMemory() {
+    dendriticSpikeImageMemoryEnabled_ = false;
+    dendriticRows_ = 0;
+    dendriticTimeBins_ = 0;
+    dendriticBinMs_ = 1.0;
+    dendriticPatternMemory_.clear();
 }
 
 void Neuron::printSpikes() const {
@@ -501,6 +545,53 @@ double Neuron::getLatencyMemorySimilarity(const std::vector<double>& spikes) con
                            : 0.0;
 }
 
+DendriticSpikeImage Neuron::buildCurrentDendriticSpikeImage() const {
+    DendriticSpikeImage image(dendriticRows_, dendriticTimeBins_, dendriticBinMs_);
+    if (!dendriticSpikeImageMemoryEnabled_ || dendriticRows_ == 0 || dendriticTimeBins_ == 0) {
+        return image;
+    }
+
+    std::vector<IncomingSpike> incomingCopy;
+    {
+        std::lock_guard<std::mutex> lock(incomingSpikesMutex_);
+        incomingCopy.assign(incomingSpikes_.begin(), incomingSpikes_.end());
+    }
+    if (incomingCopy.empty()) {
+        return image;
+    }
+
+    double firstArrivalTime = std::numeric_limits<double>::infinity();
+    for (const auto& spike : incomingCopy) {
+        if (std::isfinite(spike.arrivalTime)) {
+            firstArrivalTime = std::min(firstArrivalTime, spike.arrivalTime);
+        }
+    }
+    if (!std::isfinite(firstArrivalTime)) {
+        return image;
+    }
+
+    for (const auto& spike : incomingCopy) {
+        if (!std::isfinite(spike.arrivalTime)) {
+            continue;
+        }
+        const uint16_t row = static_cast<uint16_t>(spike.synapseId % dendriticRows_);
+        const double relativeTime = spike.arrivalTime - firstArrivalTime;
+        image.addSpike(row, relativeTime);
+    }
+    return image;
+}
+
+double Neuron::getBestDendriticSimilarity() const {
+    if (!dendriticSpikeImageMemoryEnabled_ || dendriticPatternMemory_.prototypeCount() == 0) {
+        return 0.0;
+    }
+    DendriticSpikeImage image = buildCurrentDendriticSpikeImage();
+    if (image.empty()) {
+        return 0.0;
+    }
+    return dendriticPatternMemory_.bestSimilarity(image);
+}
+
 const std::vector<BinaryPattern>& Neuron::getLearnedPatterns() const {
     combinedPatternsCache_.clear();
     combinedPatternsCache_.reserve(prototypePatterns_.size() + exemplarPatterns_.size());
@@ -512,6 +603,13 @@ const std::vector<BinaryPattern>& Neuron::getLearnedPatterns() const {
 }
 
 bool Neuron::shouldFire() const {
+    if (dendriticSpikeImageMemoryEnabled_ && dendriticPatternMemory_.prototypeCount() > 0) {
+        DendriticSpikeImage dendriticImage = buildCurrentDendriticSpikeImage();
+        if (!dendriticImage.empty()) {
+            return dendriticPatternMemory_.recognizes(dendriticImage);
+        }
+    }
+
     // Copy spikes under lock to avoid data races with concurrent delivery.
     std::vector<double> spikesCopy;
     {
@@ -535,6 +633,13 @@ bool Neuron::shouldFire() const {
 }
 
 double Neuron::getBestSimilarity() const {
+    if (dendriticSpikeImageMemoryEnabled_ && dendriticPatternMemory_.prototypeCount() > 0) {
+        DendriticSpikeImage dendriticImage = buildCurrentDendriticSpikeImage();
+        if (!dendriticImage.empty()) {
+            return dendriticPatternMemory_.bestSimilarity(dendriticImage);
+        }
+    }
+
     // Copy spikes under lock
     std::vector<double> spikesCopy;
     {
