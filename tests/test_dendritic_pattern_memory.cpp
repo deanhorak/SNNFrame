@@ -11,11 +11,26 @@ TEST(DendriticSpikeImageTests, EncodesRowsAndTimeBins) {
     EXPECT_TRUE(image.addSpike(1, 3.0));
     EXPECT_TRUE(image.addSpike(3, 9.0));
     EXPECT_FALSE(image.addSpike(4, 1.0));
+    EXPECT_FALSE(image.addSpike(1, 65536.0));
 
     EXPECT_TRUE(image.hasSpike(1, 3));
     EXPECT_TRUE(image.hasSpike(3, 9));
     EXPECT_FALSE(image.hasSpike(1, 4));
     EXPECT_EQ(image.spikeCount(), 2U);
+}
+
+TEST(DendriticSpikeImageTests, RejectsIncompatibleTemporalResolution) {
+    DendriticSpikeImage oneMs(4, 16, 1.0);
+    DendriticSpikeImage halfMs(4, 16, 0.5);
+
+    oneMs.setSpike(1, 4);
+    halfMs.setSpike(1, 4);
+
+    EXPECT_DOUBLE_EQ(oneMs.jaccardSimilarity(halfMs), 0.0);
+    EXPECT_DOUBLE_EQ(oneMs.temporalTolerantSimilarity(halfMs, 1), 0.0);
+
+    oneMs.mergeUnion(halfMs);
+    EXPECT_EQ(oneMs.spikeCount(), 1U);
 }
 
 TEST(DendriticSpikeImageTests, TemporalToleranceMatchesJitteredSpikeImages) {

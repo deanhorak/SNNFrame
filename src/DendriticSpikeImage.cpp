@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace snnfw {
 
@@ -26,7 +27,11 @@ bool DendriticSpikeImage::addSpike(uint16_t row, double timeMs) {
     if (timeMs < 0.0 || binMs_ <= 0.0) {
         return false;
     }
-    const auto bin = static_cast<uint16_t>(std::floor(timeMs / binMs_));
+    const double rawBin = std::floor(timeMs / binMs_);
+    if (rawBin < 0.0 || rawBin > static_cast<double>(std::numeric_limits<uint16_t>::max())) {
+        return false;
+    }
+    const auto bin = static_cast<uint16_t>(rawBin);
     return setSpike(row, bin);
 }
 
@@ -139,6 +144,7 @@ size_t DendriticSpikeImage::bitIndex(uint16_t row, uint16_t timeBin) const {
 
 bool DendriticSpikeImage::compatibleWith(const DendriticSpikeImage& other) const {
     return rows_ == other.rows_ && timeBins_ == other.timeBins_ &&
+           std::abs(binMs_ - other.binMs_) < 1e-9 &&
            bits_.size() == other.bits_.size();
 }
 
