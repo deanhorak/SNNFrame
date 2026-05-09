@@ -443,6 +443,85 @@ std::pair<int, double> KNNClassifier::classifyKNN(const L5CountVector& testCount
     return {bestLabel, maxSim};
 }
 
+std::vector<double> KNNClassifier::scoreKNNClasses(
+    const L5CountVector& testCounts,
+    const L5LatencyVector& testLatencies) const {
+    std::vector<double> scores(numClasses_, 0.0);
+    const bool hasTestActivity = std::any_of(
+        testCounts.begin(), testCounts.end(), [](uint16_t v) { return v > 0; });
+    if (!hasTestActivity) {
+        return scores;
+    }
+
+    if (voteMode_ == VoteMode::Hierarchical && hierarchicalStrategy_) {
+        const auto& trainingPatterns = buildGenericPatternCache();
+        if (trainingPatterns.empty()) {
+            return scores;
+        }
+        const auto testPattern = encodePatternForGenericReadout(testCounts, testLatencies);
+        auto confidence = hierarchicalStrategy_->classifyWithConfidence(
+            testPattern,
+            trainingPatterns,
+            [](const std::vector<double>& a, const std::vector<double>& b) {
+                if (a.empty() || b.empty() || a.size() != b.size()) {
+                    return 0.0;
+                }
+                double dot = 0.0;
+                double normA = 0.0;
+                double normB = 0.0;
+                for (size_t i = 0; i < a.size(); ++i) {
+                    dot += a[i] * b[i];
+                    normA += a[i] * a[i];
+                    normB += b[i] * b[i];
+                }
+                if (normA <= 0.0 || normB <= 0.0) {
+                    return 0.0;
+                }
+                return dot / (std::sqrt(normA) * std::sqrt(normB));
+            });
+        const size_t copyCount = std::min(scores.size(), confidence.size());
+        for (size_t i = 0; i < copyCount; ++i) {
+            scores[i] = confidence[i];
+        }
+        return scores;
+    }
+
+    std::vector<std::pair<double, int>> allSimilarities;
+    for (int cls = 0; cls < numClasses_; ++cls) {
+        if (!config_.includeClasses.empty() &&
+            cls < static_cast<int>(config_.includeClasses.size()) &&
+            !config_.includeClasses[cls]) {
+            continue;
+        }
+        for (const auto& trainPattern : classPatterns_[cls]) {
+            const double countSim = weightedCosineSimilarity(
+                testCounts, trainPattern.counts,
+                testLatencies.empty() ? nullptr : &testLatencies,
+                trainPattern.latencies.empty() ? nullptr : &trainPattern.latencies);
+            double sim = countSim;
+            if (config_.enableTemporalLatencyReadout && !testLatencies.empty() &&
+                !trainPattern.latencies.empty()) {
+                const double latSim = latencySimilarity(testLatencies, trainPattern.latencies);
+                const double w = std::clamp(config_.temporalLatencyWeight, 0.0, 1.0);
+                sim = (1.0 - w) * countSim + w * latSim;
+            }
+            allSimilarities.push_back({sim, cls});
+        }
+    }
+
+    std::sort(allSimilarities.begin(), allSimilarities.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    const int numVotes = std::min(config_.knnK, static_cast<int>(allSimilarities.size()));
+    for (int i = 0; i < numVotes; ++i) {
+        const int cls = allSimilarities[i].second;
+        if (cls < 0 || cls >= numClasses_) {
+            continue;
+        }
+        scores[cls] += knnVoteWeight(std::max(0.0, allSimilarities[i].first));
+    }
+    return scores;
+}
+
 std::pair<int, double> KNNClassifier::classifyCentroid(const L5CountVector& testCounts,
                                                        const L5LatencyVector& testLatencies) const {
     const bool hasTestActivity = std::any_of(

@@ -74,6 +74,21 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
     // L4 competition
     auto colHasL4 = competition_.runL4Competition(
         network_.columns, encoder_.getLastInputFired(), baseTime, network_.propagator);
+    if (config_.enableDendriticSpikeImageMemory) {
+        for (const auto& col : network_.columns) {
+            auto l4It = col.layerNeurons.find("L4");
+            if (l4It == col.layerNeurons.end()) {
+                continue;
+            }
+            for (const auto& neuron : l4It->second) {
+                if (!neuron || neuron->getSpikes().empty()) {
+                    continue;
+                }
+                result.l4WinnerDendriticSimilaritySum += neuron->getBestDendriticSimilarity();
+                result.l4WinnerDendriticSimilarityCount++;
+            }
+        }
+    }
     auto t4 = std::chrono::steady_clock::now();
     g_totalL4Ms += std::chrono::duration<double, std::milli>(t4 - t3).count();
 
@@ -85,6 +100,29 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
     // L5 competition
     auto l5Winners = competition_.runL5Competition(
         network_.columns, colHasL4, baseTime, network_.propagator, false);
+    if (config_.enableDendriticSpikeImageMemory) {
+        size_t l5Offset = 0;
+        for (const auto& col : network_.columns) {
+            auto l5It = col.layerNeurons.find("L5");
+            if (l5It == col.layerNeurons.end()) {
+                continue;
+            }
+            const auto& l5Neurons = l5It->second;
+            for (size_t localIdx = 0; localIdx < l5Neurons.size(); ++localIdx) {
+                const size_t globalIdx = l5Offset + localIdx;
+                if (globalIdx >= l5Winners.size() || !l5Winners[globalIdx]) {
+                    continue;
+                }
+                const auto& neuron = l5Neurons[localIdx];
+                if (!neuron) {
+                    continue;
+                }
+                result.l5WinnerDendriticSimilaritySum += neuron->getBestDendriticSimilarity();
+                result.l5WinnerDendriticSimilarityCount++;
+            }
+            l5Offset += l5Neurons.size();
+        }
+    }
     auto t6 = std::chrono::steady_clock::now();
     g_totalL5Ms += std::chrono::duration<double, std::milli>(t6 - t5).count();
 
@@ -489,6 +527,22 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
     int outputVoteCorrect = 0;
     int knnCorrect = 0;
     int centroidCorrect = 0;
+    double knnTrueScoreSum = 0.0;
+    double knnPredictedScoreSum = 0.0;
+    double knnMarginSum = 0.0;
+    double knnCorrectMarginSum = 0.0;
+    double knnIncorrectMarginSum = 0.0;
+    int knnScoreSamples = 0;
+    int knnCorrectScoreSamples = 0;
+    int knnIncorrectScoreSamples = 0;
+    double dendL4WinnerSimCorrectSum = 0.0;
+    double dendL4WinnerSimIncorrectSum = 0.0;
+    int dendL4WinnerSimCorrectCount = 0;
+    int dendL4WinnerSimIncorrectCount = 0;
+    double dendL5WinnerSimCorrectSum = 0.0;
+    double dendL5WinnerSimIncorrectSum = 0.0;
+    int dendL5WinnerSimCorrectCount = 0;
+    int dendL5WinnerSimIncorrectCount = 0;
 
     for (size_t testPos = 0; testPos < numTestImages; ++testPos) {
         size_t testIdx = testIndices[testPos];
@@ -537,6 +591,35 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
                 maxSimilarity = res2.second;
                 if (predictedLabel >= 0) {
                     decisionSource = DecisionSource::Centroid;
+                }
+            }
+        }
+
+        std::vector<double> knnScores;
+        if (decisionSource == DecisionSource::KNN && predictedLabel >= 0) {
+            knnScores = classifier_.scoreKNNClasses(inference.l5Counts, inference.l5Latencies);
+            if (label >= 0 && label < static_cast<int>(knnScores.size()) &&
+                predictedLabel < static_cast<int>(knnScores.size())) {
+                double bestOther = 0.0;
+                for (int cls = 0; cls < static_cast<int>(knnScores.size()); ++cls) {
+                    if (cls == predictedLabel) {
+                        continue;
+                    }
+                    bestOther = std::max(bestOther, knnScores[cls]);
+                }
+                const double predictedScore = knnScores[predictedLabel];
+                const double trueScore = knnScores[label];
+                const double margin = predictedScore - bestOther;
+                knnPredictedScoreSum += predictedScore;
+                knnTrueScoreSum += trueScore;
+                knnMarginSum += margin;
+                knnScoreSamples++;
+                if (predictedLabel == label) {
+                    knnCorrectMarginSum += margin;
+                    knnCorrectScoreSamples++;
+                } else {
+                    knnIncorrectMarginSum += margin;
+                    knnIncorrectScoreSamples++;
                 }
             }
         }
@@ -633,6 +716,19 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
         if (predictedLabel == label) {
             testCorrect++;
         }
+        if (config_.enableDendriticSpikeImageMemory) {
+            if (predictedLabel == label) {
+                dendL4WinnerSimCorrectSum += inference.l4WinnerDendriticSimilaritySum;
+                dendL4WinnerSimCorrectCount += inference.l4WinnerDendriticSimilarityCount;
+                dendL5WinnerSimCorrectSum += inference.l5WinnerDendriticSimilaritySum;
+                dendL5WinnerSimCorrectCount += inference.l5WinnerDendriticSimilarityCount;
+            } else {
+                dendL4WinnerSimIncorrectSum += inference.l4WinnerDendriticSimilaritySum;
+                dendL4WinnerSimIncorrectCount += inference.l4WinnerDendriticSimilarityCount;
+                dendL5WinnerSimIncorrectSum += inference.l5WinnerDendriticSimilaritySum;
+                dendL5WinnerSimIncorrectCount += inference.l5WinnerDendriticSimilarityCount;
+            }
+        }
         if (decisionSource == DecisionSource::OutputVote) {
             outputVotePredictions++;
             if (predictedLabel == label) outputVoteCorrect++;
@@ -712,6 +808,43 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
     printDecisionStats("knn", knnPredictions, knnCorrect);
     printDecisionStats("centroid", centroidPredictions, centroidCorrect);
     std::cout << "    unknown: " << unknownPredictions << std::endl;
+
+    if (knnScoreSamples > 0) {
+        auto mean = [](double sum, int count) {
+            return count > 0 ? (sum / static_cast<double>(count)) : 0.0;
+        };
+        std::cout << "\n  KNN evidence audit:" << std::endl;
+        std::cout << "    mean_predicted_score=" << std::fixed << std::setprecision(4)
+                  << mean(knnPredictedScoreSum, knnScoreSamples)
+                  << ", mean_true_score=" << mean(knnTrueScoreSum, knnScoreSamples)
+                  << ", mean_margin=" << mean(knnMarginSum, knnScoreSamples)
+                  << std::endl;
+        std::cout << "    mean_correct_margin="
+                  << mean(knnCorrectMarginSum, knnCorrectScoreSamples)
+                  << ", mean_incorrect_margin="
+                  << mean(knnIncorrectMarginSum, knnIncorrectScoreSamples)
+                  << " (correct_samples=" << knnCorrectScoreSamples
+                  << ", incorrect_samples=" << knnIncorrectScoreSamples << ")"
+                  << std::endl;
+    }
+
+    if (config_.enableDendriticSpikeImageMemory) {
+        auto mean = [](double sum, int count) {
+            return count > 0 ? (sum / static_cast<double>(count)) : 0.0;
+        };
+        std::cout << "\n  Dendritic temporal evidence audit:" << std::endl;
+        std::cout << "    L4 winner similarity: correct="
+                  << std::fixed << std::setprecision(4)
+                  << mean(dendL4WinnerSimCorrectSum, dendL4WinnerSimCorrectCount)
+                  << " (" << dendL4WinnerSimCorrectCount << "), incorrect="
+                  << mean(dendL4WinnerSimIncorrectSum, dendL4WinnerSimIncorrectCount)
+                  << " (" << dendL4WinnerSimIncorrectCount << ")" << std::endl;
+        std::cout << "    L5 winner similarity: correct="
+                  << mean(dendL5WinnerSimCorrectSum, dendL5WinnerSimCorrectCount)
+                  << " (" << dendL5WinnerSimCorrectCount << "), incorrect="
+                  << mean(dendL5WinnerSimIncorrectSum, dendL5WinnerSimIncorrectCount)
+                  << " (" << dendL5WinnerSimIncorrectCount << ")" << std::endl;
+    }
 
     struct PairConfusion {
         int total = 0;

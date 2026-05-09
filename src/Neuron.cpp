@@ -304,7 +304,7 @@ void Neuron::enableDendriticSpikeImageMemory(uint16_t rows,
         std::clamp(threshold, 0.0, 1.0),
         toleranceBins,
         maxPatterns,
-        true
+        false
     });
 }
 

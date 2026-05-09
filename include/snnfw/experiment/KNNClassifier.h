@@ -40,6 +40,10 @@ public:
     std::pair<int, double> classifyKNN(const L5CountVector& testCounts,
                                        const L5LatencyVector& testLatencies = {}) const;
 
+    /// Return the per-class k-NN evidence scores used by classifyKNN.
+    std::vector<double> scoreKNNClasses(const L5CountVector& testCounts,
+                                        const L5LatencyVector& testLatencies = {}) const;
+
     /// Classify using centroid matching. Returns (predictedLabel, similarity).
     std::pair<int, double> classifyCentroid(const L5CountVector& testCounts,
                                             const L5LatencyVector& testLatencies = {}) const;

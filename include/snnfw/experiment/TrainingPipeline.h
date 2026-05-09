@@ -26,6 +26,10 @@ struct InferenceResult {
     std::vector<int> outSpikeCounts;      // per-class output spike counts
     std::vector<int> rawOutSpikeCounts;   // before output competition
     size_t totalL5Spikes = 0;
+    double l4WinnerDendriticSimilaritySum = 0.0;
+    int l4WinnerDendriticSimilarityCount = 0;
+    double l5WinnerDendriticSimilaritySum = 0.0;
+    int l5WinnerDendriticSimilarityCount = 0;
 };
 
 /**
