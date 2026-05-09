@@ -18,6 +18,7 @@ MAX_PASSES="${MAX_PASSES:-3}"
 THREADS="${THREADS:-8}"
 SEED="${SEED:-42}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-0}"
+VARIANTS="${VARIANTS:-baseline,dend_l4_l5_out_128x96_tol2,dend_l4_l5_out_256x128_tol2,dend_l5_out_256x128_tol3}"
 
 EXE="${BUILD_DIR}/experiments/emnist_sonata_training"
 SUMMARY="${OUT_DIR}/summary.tsv"
@@ -71,6 +72,11 @@ run_variant() {
   fi
 }
 
+should_run_variant() {
+  local name="$1"
+  [[ ",${VARIANTS}," == *",${name},"* ]]
+}
+
 {
   printf "run_id\t%s\n" "${RUN_ID}"
   printf "config\t%s\n" "${CONFIG_PATH}"
@@ -79,37 +85,46 @@ run_variant() {
   printf "max_passes\t%s\n" "${MAX_PASSES}"
   printf "threads\t%s\n" "${THREADS}"
   printf "seed\t%s\n" "${SEED}"
+  printf "variants\t%s\n" "${VARIANTS}"
   printf "\n"
   printf "variant\tstatus\tfinal_accuracy\tpatterns\tlog\n"
 } > "${SUMMARY}"
 
 cd "${ROOT_DIR}"
 
-run_variant baseline \
-  --no-dendritic-spike-image-memory
+if should_run_variant baseline; then
+  run_variant baseline \
+    --no-dendritic-spike-image-memory
+fi
 
-run_variant dend_l4_l5_out_128x96_tol2 \
-  --dendritic-spike-image-memory \
-  --dendritic-image-rows 128 \
-  --dendritic-image-time-bins 96 \
-  --dendritic-image-bin-ms 1.0 \
-  --dendritic-image-tolerance-bins 2
+if should_run_variant dend_l4_l5_out_128x96_tol2; then
+  run_variant dend_l4_l5_out_128x96_tol2 \
+    --dendritic-spike-image-memory \
+    --dendritic-image-rows 128 \
+    --dendritic-image-time-bins 96 \
+    --dendritic-image-bin-ms 1.0 \
+    --dendritic-image-tolerance-bins 2
+fi
 
-run_variant dend_l4_l5_out_256x128_tol2 \
-  --dendritic-spike-image-memory \
-  --dendritic-image-rows 256 \
-  --dendritic-image-time-bins 128 \
-  --dendritic-image-bin-ms 1.0 \
-  --dendritic-image-tolerance-bins 2
+if should_run_variant dend_l4_l5_out_256x128_tol2; then
+  run_variant dend_l4_l5_out_256x128_tol2 \
+    --dendritic-spike-image-memory \
+    --dendritic-image-rows 256 \
+    --dendritic-image-time-bins 128 \
+    --dendritic-image-bin-ms 1.0 \
+    --dendritic-image-tolerance-bins 2
+fi
 
-run_variant dend_l5_out_256x128_tol3 \
-  --dendritic-spike-image-memory \
-  --no-dendritic-image-l4 \
-  --dendritic-image-l5 \
-  --dendritic-image-output \
-  --dendritic-image-rows 256 \
-  --dendritic-image-time-bins 128 \
-  --dendritic-image-bin-ms 1.0 \
-  --dendritic-image-tolerance-bins 3
+if should_run_variant dend_l5_out_256x128_tol3; then
+  run_variant dend_l5_out_256x128_tol3 \
+    --dendritic-spike-image-memory \
+    --no-dendritic-image-l4 \
+    --dendritic-image-l5 \
+    --dendritic-image-output \
+    --dendritic-image-rows 256 \
+    --dendritic-image-time-bins 128 \
+    --dendritic-image-bin-ms 1.0 \
+    --dendritic-image-tolerance-bins 3
+fi
 
 echo "Sweep complete. Summary: ${SUMMARY}"
