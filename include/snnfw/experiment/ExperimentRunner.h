@@ -64,6 +64,9 @@ private:
 
     /// Instantiate declarative adapters and attach to the constructed network.
     void instantiateAdapters(const declarative::NetworkIR& ir);
+
+    /// Apply optional substrate-level dendritic temporal memory to selected populations.
+    void configureDendriticSpikeImageMemory();
 };
 
 } // namespace experiment

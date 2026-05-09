@@ -9,6 +9,7 @@
 #include <chrono>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace snnfw {
 namespace experiment {
@@ -131,6 +132,7 @@ void ExperimentRunner::buildNetwork() {
 
     // Construct the network from the parsed IR
     network_ = std::make_unique<declarative::ConstructedNetwork>(loader.loadFromIR(ir));
+    configureDendriticSpikeImageMemory();
     instantiateAdapters(ir);
 
     std::cout << "  Network built: " << network_->inputNeurons.size() << " input neurons, "
@@ -274,6 +276,77 @@ void ExperimentRunner::syncConfigFromIR(const declarative::NetworkIR& ir) {
             }
         }
     }
+}
+
+void ExperimentRunner::configureDendriticSpikeImageMemory() {
+    if (!network_ || !config_.enableDendriticSpikeImageMemory) {
+        return;
+    }
+    if (config_.dendriticImageRows <= 0 ||
+        config_.dendriticImageTimeBins <= 0 ||
+        config_.dendriticImageBinMs <= 0.0 ||
+        config_.dendriticImageRows > 65535 ||
+        config_.dendriticImageTimeBins > 65535) {
+        throw std::runtime_error("Invalid dendritic spike image memory dimensions");
+    }
+
+    const auto rows = static_cast<uint16_t>(config_.dendriticImageRows);
+    const auto timeBins = static_cast<uint16_t>(config_.dendriticImageTimeBins);
+    const auto toleranceBins =
+        static_cast<uint16_t>(std::max(0, config_.dendriticImageTemporalToleranceBins));
+    std::unordered_set<uint64_t> configured;
+    size_t configuredCount = 0;
+
+    auto enableNeuron = [&](const std::shared_ptr<Neuron>& neuron) {
+        if (!neuron || !configured.insert(neuron->getId()).second) {
+            return;
+        }
+        neuron->enableDendriticSpikeImageMemory(
+            rows,
+            timeBins,
+            config_.dendriticImageBinMs,
+            toleranceBins);
+        ++configuredCount;
+    };
+
+    if (config_.dendriticImageOnInput) {
+        for (const auto& neuron : network_->inputNeurons) {
+            enableNeuron(neuron);
+        }
+    }
+    if (config_.dendriticImageOnOutput) {
+        for (const auto& population : network_->outputPopulations) {
+            for (const auto& neuron : population) {
+                enableNeuron(neuron);
+            }
+        }
+    }
+    if (config_.dendriticImageOnL4 || config_.dendriticImageOnL5) {
+        for (const auto& column : network_->columns) {
+            if (config_.dendriticImageOnL4) {
+                auto it = column.layerNeurons.find("L4");
+                if (it != column.layerNeurons.end()) {
+                    for (const auto& neuron : it->second) {
+                        enableNeuron(neuron);
+                    }
+                }
+            }
+            if (config_.dendriticImageOnL5) {
+                auto it = column.layerNeurons.find("L5");
+                if (it != column.layerNeurons.end()) {
+                    for (const auto& neuron : it->second) {
+                        enableNeuron(neuron);
+                    }
+                }
+            }
+        }
+    }
+
+    std::cout << "  Dendritic spike image memory enabled for " << configuredCount
+              << " neurons (" << config_.dendriticImageRows << "x"
+              << config_.dendriticImageTimeBins << " bins, "
+              << config_.dendriticImageBinMs << "ms/bin, tolerance="
+              << config_.dendriticImageTemporalToleranceBins << ")" << std::endl;
 }
 
 void ExperimentRunner::instantiateAdapters(const declarative::NetworkIR& ir) {

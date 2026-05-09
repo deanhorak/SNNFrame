@@ -41,6 +41,17 @@ struct ExperimentConfig {
     int neuronMaxPatterns = 500;
     double inputLatencyMs = 15.0;
 
+    // --- Dendritic spike-time image memory ---
+    bool enableDendriticSpikeImageMemory = false;
+    int dendriticImageRows = 512;
+    int dendriticImageTimeBins = 128;
+    double dendriticImageBinMs = 1.0;
+    int dendriticImageTemporalToleranceBins = 2;
+    bool dendriticImageOnInput = false;
+    bool dendriticImageOnL4 = true;
+    bool dendriticImageOnL5 = true;
+    bool dendriticImageOnOutput = true;
+
     // --- Training parameters ---
     int numClasses = 26;
     int trainingExamplesPerClass = 200;

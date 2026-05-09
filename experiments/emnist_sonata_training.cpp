@@ -158,6 +158,42 @@ int main(int argc, char* argv[]) {
             config.seed = std::atoi(argv[++i]);
         } else if (arg == "--pixel-threshold" && i + 1 < argc) {
             config.pixelThreshold = std::atof(argv[++i]);
+        } else if (arg == "--dendritic-spike-image-memory") {
+            config.enableDendriticSpikeImageMemory = true;
+        } else if (arg == "--no-dendritic-spike-image-memory") {
+            config.enableDendriticSpikeImageMemory = false;
+        } else if (arg == "--dendritic-image-rows" && i + 1 < argc) {
+            config.enableDendriticSpikeImageMemory = true;
+            config.dendriticImageRows = std::atoi(argv[++i]);
+        } else if (arg == "--dendritic-image-time-bins" && i + 1 < argc) {
+            config.enableDendriticSpikeImageMemory = true;
+            config.dendriticImageTimeBins = std::atoi(argv[++i]);
+        } else if (arg == "--dendritic-image-bin-ms" && i + 1 < argc) {
+            config.enableDendriticSpikeImageMemory = true;
+            config.dendriticImageBinMs = std::atof(argv[++i]);
+        } else if (arg == "--dendritic-image-tolerance-bins" && i + 1 < argc) {
+            config.enableDendriticSpikeImageMemory = true;
+            config.dendriticImageTemporalToleranceBins = std::atoi(argv[++i]);
+        } else if (arg == "--dendritic-image-input") {
+            config.enableDendriticSpikeImageMemory = true;
+            config.dendriticImageOnInput = true;
+        } else if (arg == "--no-dendritic-image-input") {
+            config.dendriticImageOnInput = false;
+        } else if (arg == "--dendritic-image-l4") {
+            config.enableDendriticSpikeImageMemory = true;
+            config.dendriticImageOnL4 = true;
+        } else if (arg == "--no-dendritic-image-l4") {
+            config.dendriticImageOnL4 = false;
+        } else if (arg == "--dendritic-image-l5") {
+            config.enableDendriticSpikeImageMemory = true;
+            config.dendriticImageOnL5 = true;
+        } else if (arg == "--no-dendritic-image-l5") {
+            config.dendriticImageOnL5 = false;
+        } else if (arg == "--dendritic-image-output") {
+            config.enableDendriticSpikeImageMemory = true;
+            config.dendriticImageOnOutput = true;
+        } else if (arg == "--no-dendritic-image-output") {
+            config.dendriticImageOnOutput = false;
         } else if (arg == "--visual-frontend") {
             config.enableVisualFrontend = true;
         } else if (arg == "--no-visual-frontend") {
@@ -340,6 +376,16 @@ int main(int argc, char* argv[]) {
                       << "  --threads <n>             Spike processor threads\n"
                       << "  --seed <n>                Random seed\n"
                       << "  --pixel-threshold <v>     Input pixel threshold [0..1]\n"
+                      << "  --dendritic-spike-image-memory Enable incoming synapse x time raster memory\n"
+                      << "  --no-dendritic-spike-image-memory Disable dendritic raster memory\n"
+                      << "  --dendritic-image-rows <n> Number of dendritic raster rows\n"
+                      << "  --dendritic-image-time-bins <n> Number of dendritic raster time bins\n"
+                      << "  --dendritic-image-bin-ms <v> Milliseconds per dendritic raster bin\n"
+                      << "  --dendritic-image-tolerance-bins <n> Temporal jitter bins allowed during matching\n"
+                      << "  --dendritic-image-input / --no-dendritic-image-input Toggle input population memory\n"
+                      << "  --dendritic-image-l4 / --no-dendritic-image-l4 Toggle L4 memory\n"
+                      << "  --dendritic-image-l5 / --no-dendritic-image-l5 Toggle L5 memory\n"
+                      << "  --dendritic-image-output / --no-dendritic-image-output Toggle output memory\n"
                       << "  --output-vote             Enable output-spike voting\n"
                       << "  --no-output-vote          Disable output-spike voting\n"
                       << "  --output-vote-min-top <n> Min top output spikes required for vote\n"
