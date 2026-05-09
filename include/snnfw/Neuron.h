@@ -474,6 +474,12 @@ private:
     void removeOldSpikesUnsafe(double currentTime);
 
     /**
+     * @brief Remove old incoming spikes from the dendritic/STDP window (unsafe - caller must hold incomingSpikesMutex_)
+     * @param currentTime Current timestamp
+     */
+    void clearOldIncomingSpikesUnsafe(double currentTime);
+
+    /**
      * @brief Compute similarity between two patterns using the selected metric
      * @param a First pattern
      * @param b Second pattern

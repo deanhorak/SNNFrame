@@ -905,7 +905,7 @@ void Neuron::recordIncomingSpike(uint64_t synapseId, double spikeTime, double di
     for (const auto& s : incomingSpikes_) {
         referenceTime = std::max(referenceTime, s.arrivalTime);
     }
-    clearOldIncomingSpikes(referenceTime);
+    clearOldIncomingSpikesUnsafe(referenceTime);
 
     SNNFW_TRACE("Neuron {}: Recorded incoming spike from synapse {} at time {:.3f}ms (dispatch: {:.3f}ms, total tracked: {})",
                 getId(), synapseId, spikeTime, dispatchTime, incomingSpikes_.size());
@@ -966,6 +966,11 @@ int Neuron::fireAndAcknowledge(double firingTime) {
 }
 
 void Neuron::clearOldIncomingSpikes(double currentTime) {
+    std::lock_guard<std::mutex> lock(incomingSpikesMutex_);
+    clearOldIncomingSpikesUnsafe(currentTime);
+}
+
+void Neuron::clearOldIncomingSpikesUnsafe(double currentTime) {
     // Note: Caller must hold incomingSpikesMutex_ lock
     // Remove spikes that are older than the temporal window
     incomingSpikes_.erase(
@@ -990,7 +995,7 @@ void Neuron::periodicMemoryCleanup(double currentTime) {
     size_t incomingSpikesCount = 0;
     {
         std::lock_guard<std::mutex> lock(incomingSpikesMutex_);
-        clearOldIncomingSpikes(currentTime);
+        clearOldIncomingSpikesUnsafe(currentTime);
         incomingSpikes_.shrink_to_fit();
         incomingSpikesCount = incomingSpikes_.size();
     }
