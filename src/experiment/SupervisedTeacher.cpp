@@ -187,7 +187,7 @@ int SupervisedTeacher::teach(
                             }
                         }
                         if (allowL5PatternUpdate) {
-                            l5Neuron->learnCurrentPattern();
+                            l5Neuron->learnCurrentDendriticPatternForClass(classLabel);
                             localStats.l5PatternsLearned++;
                         }
                     }
@@ -231,7 +231,7 @@ int SupervisedTeacher::teach(
                 }
                 if (outputEligible) {
                     localStats.outputEligible++;
-                    outputNeuron->learnCurrentPattern();
+                    outputNeuron->learnCurrentDendriticPatternForClass(classLabel);
                     patternsLearned++;
                     localStats.outputPatternsLearned++;
                 }

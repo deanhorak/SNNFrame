@@ -194,6 +194,19 @@ int main(int argc, char* argv[]) {
             config.dendriticImageOnOutput = true;
         } else if (arg == "--no-dendritic-image-output") {
             config.dendriticImageOnOutput = false;
+        } else if (arg == "--dendritic-class-evidence") {
+            config.enableDendriticClassEvidence = true;
+        } else if (arg == "--no-dendritic-class-evidence") {
+            config.enableDendriticClassEvidence = false;
+        } else if (arg == "--dendritic-class-evidence-gain" && i + 1 < argc) {
+            config.enableDendriticClassEvidence = true;
+            config.dendriticClassEvidenceGain = std::atof(argv[++i]);
+        } else if (arg == "--dendritic-class-evidence-min-neuron-margin" && i + 1 < argc) {
+            config.enableDendriticClassEvidence = true;
+            config.dendriticClassEvidenceMinNeuronMargin = std::atof(argv[++i]);
+        } else if (arg == "--dendritic-class-evidence-min-decision-margin" && i + 1 < argc) {
+            config.enableDendriticClassEvidence = true;
+            config.dendriticClassEvidenceMinDecisionMargin = std::atof(argv[++i]);
         } else if (arg == "--visual-frontend") {
             config.enableVisualFrontend = true;
         } else if (arg == "--no-visual-frontend") {
@@ -386,6 +399,10 @@ int main(int argc, char* argv[]) {
                       << "  --dendritic-image-l4 / --no-dendritic-image-l4 Toggle L4 memory\n"
                       << "  --dendritic-image-l5 / --no-dendritic-image-l5 Toggle L5 memory\n"
                       << "  --dendritic-image-output / --no-dendritic-image-output Toggle output memory\n"
+                      << "  --dendritic-class-evidence / --no-dendritic-class-evidence Toggle label-conditioned dendritic evidence\n"
+                      << "  --dendritic-class-evidence-gain <v> Weight for label-conditioned dendritic evidence\n"
+                      << "  --dendritic-class-evidence-min-neuron-margin <v> Min per-neuron class margin to emit temporal evidence\n"
+                      << "  --dendritic-class-evidence-min-decision-margin <v> Min temporal class margin required to alter readout\n"
                       << "  --output-vote             Enable output-spike voting\n"
                       << "  --no-output-vote          Disable output-spike voting\n"
                       << "  --output-vote-min-top <n> Min top output spikes required for vote\n"

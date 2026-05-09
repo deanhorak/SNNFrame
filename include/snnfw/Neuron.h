@@ -183,6 +183,8 @@ public:
     bool isDendriticSpikeImageMemoryEnabled() const { return dendriticSpikeImageMemoryEnabled_; }
     size_t getDendriticPatternCount() const { return dendriticPatternMemory_.prototypeCount(); }
     double getBestDendriticSimilarity() const;
+    size_t learnCurrentDendriticPatternForClass(int classLabel);
+    double getBestDendriticSimilarityForClass(int classLabel) const;
 
     /**
      * @brief Get the number of prototype memories
@@ -427,7 +429,9 @@ private:
     uint16_t dendriticRows_;                             ///< Number of dendritic image rows
     uint16_t dendriticTimeBins_;                         ///< Number of dendritic image time bins
     double dendriticBinMs_;                              ///< Milliseconds per dendritic image bin
+    DendriticPatternMemory::Config dendriticPatternConfig_; ///< Shared dendritic memory config
     DendriticPatternMemory dendriticPatternMemory_;      ///< Co-activation/sequence memory over incoming events
+    std::vector<DendriticPatternMemory> classDendriticPatternMemories_; ///< Label-conditioned dendritic memories
 
     uint64_t axonId;                                     ///< ID of the axon for this neuron (0 if not set)
     std::vector<uint64_t> dendriteIds;                   ///< IDs of dendrites connected to this neuron

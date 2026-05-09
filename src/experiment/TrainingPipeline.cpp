@@ -102,6 +102,10 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
         network_.columns, colHasL4, baseTime, network_.propagator, false);
     if (config_.enableDendriticSpikeImageMemory) {
         size_t l5Offset = 0;
+        result.dendriticClassScores.assign(config_.numClasses, 0.0);
+        int dendriticEvidenceContributors = 0;
+        const double minNeuronMargin =
+            std::max(0.0, config_.dendriticClassEvidenceMinNeuronMargin);
         for (const auto& col : network_.columns) {
             auto l5It = col.layerNeurons.find("L5");
             if (l5It == col.layerNeurons.end()) {
@@ -119,8 +123,39 @@ InferenceResult TrainingPipeline::runInference(const EMNISTLoader::Image& image)
                 }
                 result.l5WinnerDendriticSimilaritySum += neuron->getBestDendriticSimilarity();
                 result.l5WinnerDendriticSimilarityCount++;
+                if (config_.enableDendriticClassEvidence) {
+                    int bestClass = -1;
+                    double bestScore = 0.0;
+                    double secondScore = 0.0;
+                    for (int cls = 0; cls < config_.numClasses; ++cls) {
+                        const double score = neuron->getBestDendriticSimilarityForClass(cls);
+                        if (score > bestScore) {
+                            secondScore = bestScore;
+                            bestScore = score;
+                            bestClass = cls;
+                        } else if (score > secondScore) {
+                            secondScore = score;
+                        }
+                    }
+                    const double margin = bestScore - secondScore;
+                    if (bestClass >= 0 && margin >= minNeuronMargin) {
+                        result.dendriticClassScores[bestClass] += margin;
+                        dendriticEvidenceContributors++;
+                    }
+                }
             }
             l5Offset += l5Neurons.size();
+        }
+        if (dendriticEvidenceContributors > 0 && config_.enableDendriticClassEvidence) {
+            double bestScore = 0.0;
+            for (int cls = 0; cls < config_.numClasses; ++cls) {
+                result.dendriticClassScores[cls] /=
+                    static_cast<double>(dendriticEvidenceContributors);
+                if (result.dendriticClassScores[cls] > bestScore) {
+                    bestScore = result.dendriticClassScores[cls];
+                    result.dendriticClassPrediction = cls;
+                }
+            }
         }
     }
     auto t6 = std::chrono::steady_clock::now();
@@ -342,7 +377,6 @@ double TrainingPipeline::run(EMNISTLoader& trainLoader, EMNISTLoader& testLoader
             // L4 competition
             auto colHasL4 = competition_.runL4Competition(
                 network_.columns, encoder_.getLastInputFired(), baseTime, network_.propagator);
-
             // Wait for L4 signatures (~0-100ms) to propagate into L5 before competition.
             encoder_.waitForSimTime(baseTime + kL4ToL5SettleMs, 200.0);
 
@@ -543,6 +577,14 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
     double dendL5WinnerSimIncorrectSum = 0.0;
     int dendL5WinnerSimCorrectCount = 0;
     int dendL5WinnerSimIncorrectCount = 0;
+    double dendClassPredictedScoreSum = 0.0;
+    double dendClassTrueScoreSum = 0.0;
+    double dendClassMarginSum = 0.0;
+    double dendClassCorrectMarginSum = 0.0;
+    double dendClassIncorrectMarginSum = 0.0;
+    int dendClassScoreSamples = 0;
+    int dendClassCorrectSamples = 0;
+    int dendClassIncorrectSamples = 0;
 
     for (size_t testPos = 0; testPos < numTestImages; ++testPos) {
         size_t testIdx = testIndices[testPos];
@@ -598,6 +640,46 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
         std::vector<double> knnScores;
         if (decisionSource == DecisionSource::KNN && predictedLabel >= 0) {
             knnScores = classifier_.scoreKNNClasses(inference.l5Counts, inference.l5Latencies);
+            if (config_.enableDendriticSpikeImageMemory &&
+                config_.enableDendriticClassEvidence &&
+                !inference.dendriticClassScores.empty() &&
+                inference.dendriticClassScores.size() == knnScores.size()) {
+                const double gain = std::max(0.0, config_.dendriticClassEvidenceGain);
+                double dendriticBest = 0.0;
+                double dendriticSecond = 0.0;
+                for (double score : inference.dendriticClassScores) {
+                    if (score > dendriticBest) {
+                        dendriticSecond = dendriticBest;
+                        dendriticBest = score;
+                    } else if (score > dendriticSecond) {
+                        dendriticSecond = score;
+                    }
+                }
+                const bool temporalEvidenceIsDecisive =
+                    (dendriticBest - dendriticSecond) >=
+                    std::max(0.0, config_.dendriticClassEvidenceMinDecisionMargin);
+                int combinedBest = -1;
+                double combinedBestScore = -1.0;
+                if (gain > 0.0 && temporalEvidenceIsDecisive) {
+                    for (int cls = 0; cls < static_cast<int>(knnScores.size()); ++cls) {
+                        if (!config_.includeClasses.empty() &&
+                            cls < static_cast<int>(config_.includeClasses.size()) &&
+                            !config_.includeClasses[cls]) {
+                            continue;
+                        }
+                        const double combinedScore =
+                            knnScores[cls] + gain * inference.dendriticClassScores[cls];
+                        if (combinedScore > combinedBestScore) {
+                            combinedBestScore = combinedScore;
+                            combinedBest = cls;
+                        }
+                    }
+                    if (combinedBest >= 0) {
+                        predictedLabel = combinedBest;
+                        maxSimilarity = combinedBestScore;
+                    }
+                }
+            }
             if (label >= 0 && label < static_cast<int>(knnScores.size()) &&
                 predictedLabel < static_cast<int>(knnScores.size())) {
                 double bestOther = 0.0;
@@ -621,6 +703,35 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
                     knnIncorrectMarginSum += margin;
                     knnIncorrectScoreSamples++;
                 }
+            }
+        }
+
+        if (config_.enableDendriticSpikeImageMemory &&
+            config_.enableDendriticClassEvidence &&
+            !inference.dendriticClassScores.empty() &&
+            label >= 0 && label < static_cast<int>(inference.dendriticClassScores.size()) &&
+            predictedLabel >= 0 &&
+            predictedLabel < static_cast<int>(inference.dendriticClassScores.size())) {
+            double bestOther = 0.0;
+            for (int cls = 0; cls < static_cast<int>(inference.dendriticClassScores.size()); ++cls) {
+                if (cls == predictedLabel) {
+                    continue;
+                }
+                bestOther = std::max(bestOther, inference.dendriticClassScores[cls]);
+            }
+            const double predictedScore = inference.dendriticClassScores[predictedLabel];
+            const double trueScore = inference.dendriticClassScores[label];
+            const double margin = predictedScore - bestOther;
+            dendClassPredictedScoreSum += predictedScore;
+            dendClassTrueScoreSum += trueScore;
+            dendClassMarginSum += margin;
+            dendClassScoreSamples++;
+            if (predictedLabel == label) {
+                dendClassCorrectMarginSum += margin;
+                dendClassCorrectSamples++;
+            } else {
+                dendClassIncorrectMarginSum += margin;
+                dendClassIncorrectSamples++;
             }
         }
 
@@ -844,6 +955,22 @@ double TrainingPipeline::runTestingPhase(EMNISTLoader& testLoader) {
                   << " (" << dendL5WinnerSimCorrectCount << "), incorrect="
                   << mean(dendL5WinnerSimIncorrectSum, dendL5WinnerSimIncorrectCount)
                   << " (" << dendL5WinnerSimIncorrectCount << ")" << std::endl;
+        if (dendClassScoreSamples > 0) {
+            std::cout << "    class evidence: mean_predicted_score="
+                      << mean(dendClassPredictedScoreSum, dendClassScoreSamples)
+                      << ", mean_true_score="
+                      << mean(dendClassTrueScoreSum, dendClassScoreSamples)
+                      << ", mean_margin="
+                      << mean(dendClassMarginSum, dendClassScoreSamples)
+                      << std::endl;
+            std::cout << "    class evidence margins: correct="
+                      << mean(dendClassCorrectMarginSum, dendClassCorrectSamples)
+                      << ", incorrect="
+                      << mean(dendClassIncorrectMarginSum, dendClassIncorrectSamples)
+                      << " (correct_samples=" << dendClassCorrectSamples
+                      << ", incorrect_samples=" << dendClassIncorrectSamples << ")"
+                      << std::endl;
+        }
     }
 
     struct PairConfusion {

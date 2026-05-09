@@ -236,6 +236,24 @@ TEST_F(NeuronTest, DendriticSpikeImageModeRejectsDifferentRaster) {
     EXPECT_LT(neuron.getBestDendriticSimilarity(), 0.70);
 }
 
+TEST_F(NeuronTest, DendriticSpikeImageModeSeparatesClassConditionedRasters) {
+    snnfw::Neuron neuron(50.0, 0.70, 20);
+    neuron.enableDendriticSpikeImageMemory(8, 50, 1.0, 1);
+
+    neuron.recordIncomingSpike(0, 10.0, 10.0);
+    neuron.recordIncomingSpike(2, 15.0, 15.0);
+    neuron.recordIncomingSpike(4, 22.0, 22.0);
+    neuron.learnCurrentDendriticPatternForClass(3);
+
+    neuron.clearOldIncomingSpikes(1000.0);
+    neuron.recordIncomingSpike(0, 100.0, 100.0);
+    neuron.recordIncomingSpike(2, 106.0, 106.0);
+    neuron.recordIncomingSpike(4, 111.0, 111.0);
+
+    EXPECT_GE(neuron.getBestDendriticSimilarityForClass(3), 0.70);
+    EXPECT_DOUBLE_EQ(neuron.getBestDendriticSimilarityForClass(5), 0.0);
+}
+
 // Test: Store multiple patterns
 TEST_F(NeuronTest, StoreMultiplePatterns) {
     snnfw::Neuron neuron(50.0, 0.95, 20);

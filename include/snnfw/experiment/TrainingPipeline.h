@@ -30,6 +30,8 @@ struct InferenceResult {
     int l4WinnerDendriticSimilarityCount = 0;
     double l5WinnerDendriticSimilaritySum = 0.0;
     int l5WinnerDendriticSimilarityCount = 0;
+    std::vector<double> dendriticClassScores;
+    int dendriticClassPrediction = -1;
 };
 
 /**

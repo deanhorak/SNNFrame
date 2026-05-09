@@ -51,6 +51,10 @@ struct ExperimentConfig {
     bool dendriticImageOnL4 = true;
     bool dendriticImageOnL5 = true;
     bool dendriticImageOnOutput = true;
+    bool enableDendriticClassEvidence = true;
+    double dendriticClassEvidenceGain = 0.0;
+    double dendriticClassEvidenceMinNeuronMargin = 0.02;
+    double dendriticClassEvidenceMinDecisionMargin = 0.05;
 
     // --- Training parameters ---
     int numClasses = 26;

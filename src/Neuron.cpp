@@ -92,6 +92,7 @@ Neuron::Neuron(double windowSizeMs,
       dendriticRows_(0),
       dendriticTimeBins_(0),
       dendriticBinMs_(1.0),
+      dendriticPatternConfig_(),
       dendriticPatternMemory_(),
       axonId(0),
       similarityMetric_(SimilarityMetric::COSINE),  // Default to cosine similarity
@@ -300,12 +301,14 @@ void Neuron::enableDendriticSpikeImageMemory(uint16_t rows,
     dendriticTimeBins_ = timeBins;
     dendriticBinMs_ = binMs;
     dendriticSpikeImageMemoryEnabled_ = true;
-    dendriticPatternMemory_ = DendriticPatternMemory({
+    dendriticPatternConfig_ = DendriticPatternMemory::Config{
         std::clamp(threshold, 0.0, 1.0),
         toleranceBins,
         maxPatterns,
         false
-    });
+    };
+    dendriticPatternMemory_ = DendriticPatternMemory(dendriticPatternConfig_);
+    classDendriticPatternMemories_.clear();
 }
 
 void Neuron::disableDendriticSpikeImageMemory() {
@@ -314,6 +317,7 @@ void Neuron::disableDendriticSpikeImageMemory() {
     dendriticTimeBins_ = 0;
     dendriticBinMs_ = 1.0;
     dendriticPatternMemory_.clear();
+    classDendriticPatternMemories_.clear();
 }
 
 void Neuron::printSpikes() const {
@@ -590,6 +594,43 @@ double Neuron::getBestDendriticSimilarity() const {
         return 0.0;
     }
     return dendriticPatternMemory_.bestSimilarity(image);
+}
+
+size_t Neuron::learnCurrentDendriticPatternForClass(int classLabel) {
+    if (!dendriticSpikeImageMemoryEnabled_ || classLabel < 0) {
+        learnCurrentPattern();
+        return dendriticPatternMemory_.prototypeCount();
+    }
+
+    DendriticSpikeImage dendriticImage = buildCurrentDendriticSpikeImage();
+    if (dendriticImage.empty()) {
+        return 0;
+    }
+
+    const size_t classIndex = static_cast<size_t>(classLabel);
+    if (classDendriticPatternMemories_.size() <= classIndex) {
+        classDendriticPatternMemories_.resize(
+            classIndex + 1, DendriticPatternMemory(dendriticPatternConfig_));
+    }
+    dendriticPatternMemory_.learn(dendriticImage);
+    return classDendriticPatternMemories_[classIndex].learn(dendriticImage);
+}
+
+double Neuron::getBestDendriticSimilarityForClass(int classLabel) const {
+    if (!dendriticSpikeImageMemoryEnabled_ || classLabel < 0) {
+        return 0.0;
+    }
+    const size_t classIndex = static_cast<size_t>(classLabel);
+    if (classIndex >= classDendriticPatternMemories_.size() ||
+        classDendriticPatternMemories_[classIndex].prototypeCount() == 0) {
+        return 0.0;
+    }
+
+    DendriticSpikeImage image = buildCurrentDendriticSpikeImage();
+    if (image.empty()) {
+        return 0.0;
+    }
+    return classDendriticPatternMemories_[classIndex].bestSimilarity(image);
 }
 
 const std::vector<BinaryPattern>& Neuron::getLearnedPatterns() const {
